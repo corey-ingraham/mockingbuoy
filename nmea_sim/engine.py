@@ -232,14 +232,14 @@ class _PhysicsThread(threading.Thread):
         self._shared = shared
         self._physics = physics
         self._period = 1.0 / hz
-        self._stop = stop
+        self._stop_event = stop
 
     def run(self) -> None:
         prev = time.monotonic()
         next_tick = prev + self._period
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             wait = next_tick - time.monotonic()
-            if wait > 0 and self._stop.wait(wait):
+            if wait > 0 and self._stop_event.wait(wait):
                 break
             now = time.monotonic()
             dt = now - prev
@@ -271,7 +271,7 @@ class _ChannelWorker(threading.Thread):
         self._sinks = sinks
         self._shared = shared
         self._status = status_q
-        self._stop = stop
+        self._stop_event = stop
         self._monitor = monitor
         self._emitters = emitters_for(spec)
         self._alive = False
@@ -294,12 +294,12 @@ class _ChannelWorker(threading.Thread):
         offsets = emission_offsets([em.period for em in self._emitters])
         for em, off in zip(self._emitters, offsets, strict=True):
             em.next_fire = start + off
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             now = time.monotonic()
             soonest = min(em.next_fire for em in self._emitters)
             wait = soonest - now
             if wait > 0:
-                if self._stop.wait(wait):
+                if self._stop_event.wait(wait):
                     break
                 continue
             now = time.monotonic()
@@ -379,14 +379,14 @@ class Engine:
         strict_budget: bool = True,
     ) -> None:
         self._config = config
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._status: queue.Queue[StatusMsg] = queue.Queue(maxsize=10000)
 
         self._time_source = TimeSource(config.time_source, config.epoch_datetime())
         self._shared = SharedState(config.build_initial_state(self._time_source.initial()))
         self._physics_engine = PhysicsEngine(config.movement.mode, self._time_source)
         self._physics = _PhysicsThread(
-            self._shared, self._physics_engine, config.movement.physics_hz, self._stop
+            self._shared, self._physics_engine, config.movement.physics_hz, self._stop_event
         )
 
         self._workers: list[_ChannelWorker] = []
@@ -395,7 +395,9 @@ class Engine:
             sinks = self._build_sinks(spec, sink_hook)
             self._check_budget(spec, source, strict_budget)
             self._workers.append(
-                _ChannelWorker(spec, source, sinks, self._shared, self._status, self._stop, monitor)
+                _ChannelWorker(
+                    spec, source, sinks, self._shared, self._status, self._stop_event, monitor
+                )
             )
 
     # -- construction helpers ----------------------------------------------
@@ -441,7 +443,7 @@ class Engine:
             worker.start()
 
     def stop(self, timeout: float = 15.0) -> None:
-        self._stop.set()
+        self._stop_event.set()
         deadline = time.monotonic() + timeout
         for thread in (self._physics, *self._workers):
             remaining = max(0.0, deadline - time.monotonic())
