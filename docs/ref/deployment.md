@@ -8,22 +8,45 @@ two systemd units — nothing else to build or ship.
 
 On the target host (needs internet only to install apt packages + Python wheels):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | sudo bash
 ```
-`bootstrap.sh` installs `git`+`curl`, clones the repo, and runs `sudo ./setup.sh`, which (idempotently):
+`bootstrap.sh` installs `git`+`curl`, clones the repo into `/opt/src/mockingbuoy` (idempotent: it
+`git pull`s if the clone already exists), and execs `./setup.sh`, which (idempotently):
 1. installs `python3-venv`/`python3-pip`, **Caddy** (official apt repo), `chrony`, `ufw`; creates a
    dedicated non-login service user `mockingbuoy` and adds it to `dialout`;
 2. builds the venv at `/opt/mockingbuoy/.venv` and `pip install --require-hashes` (or from the local
    wheelhouse if offline);
 3. host config: udev `by-id` symlinks (`/dev/nmea-*`), purge/mask `brltty`, set FTDI `latency_timer=1`,
    time sync (chrony) + `timedatectl set-timezone UTC`, optional firewall hardening (see security.md);
-4. generates the Caddy custom root CA and a first-run web password (printed once);
+4. generates the Caddy custom root CA and a first-run web password (printed once), and writes the
+   non-secret runtime env to `secrets/service.env` (site, Basic-auth user, bcrypt hash — see below);
 5. installs the systemd units (`mockingbuoy.service`, Caddy drop-in), `daemon-reload`, `enable --now`;
 6. builds the offline **wheelhouse** and enables the host backup timer;
 7. prints the web URL, the one-time password, the CA file to trust on clients, and the per-channel
    TCP-tap `host:port` list.
 
 Both services run on boot via systemd and have **no runtime internet dependency**.
+
+### Tuning the run (`setup.env`)
+
+`setup.sh` reads an optional `setup.env` (copy `setup.env.example` and edit; git-ignored) for the
+non-default knobs. Unset values fall back to sensible defaults:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `MOCKINGBUOY_SITE` | LAN address Caddy publishes on `:443` (NIC IP or local hostname; never `0.0.0.0`) | `<LAN_IP>` |
+| `ALLOW_SUBNET` | Management subnet allowed through UFW to `443` (and the tap ports) | LAN `<subnet>` |
+| `APP_PORT` | Loopback port the app binds; Caddy reverse-proxies to it | `8000` |
+| `TAP_PORTS` | Per-channel raw NMEA-over-TCP tap ports (`nc`/OpenCPN) | per-channel list |
+| `CHRONY_SERVER` | NTP source for `chrony` time sync | distro pool |
+| `BACKUP_DEST` | rsync destination for the host backup timer (writes `MOCKINGBUOY_BACKUP_DEST`) | unset (backup disabled) |
+| `ENABLE_UFW` | Set to `true` to apply the default-deny UFW hardening (any other value skips it) | `false` (skipped) |
+
+Runtime secrets/site values land in `secrets/service.env` (git-ignored; `0600`), read by both
+`mockingbuoy.service` and the Caddy drop-in — see `secrets/service.env.example` for the exact
+names (`MOCKINGBUOY_SITE`, `MOCKINGBUOY_BASIC_USER`, `MOCKINGBUOY_BASIC_HASH`,
+`MOCKINGBUOY_BACKUP_DEST`). Never commit a plaintext password — store only the `caddy hash-password`
+bcrypt hash.
 
 ## Service topology
 

@@ -24,14 +24,17 @@ SupplementaryGroups=dialout
 
 WorkingDirectory=/opt/mockingbuoy
 
-# Optional runtime env (in-app Basic user/hash, etc). Leading '-' => not an error if absent.
+# Default loopback port; overridden by service.env (loaded after, so the file wins) when the
+# operator sets MOCKINGBUOY_APP_PORT via setup.env. Keeps the ${...} expansion below non-empty.
+Environment=MOCKINGBUOY_APP_PORT=8000
+# Optional runtime env (in-app Basic user/hash, app port, etc). Leading '-' => not an error if absent.
 EnvironmentFile=-/opt/mockingbuoy/secrets/service.env
 
 # Serve the ASGI app from the venv. Loopback only, single worker, no access log.
 # NEVER add --reload (dev-only; spawns a reloader subprocess and watches the tree).
 ExecStart=/opt/mockingbuoy/.venv/bin/uvicorn web.app:app \
     --host 127.0.0.1 \
-    --port 8000 \
+    --port ${MOCKINGBUOY_APP_PORT} \
     --workers 1 \
     --no-access-log \
     --timeout-graceful-shutdown 25

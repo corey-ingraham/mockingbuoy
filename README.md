@@ -27,15 +27,50 @@ host) and needs no desktop.
 - Runs headless under systemd with `Restart=on-failure`; **no runtime internet dependency**
 - Local wheelhouse for rebuild-free offline redeploy
 
-## Install (Raspberry Pi)
+## Install (one command)
+
+On a fresh Linux host (Raspberry Pi or any Debian/Ubuntu box), run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | sudo bash
 ```
 
-This installs Caddy, builds the venv, configures the host, generates the web credential and a
-local TLS certificate authority, and enables the systemd services. It prints the web URL, a one-time
-password, and the CA file to trust on client machines. See [docs/ref/deployment.md](docs/ref/deployment.md).
+`bootstrap.sh` installs `git`+`curl`, clones this repo, and hands off to `setup.sh`, which
+provisions everything natively — the Python **venv**, the native **Caddy** reverse proxy, and the
+**systemd** services — then configures the host, generates a local TLS **certificate authority** and
+a **one-time web password**, and starts the service listening on `<LAN_IP>:443`. It needs internet
+only to install (apt + pip); there is **no runtime internet dependency**. Tune the run with a
+`setup.env` file (`MOCKINGBUOY_SITE`, `ALLOW_SUBNET`, `APP_PORT`, `TAP_PORTS`, …) — see
+[docs/ref/deployment.md](docs/ref/deployment.md).
+
+At the end `setup.sh` prints the web URL, the one-time password, the CA file to trust on client
+machines, and the per-channel TCP-tap `host:port` list.
+
+**Reach the web UI:** browse to `https://<LAN_IP>/` and authenticate with HTTP **Basic auth**
+(username + the one-time password printed on install — change it with `caddy hash-password` and
+update `secrets/service.env`). Trust the printed CA file on the client to silence the TLS warning.
+
+**Raw NMEA over TCP:** each channel is also tapped as a plain TCP stream for chart plotters and
+loggers. Read a channel with `nc`:
+
+```bash
+nc <LAN_IP> <port>          # raw NMEA 0183 sentences for that channel
+```
+
+or point OpenCPN at the same `<LAN_IP>:<port>` as a **Network → TCP** data connection. The tap ports
+are printed on install and set via `TAP_PORTS` in `setup.env`.
+
+## Update / offline redeploy
+
+Update in place from the repo checkout:
+
+```bash
+cd /opt/src/mockingbuoy && git pull && sudo ./setup.sh
+```
+
+The re-run is idempotent — it rebuilds the venv and restarts the services. For a host with **no
+runtime internet dependency**, rebuild the venv from the local **wheelhouse** instead of fetching
+wheels; see the offline-redeploy steps in [docs/ref/deployment.md](docs/ref/deployment.md).
 
 ## Configure
 
