@@ -1,0 +1,68 @@
+# mockingbuoy — host backup (oneshot). Paired with mockingbuoy-backup.timer.
+#
+# Rsyncs the irreplaceable state to a LAN share: config, on-device secrets, the Caddy
+# custom root CA + issued certs, and runtime data/. Everything else is rebuildable from
+# the repo + wheelhouse, so it is deliberately NOT included.
+#
+# Install:
+#   sudo install -m 0644 ops/mockingbuoy-backup.service /etc/systemd/system/
+#   sudo install -m 0644 ops/mockingbuoy-backup.timer   /etc/systemd/system/
+#   # set the destination once (git-ignored secrets/service.env carries the env):
+#   #   MOCKINGBUOY_BACKUP_DEST=user@nas.lan:/backups/mockingbuoy
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mockingbuoy-backup.timer
+#   sudo systemctl start mockingbuoy-backup.service   # test one run now
+#
+# Restore drill: see docs/ref/security.md ("Backups & restore").
+
+[Unit]
+Description=mockingbuoy host backup (config + secrets + Caddy CA + data)
+Documentation=file:///opt/mockingbuoy/docs/ref/security.md
+After=network-online.target
+Wants=network-online.target
+# Fail fast (not hang) if the install is missing its config.
+AssertPathExists=/opt/mockingbuoy/config.json
+
+[Service]
+Type=oneshot
+User=mockingbuoy
+Group=mockingbuoy
+
+# MOCKINGBUOY_BACKUP_DEST=<rsync destination> (LAN share, e.g. user@host:/path, or a
+# locally-mounted share). Note: for an rsync-over-ssh destination the service user's
+# ~/.ssh must be reachable — set the user's home to /opt/mockingbuoy (not under /home,
+# which ProtectHome=true hides) or use a mounted-share destination path.
+EnvironmentFile=-/opt/mockingbuoy/secrets/service.env
+
+# The Caddy custom root CA + key live under the caddy user's state dir, which the
+# mockingbuoy user cannot read. Copy them (as root, via the '+' prefix) into a
+# mockingbuoy-owned, 0600 path under data/ so the rsync below actually captures the CA —
+# without it a rebuilt host must mint a NEW CA and every client must re-trust it.
+# Path is distro-dependent; the '|| true' tolerates a not-yet-provisioned CA on first run.
+ExecStartPre=+/bin/sh -c 'mkdir -p /opt/mockingbuoy/data/caddy-ca && \
+    cp -a /var/lib/caddy/.local/share/caddy/pki/authorities/local/. \
+        /opt/mockingbuoy/data/caddy-ca/ 2>/dev/null || true; \
+    chown -R mockingbuoy:mockingbuoy /opt/mockingbuoy/data/caddy-ca; \
+    chmod -R go-rwx /opt/mockingbuoy/data/caddy-ca'
+
+# --relative preserves the /opt/mockingbuoy/... tree layout at the destination.
+# Guard the destination: if MOCKINGBUOY_BACKUP_DEST is empty, systemd would drop the
+# trailing argument and rsync would treat a LOCAL path as the target and --delete into it.
+# The ${VAR:?msg} expansion makes an unset/empty destination a hard, immediate failure.
+ExecStart=/bin/sh -c ': "${MOCKINGBUOY_BACKUP_DEST:?set MOCKINGBUOY_BACKUP_DEST in secrets/service.env}"; \
+    exec /usr/bin/rsync -aR --delete --mkpath \
+        /opt/mockingbuoy/config.json \
+        /opt/mockingbuoy/secrets \
+        /opt/mockingbuoy/data \
+        "${MOCKINGBUOY_BACKUP_DEST}"'
+
+# Modest sandboxing for the backup job (read-most; rsync only reads locally).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

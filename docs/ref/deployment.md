@@ -1,7 +1,8 @@
 # Deployment
 
 The runtime is **native**: a Python virtualenv driven by **systemd**, fronted by a
-natively-installed **Caddy** reverse proxy. No containers, no compose, no image tarballs.
+natively-installed **Caddy** reverse proxy. Deployment is just the repo checkout, a venv, and
+two systemd units — nothing else to build or ship.
 
 ## Install (primary)
 
@@ -27,9 +28,9 @@ Both services run on boot via systemd and have **no runtime internet dependency*
 ## Service topology
 
 Two native systemd services:
-- **`mockingbuoy.service`** — runs `uvicorn main:app --workers 1 --no-access-log` (never `--reload`)
+- **`mockingbuoy.service`** — runs `uvicorn web.app:app --workers 1 --no-access-log` (never `--reload`)
   from the venv, as the non-login `mockingbuoy` user (member of `dialout` for serial). Hardened with
-  systemd sandboxing (the native analog of container cap-drop / read-only / limits): `NoNewPrivileges`,
+  systemd sandboxing — drop privileges, make the filesystem read-only, and cap resources: `NoNewPrivileges`,
   `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, empty `CapabilityBoundingSet`, restricted address
   families, `MemoryMax`/`TasksMax`, `Restart=on-failure`, `ReadWritePaths=/opt/mockingbuoy/data`. The
   app binds **loopback only**; Caddy reaches it over localhost. No host port is published by the app.
@@ -42,9 +43,10 @@ Two native systemd services:
 ## Device access
 
 The service reaches serial adapters by their stable `by-id` path (a udev rule installed by `setup.sh`
-also creates friendly `/dev/nmea-*` symlinks). Because it is a native process there is no cgroup device
-rule or symlink-dereference problem — a replug re-creates the same `by-id` node and the port's tolerant
-open picks it back up. Point each channel's `path` at `/dev/serial/by-id/...` (or `/dev/nmea-*`).
+also creates friendly `/dev/nmea-*` symlinks). Because it is a native process, device access is just the
+`dialout` group plus explicit `DeviceAllow=` rules in the unit — a replug re-creates the same `by-id` node
+and the port's tolerant open picks it back up. Point each channel's `path` at `/dev/serial/by-id/...`
+(or `/dev/nmea-*`).
 
 Grant the device nodes to the service in the unit:
 ```ini
@@ -56,7 +58,7 @@ SupplementaryGroups=dialout
 
 ## Time / clock
 
-The Pi has no RTC; the clock may be wrong until sync. Keep the OS in UTC. The app's `time_source.mode`
+Many small single-board hosts have no battery-backed RTC, so the clock may be wrong until sync. Keep the OS in UTC. The app's `time_source.mode`
 controls dated sentences:
 - `system_utc` (default) — use OS UTC; gate ZDA/RMC dates on `timedatectl … NTPSynchronized == yes`.
 - `simulated` — fixed epoch + rate multiplier (repeatable scenarios; requires `epoch`).
@@ -70,7 +72,8 @@ a fresh host with no internet:
 python3 -m venv /opt/mockingbuoy/.venv
 /opt/mockingbuoy/.venv/bin/pip install --no-index --find-links=wheelhouse --require-hashes -r requirements.txt
 ```
-No image tarballs, no registry — just the wheelhouse and the repo checkout.
+Nothing else to fetch — just the wheelhouse and the repo checkout, so the rebuild has no runtime
+internet dependency.
 
 ## Updates
 

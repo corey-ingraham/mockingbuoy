@@ -164,6 +164,8 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
     if spec.role == "ais" and spec.ais is None:
         errors.append(f"{where}: role 'ais' requires an 'ais' block")
 
+    _validate_ais_traffic(spec, errors)
+
     if spec.tcp_tap is not None and spec.tcp_tap.enabled:
         port = spec.tcp_tap.port
         if not (_MIN_PORT <= port <= _MAX_PORT):
@@ -178,6 +180,42 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
                 f"{where}: over baud budget — {result.utilization * 100:.0f}% of "
                 f"{spec.baud} {spec.framing} (limit {result.threshold * 100:.0f}%)"
             )
+
+
+def _validate_ais_traffic(spec: ChannelSpec, errors: list[str]) -> None:
+    """Sanity-check an AIS channel's optional synthetic-traffic seam.
+
+    Leaving ``profile_path`` null is fine — the neutral built-in default profile is used. But a
+    *set* ``profile_path`` must exist and load: the engine loads it eagerly at construction
+    (``RealismProfile.from_path``), so a missing or malformed file would crash start-up. We fail
+    loudly here instead, matching the ``fail loudly`` rule — a set-but-missing path is a hard error.
+    """
+    if spec.ais is None or spec.ais.traffic is None:
+        return
+    traffic = spec.ais.traffic
+    if not traffic.enabled:
+        return
+    where = f"channel {spec.id!r}"
+    path = traffic.profile_path
+    if path is None:
+        return  # no path => the neutral default profile is used; nothing to check
+
+    from pathlib import Path
+
+    from .realism import RealismProfile
+
+    if not Path(path).exists():
+        errors.append(
+            f"{where}: ais.traffic.profile_path {path!r} does not exist "
+            "(set it to a profile present on this host, or null to use the neutral default)"
+        )
+        return
+    try:
+        RealismProfile.from_path(path)
+    except Exception as exc:  # surface a malformed/unreadable profile as a readable problem
+        errors.append(
+            f"{where}: ais.traffic.profile_path {path!r} is not a loadable profile ({exc})"
+        )
 
 
 def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:

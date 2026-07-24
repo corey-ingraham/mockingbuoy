@@ -100,6 +100,50 @@ class AisOwnShip:
 
 
 @dataclass(frozen=True)
+class AisTrafficSpec:
+    """Optional synthetic-traffic seam for an AIS channel.
+
+    When ``enabled`` is false (the default) the channel emits **own-ship only** — behaviour
+    is byte-identical to a channel with no traffic block at all. When enabled, the engine
+    loads a region-neutral realism profile (from ``profile_path`` if set, else a built-in
+    neutral default), spawns synthetic contacts, and interleaves their position/static
+    reports with own-ship's. The profile file is **user-supplied, local, and optional** — it
+    carries every location-specific value, keeping them out of tracked code and config.
+    """
+
+    enabled: bool = False
+    profile_path: str | None = None
+    target_count: int | None = None  # override the profile's own target_count when set
+    seed: int | None = None
+    # Anti-teleport ceiling: caps the real elapsed time applied per target advance, so a
+    # process stall can't jump a contact across the region in one step. NOT an update cadence
+    # (targets advance every position build); keep it >= the AIS position emit period.
+    max_advance_s: float = 10.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AisTrafficSpec:
+        raw_count = data.get("target_count")
+        raw_seed = data.get("seed")
+        raw_path = data.get("profile_path")
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            profile_path=str(raw_path) if raw_path is not None else None,
+            target_count=int(raw_count) if raw_count is not None else None,
+            seed=int(raw_seed) if raw_seed is not None else None,
+            max_advance_s=float(data.get("max_advance_s", 10.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "profile_path": self.profile_path,
+            "target_count": self.target_count,
+            "seed": self.seed,
+            "max_advance_s": self.max_advance_s,
+        }
+
+
+@dataclass(frozen=True)
 class AisSpec:
     """AIS behaviour for an AIS channel."""
 
@@ -108,25 +152,33 @@ class AisSpec:
     channel_alternation: bool = True
     include_type5: bool = True
     type5_period_s: float = 360.0
+    traffic: AisTrafficSpec | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AisSpec:
+        traffic_data = data.get("traffic")
         return cls(
             own_ship=AisOwnShip.from_dict(data["own_ship"]),
             mode=str(data.get("mode", "ownship")),
             channel_alternation=bool(data.get("channel_alternation", True)),
             include_type5=bool(data.get("include_type5", True)),
             type5_period_s=float(data.get("type5_period_s", 360.0)),
+            traffic=AisTrafficSpec.from_dict(traffic_data) if traffic_data else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "own_ship": self.own_ship.to_dict(),
             "mode": self.mode,
             "channel_alternation": self.channel_alternation,
             "include_type5": self.include_type5,
             "type5_period_s": self.type5_period_s,
         }
+        # Emit "traffic" only when present, so configs that never opted into the seam
+        # round-trip unchanged.
+        if self.traffic is not None:
+            out["traffic"] = self.traffic.to_dict()
+        return out
 
 
 @dataclass(frozen=True)

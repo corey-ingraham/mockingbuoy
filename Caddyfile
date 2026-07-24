@@ -1,0 +1,45 @@
+# mockingbuoy — native Caddy reverse proxy (TLS termination + Basic auth).
+#
+# SSE + auth interaction (why Basic-at-proxy works for the live stream):
+#   The UI streams sentences over Server-Sent Events via the browser's EventSource,
+#   which CANNOT set request headers — so it can't attach an Authorization header of
+#   its own. Basic auth enforced HERE (at the proxy) still works because, once the
+#   user has authenticated the origin, the browser automatically re-sends the cached
+#   Basic credentials on every subsequent same-origin request, EventSource included.
+#   No client-side auth code is needed. flush_interval -1 disables response buffering
+#   so streamed events reach the browser immediately.
+#
+# Publishes the LAN NIC IP on :443 ONLY — never 0.0.0.0. Override the address with
+# the MOCKINGBUOY_SITE env var (e.g. a local hostname once you have one).
+#
+# Secrets: the Basic password HASH is produced on-device with `caddy hash-password`
+# and injected via MOCKINGBUOY_BASIC_HASH (kept in git-ignored secrets/, never here).
+
+{$MOCKINGBUOY_SITE:<LAN_IP>}:443 {
+	# Local-only TLS: Caddy's internal issuer signs from a custom local root CA.
+	# Never public ACME — this host is LAN-only and may have no public DNS.
+	tls internal
+
+	# HTTP Basic guarding everything. User/hash come from the environment; the hash is
+	# a bcrypt string from `caddy hash-password` living in git-ignored secrets/.
+	basic_auth {
+		{$MOCKINGBUOY_BASIC_USER:<you>} {$MOCKINGBUOY_BASIC_HASH}
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+		X-Frame-Options DENY
+		# Measured HSTS: 1 year, this host only. No preload / no includeSubDomains
+		# because this is an IP/LAN host that may share a parent domain with others.
+		Strict-Transport-Security "max-age=31536000"
+		# Don't advertise the server software.
+		-Server
+	}
+
+	# Loopback app. flush_interval -1 => stream SSE unbuffered.
+	reverse_proxy 127.0.0.1:8000 {
+		flush_interval -1
+	}
+}

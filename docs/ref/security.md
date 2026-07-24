@@ -36,7 +36,7 @@ Caddyfile essentials:
 ## Process sandboxing
 
 The app runs under `mockingbuoy.service` as a dedicated non-login user, hardened with systemd
-sandboxing (the native analog of container cap-drop / read-only rootfs): `NoNewPrivileges=true`,
+sandboxing — dropped privileges and a read-only rootfs: `NoNewPrivileges=true`,
 `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `ProtectKernelTunables=true`, empty
 `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `MemoryMax=`/`TasksMax=`,
 and a single `ReadWritePaths=/opt/mockingbuoy/data`. Do **not** set `PrivateDevices=yes` — it hides
@@ -51,7 +51,7 @@ and a single `ReadWritePaths=/opt/mockingbuoy/data`. Do **not** set `PrivateDevi
 
 ## Network hardening (optional, config-driven)
 
-Native processes obey UFW normally — there is no Docker `DOCKER-USER` bypass to work around.
+Native processes obey UFW normally — there is no firewall-bypass special case to work around.
 - Host UFW default-deny with an allow for the management subnet on 443 (and the TCP-tap ports, and 22
   if used), e.g. `ufw allow from <subnet> to any port 443 proto tcp`.
 - If a dedicated management interface exists, keep the web port off other interfaces.

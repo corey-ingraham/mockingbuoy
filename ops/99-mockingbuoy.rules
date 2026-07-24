@@ -1,0 +1,42 @@
+# udev rules for mockingbuoy USB-serial adapters.
+#
+# Goal: give each physical adapter a STABLE, friendly /dev/nmea-* name regardless of
+# enumeration order, hand it to the dialout group at mode 0660, tune FTDI latency, and
+# tag it TAG+="systemd" so the service unit can reference it in DeviceAllow=.
+#
+# Install:
+#   sudo install -m 0644 ops/99-mockingbuoy.rules /etc/udev/rules.d/99-mockingbuoy.rules
+#   sudo udevadm control --reload && sudo udevadm trigger
+#   ls -l /dev/nmea-*        # confirm the symlinks resolve to the right ttyUSB*/ttyACM*
+#
+# Find the per-adapter attributes to fill in below (serial number is the stable key):
+#   udevadm info -a -n /dev/ttyUSB0 | grep -E 'ATTRS\{(serial|idVendor|idProduct)\}'
+#
+# ALL identifiers below are PLACEHOLDERS — replace <...> with your adapters' values.
+# Each line keys on ATTRS{serial} so replugging any port yields the same name.
+
+# --- GPS adapter -------------------------------------------------------------
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<GPS_SERIAL>", \
+    SYMLINK+="nmea-gps", GROUP="dialout", MODE="0660", TAG+="systemd"
+
+# --- Heading adapter ---------------------------------------------------------
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<HEADING_SERIAL>", \
+    SYMLINK+="nmea-heading", GROUP="dialout", MODE="0660", TAG+="systemd"
+
+# --- AIS adapter -------------------------------------------------------------
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<AIS_SERIAL>", \
+    SYMLINK+="nmea-ais", GROUP="dialout", MODE="0660", TAG+="systemd"
+
+# --- FTDI latency tuning -----------------------------------------------------
+# FTDI defaults to a 16 ms read latency timer; drop it to 1 ms so per-sentence writes
+# aren't coalesced/delayed. Applies to the FTDI USB device node backing the tty.
+# (Harmless no-op on non-FTDI adapters, which won't match ATTR{latency_timer}.)
+SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTR{device/latency_timer}="1"
+
+# --- brltty gotcha -----------------------------------------------------------
+# brltty (Braille display daemon) aggressively grabs FTDI serial adapters via its own
+# udev rules and can steal the port out from under this service. If you don't use a
+# Braille display, mask/remove it so the tty stays available:
+#   sudo systemctl mask brltty.service brltty.path 2>/dev/null || true
+#   sudo apt-get purge -y brltty            # or: rm /usr/lib/udev/rules.d/*brltty*.rules

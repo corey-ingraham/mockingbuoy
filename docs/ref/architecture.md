@@ -66,6 +66,33 @@ checksummed NMEA lines (no line-ending; the writer owns `b"\r\n"`). No serial, t
 `$` sentences are built with `pynmea2` (`str(msg)` emits `$…*HH`; talker = first ctor arg). AIS lines
 come pre-checksummed from `pyais` (may be multi-fragment). Field maps → `nmea-reference.md`.
 
+## Synthetic AIS traffic (profile seam)
+
+An AIS channel emits **own-ship only** by default. An optional `ais.traffic` block turns on
+profile-driven synthetic contacts without baking any location into tracked code or config:
+
+```jsonc
+"traffic": {
+  "enabled": false,          // false => own-ship-only, byte-identical to no block at all
+  "profile_path": null,      // path to a LOCAL, user-supplied JSON profile; null => neutral default
+  "target_count": null,      // override the profile's own target_count when set
+  "seed": null,              // fixed seed => deterministic spawn
+  "max_advance_s": 10.0      // anti-teleport ceiling on per-step elapsed time; keep >= position period
+}
+```
+
+When enabled, the AIS source loads a **region-neutral realism profile** (`realism.py`) — from
+`profile_path` if set, otherwise a built-in neutral default — spawns a deterministic set of
+contacts, and interleaves their reports with own-ship's: on each position tick own-ship's
+`!AIVDO` goes out first, then every target's `!AIVDM`; on each static tick own-ship's static
+report goes first, then each target's. Targets advance by the **real elapsed time** between
+successive position builds, so their motion tracks the same wall clock as own-ship. The profile
+is the only place location-specific values (a bounding box, a type mix, speed distributions)
+live — it is **user-supplied local JSON, kept out of the repo**; the checked-in defaults are
+area-neutral. Synthetic MMSIs are generated and never reference a real registered identity. The
+extra sentences count against the channel's baud budget as normal (AIS at 38400 baud has ample
+headroom for a sane contact count).
+
 ## Threading topology
 
 - **PhysicsThread** — commits new position (`dead_reckon`) + `utc` at `physics_hz`, so all senders read

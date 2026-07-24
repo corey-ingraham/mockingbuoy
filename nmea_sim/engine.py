@@ -35,6 +35,7 @@ from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
 from .gps_generator import GpsGenerator
 from .heading_generator import HeadingGenerator
 from .navigation import dead_reckon
+from .realism import RealismProfile, TargetSpawner
 from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
 from .tcp_tap import TcpTap
@@ -76,15 +77,68 @@ class _HeadingSource:
 
 
 class _AisSource:
+    """Own-ship AIS, plus optional profile-driven synthetic target traffic.
+
+    Traffic disabled (the default) => output is own-ship only, byte-identical to before.
+    Traffic enabled => on construction we load a region-neutral :class:`RealismProfile`
+    (from a local ``profile_path`` if set, else the neutral default), spawn a deterministic
+    set of contacts, and interleave their reports with own-ship's. Targets are advanced by
+    the **real elapsed time** between successive position builds, so their motion tracks the
+    same wall clock as own-ship without a separate scheduler.
+    """
+
     def __init__(self, ais: AisSpec) -> None:
         self._gen = AisGenerator("AI")
         self._own = ais.own_ship
+        self._spawner: TargetSpawner | None = None
+        self._targets: list[AisTarget] = []
+        self._last_advance: float | None = None
+        self._max_dt: float = 0.0
+        traffic = ais.traffic
+        if traffic is not None and traffic.enabled:
+            profile = (
+                RealismProfile.from_path(traffic.profile_path)
+                if traffic.profile_path
+                else RealismProfile.default()
+            )
+            self._spawner = TargetSpawner(profile, traffic.seed)
+            count = (
+                traffic.target_count if traffic.target_count is not None else profile.target_count
+            )
+            self._targets = self._spawner.spawn(count)
+            self._max_dt = traffic.max_advance_s
+
+    def _advance_targets(self) -> None:
+        """Step every target forward by the real time since the last advance.
+
+        The first call (the construction-time baud-budget probe) only records the baseline
+        clock and moves nothing — so the budget guard's double-call at ~t0 is a no-op and
+        consumes no RNG. Elapsed time is capped so a stalled process can't teleport a target.
+        """
+        if self._spawner is None:
+            return
+        now = time.monotonic()
+        if self._last_advance is None:
+            self._last_advance = now
+            return
+        dt = now - self._last_advance
+        self._last_advance = now
+        if dt > self._max_dt:
+            dt = self._max_dt
+        if dt <= 0.0:
+            return
+        self._targets = [self._spawner.advance(t, dt) for t in self._targets]
 
     def build(self, sentence: str, state: VesselState) -> list[str]:
         if sentence == AIS_POSITION:
-            return self._gen.own_ship(state, self._own.mmsi, class_type=self._own.klass)
+            lines = self._gen.own_ship(state, self._own.mmsi, class_type=self._own.klass)
+            if self._spawner is not None:
+                self._advance_targets()
+                for target in self._targets:
+                    lines.extend(self._gen.position(target, own_ship=False))
+            return lines
         if sentence == AIS_STATIC:
-            target = AisTarget(
+            own = AisTarget(
                 mmsi=self._own.mmsi,
                 lat=state.lat,
                 lon=state.lon,
@@ -97,7 +151,11 @@ class _AisSource:
                 callsign=self._own.call_sign,
                 imo=self._own.imo,
             )
-            return self._gen.static(target)
+            lines = self._gen.static(own)
+            if self._spawner is not None:
+                for target in self._targets:
+                    lines.extend(self._gen.static(target))
+            return lines
         raise ValueError(f"unknown AIS emission {sentence!r}")
 
 

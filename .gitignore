@@ -17,6 +17,7 @@ htmlcov/
 # Secrets — NEVER commit (generated on-device at setup)
 secrets/*
 !secrets/.gitkeep
+!secrets/service.env.example
 *.key
 *.pem
 setup.env
@@ -25,6 +26,13 @@ setup.env
 images/
 *.tar
 config.local.json
+
+# Private area-realism work — NEVER commit (local-only data, profiles, tooling)
+private/
+data/ais/
+*.parquet
+*.csv
+profiles/*.local.json
 
 # Editor / OS
 .idea/

@@ -1,0 +1,19 @@
+# Daily trigger for mockingbuoy-backup.service.
+#
+# Install: see ops/mockingbuoy-backup.service header.
+# Inspect:  systemctl list-timers mockingbuoy-backup.timer
+
+[Unit]
+Description=Daily mockingbuoy host backup
+Documentation=file:///opt/mockingbuoy/docs/ref/security.md
+
+[Timer]
+OnCalendar=daily
+# Catch up on the next boot if the host was off at the scheduled time.
+Persistent=true
+# Spread the run to avoid a thundering herd against the LAN share.
+RandomizedDelaySec=15m
+Unit=mockingbuoy-backup.service
+
+[Install]
+WantedBy=timers.target

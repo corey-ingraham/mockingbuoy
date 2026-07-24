@@ -1,0 +1,99 @@
+# mockingbuoy — native ASGI service (Python venv + uvicorn), fronted by Caddy.
+#
+# Install:
+#   sudo install -m 0644 ops/mockingbuoy.service /etc/systemd/system/mockingbuoy.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mockingbuoy.service
+#
+# The app binds LOOPBACK ONLY; Caddy terminates TLS + Basic auth and reverse-proxies
+# to it over localhost. No host port is published by this service.
+
+[Unit]
+Description=mockingbuoy NMEA/AIS simulator (loopback ASGI app)
+Documentation=file:///opt/mockingbuoy/docs/ref/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Dedicated non-login service user; dialout is required to open serial adapters.
+User=mockingbuoy
+Group=mockingbuoy
+SupplementaryGroups=dialout
+
+WorkingDirectory=/opt/mockingbuoy
+
+# Optional runtime env (in-app Basic user/hash, etc). Leading '-' => not an error if absent.
+EnvironmentFile=-/opt/mockingbuoy/secrets/service.env
+
+# Serve the ASGI app from the venv. Loopback only, single worker, no access log.
+# NEVER add --reload (dev-only; spawns a reloader subprocess and watches the tree).
+ExecStart=/opt/mockingbuoy/.venv/bin/uvicorn web.app:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    --no-access-log \
+    --timeout-graceful-shutdown 25
+
+Restart=on-failure
+RestartSec=3
+# Must exceed --timeout-graceful-shutdown (25s) so in-flight SSE drains before SIGKILL.
+TimeoutStopSec=30
+# Optional liveness watchdog — the app must sd_notify WATCHDOG=1 within the period.
+# Leave disabled unless the app implements the notify protocol.
+# WatchdogSec=30
+
+# ---------------------------------------------------------------------------
+# Sandboxing — drop all privileges, make the rootfs read-only, restrict syscalls
+# and devices, and cap the process to only what it needs.
+# ---------------------------------------------------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# The only writable path the app needs (runtime state). Everything else is read-only.
+ReadWritePaths=/opt/mockingbuoy/data
+
+# MemoryDenyWriteExecute hardens against W^X code injection. The deps here are
+# pure-Python, but some environments ship C extensions (or a JIT) that map W+X pages
+# and will crash under this. Enable ONLY after verifying the venv starts with it on.
+# MemoryDenyWriteExecute=true
+
+# Optional resource caps (uncomment/tune for the target host):
+# MemoryMax=256M
+# TasksMax=64
+
+# ---------------------------------------------------------------------------
+# SERIAL GOTCHA (critical): do NOT set PrivateDevices=yes — it hides /dev/tty* and
+# the serial adapters vanish from the service's mount namespace. Instead we keep the
+# dialout group AND grant the specific char devices explicitly.
+#
+# ops/99-mockingbuoy.rules creates stable /dev/nmea-* symlinks for the USB-serial
+# adapters and tags them TAG+="systemd", so systemd tracks them as device units and
+# DeviceAllow can reference the friendly name (or the underlying char-major class).
+# Adjust these to the symlinks your udev rules actually create:
+DeviceAllow=/dev/nmea-gps rw
+DeviceAllow=/dev/nmea-heading rw
+DeviceAllow=/dev/nmea-ais rw
+# Broader fallback if you prefer class-based grants for all USB TTYs:
+# DeviceAllow=char-ttyUSB rw
+# DeviceAllow=char-ttyACM rw
+
+[Install]
+WantedBy=multi-user.target
