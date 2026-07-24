@@ -56,7 +56,7 @@
       "framing": "8N1",
       "direction": "tx",
       "rx_feeds_state": false,
-      "rx_accept": ["VDM"],
+      "rx_accept": [],
       "ais": {
         "mode": "ownship",
         "own_ship": { "mmsi": 366000001, "class": "A", "name": "MOCKINGBUOY", "call_sign": "MB1", "ship_type": 37 },

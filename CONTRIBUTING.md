@@ -54,8 +54,8 @@ These are correctness- and safety-critical; tests enforce several of them.
 ## Hardware / deployment gotchas
 
 Bind serial devices by stable `/dev/serial/by-id/...` paths; watch for the FTDI latency timer and
-`brltty` grabbing ttys; a container that goes unhealthy but stays alive is restarted by having the app
-self-exit. Details in [docs/ref/serial-hardware.md](docs/ref/serial-hardware.md) and
+`brltty` grabbing ttys; the app self-exits non-zero when unrecoverable so systemd (`Restart=on-failure`)
+recycles it. Details in [docs/ref/serial-hardware.md](docs/ref/serial-hardware.md) and
 [docs/ref/deployment.md](docs/ref/deployment.md).
 
 ## Commits

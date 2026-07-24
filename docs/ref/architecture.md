@@ -16,7 +16,7 @@ web/ (FastAPI, uvicorn, SSE)
 ```
 
 The engine **never** imports `web`, `uvicorn`, `fastapi`, or any GUI toolkit. The web layer imports
-the engine. This guarantees a headless-capable core: the container is "engine + a thin web front end."
+the engine. This guarantees a headless-capable core: the service is "engine + a thin web front end."
 
 ## Shared state (`state.py`)
 

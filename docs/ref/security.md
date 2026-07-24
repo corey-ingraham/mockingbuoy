@@ -13,8 +13,8 @@ control, (2) TLS for confidentiality/integrity on the wire, (3) minimize who can
   hostname is nicer if available.
 - **Auth:** HTTP **Basic** enforced at Caddy (`caddy hash-password`, bcrypt). No cookies → classic CSRF
   does not apply. Basic serves both the browser UI and scripted clients.
-- **App exposure:** the app has **no published host port** — reachable only via Caddy over the docker
-  network. Caddy publishes on the **LAN NIC IP only** (never `0.0.0.0`).
+- **App exposure:** the app binds **loopback only** (`127.0.0.1:<app_port>`) — reachable only via Caddy
+  over localhost. Caddy publishes on the **LAN NIC IP only** (never `0.0.0.0`).
 - **SSE + auth gotcha:** `EventSource` can't set headers. Basic-at-proxy makes the live stream
   authenticate automatically from the browser's cached credentials — zero client code. Set
   `reverse_proxy … { flush_interval -1 }` so Caddy doesn't buffer the stream.
@@ -29,44 +29,47 @@ Caddyfile essentials:
         Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'none'"
         Referrer-Policy no-referrer
     }
-    reverse_proxy app:8000 { flush_interval -1 }
+    reverse_proxy 127.0.0.1:8000 { flush_interval -1 }
 }
 ```
 
+## Process sandboxing
+
+The app runs under `mockingbuoy.service` as a dedicated non-login user, hardened with systemd
+sandboxing (the native analog of container cap-drop / read-only rootfs): `NoNewPrivileges=true`,
+`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `ProtectKernelTunables=true`, empty
+`CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `MemoryMax=`/`TasksMax=`,
+and a single `ReadWritePaths=/opt/mockingbuoy/data`. Do **not** set `PrivateDevices=yes` — it hides
+`/dev/tty*`; grant serial via `dialout` + explicit `DeviceAllow=`.
+
 ## Secrets
 
-- Web credential = an argon2/bcrypt **hash** in `secrets/webauth.hash` (0600, git-ignored,
-  bind-mounted). The Caddy root CA key lives in `secrets/` too. Nothing secret is ever committed or
-  baked into the image.
+- Web credential = an argon2/bcrypt **hash** in `secrets/webauth.hash` (0600, git-ignored). The Caddy
+  root CA key lives in `secrets/` too. Nothing secret is ever committed.
 - **First-run password:** setup generates a random password, stores only its hash, and prints the
   plaintext **once**. `config.json` holds non-secret settings only.
 
 ## Network hardening (optional, config-driven)
 
-- **Docker bypasses UFW** for published ports (rules land in `DOCKER-USER`, evaluated before UFW's
-  INPUT). Restrict the subnet there, e.g.:
-  ```bash
-  iptables -I DOCKER-USER -i <lan_nic> ! -s <subnet> -p tcp --dport 443 -j DROP
-  ```
-  or use `ufw-docker`.
-- Host UFW default-deny with an allow for the management subnet on 443 (and 22 if used).
+Native processes obey UFW normally — there is no Docker `DOCKER-USER` bypass to work around.
+- Host UFW default-deny with an allow for the management subnet on 443 (and the TCP-tap ports, and 22
+  if used), e.g. `ufw allow from <subnet> to any port 443 proto tcp`.
 - If a dedicated management interface exists, keep the web port off other interfaces.
 
 ## Supply chain
 
-- Lock deps with `pip-compile --generate-hashes`; install `--require-hashes`.
-- Scan the image before go-live: `trivy image --severity HIGH,CRITICAL mockingbuoy:<ver>`.
-- Minimal slim base, non-root user, read-only rootfs.
+- Lock deps with `pip-compile --generate-hashes`; install into the venv with `--require-hashes`.
+- Audit deps before go-live: `pip-audit -r requirements.txt`.
+- Non-root service user + systemd sandboxing (above); the app never runs `pip` at runtime.
 
 ## Backups & restore
 
-Back up: the `appdata` volume (config + state), the `caddy_data` volume (root CA + certs), the
-`secrets/` files, udev rules, `docker-compose.yml` + `Caddyfile`, and the exported image tarballs.
+Back up: `config.json` + `data/` (config + state), the Caddy data dir (root CA + certs), the
+`secrets/` files, the udev rules, and the `Caddyfile` (optionally the wheelhouse).
 
-A host systemd timer rsyncs these to a LAN share (quiesce `app` around the volume copy). Restore:
-1. fresh host + Docker; recreate the project dir;
-2. `docker load` the image tarballs (no rebuild/internet);
-3. restore configs + `secrets/` + udev rules (`udevadm control --reload && udevadm trigger`);
-4. recreate volumes and repopulate from the share; fix ownership to the app uid;
-5. `docker compose up -d`; verify `/healthz`, the live feed, and Basic login (trust the restored CA on
-   new clients). Drill the restore periodically.
+A host systemd timer rsyncs these to a LAN share. Restore:
+1. fresh host; re-run `bootstrap.sh`/`setup.sh` (rebuild the venv from the wheelhouse, no internet);
+2. restore `config.json` + `secrets/` + the Caddy data dir + udev rules
+   (`udevadm control --reload && udevadm trigger`); fix ownership to the `mockingbuoy` user;
+3. `systemctl restart mockingbuoy caddy`; verify `/healthz`, the live feed, and Basic login (trust the
+   restored CA on new clients). Drill the restore periodically.

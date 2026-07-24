@@ -57,8 +57,8 @@ Apply: `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-
 - **`brltty`** (braille daemon on Debian/Bookworm) grabs some USB-serial adapters, making the tty appear
   then vanish. Mask/remove it: `sudo systemctl mask brltty-udev.service brltty.service` or
   `sudo apt-get purge brltty`.
-- **Permissions:** serial nodes are group `dialout`. Run as a non-root user in `dialout` (the container
-  uses `group_add`).
+- **Permissions:** serial nodes are group `dialout`. Run as a non-root user in `dialout` (the systemd
+  unit uses `SupplementaryGroups=dialout` + explicit `DeviceAllow=`).
 - **CRLF:** the app writes raw `b"\r\n"` on a binary port — never rely on text-mode newline translation.
 
 ## Verifying output

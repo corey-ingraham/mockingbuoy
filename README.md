@@ -5,7 +5,8 @@ marine electronics and NMEA-consuming systems.
 
 One Python process drives **N independent USB serial channels** from a single synchronized
 vessel state, and serves a small **web UI** (live sentence monitor + control forms) over the LAN.
-It runs as a hardened Docker stack on a Raspberry Pi (or any Linux host) and needs no desktop.
+It runs as a hardened native service (venv + systemd + Caddy) on a Raspberry Pi (or any Linux
+host) and needs no desktop.
 
 ## What it does
 
@@ -23,8 +24,8 @@ It runs as a hardened Docker stack on a Raspberry Pi (or any Linux host) and nee
 - Valid NMEA XOR checksums on every `$` sentence; correct talker IDs; COG and heading kept distinct
 - Independent, configurable per-sentence update rates with a baud-budget guard
 - TLS + authentication on the web UI (reverse proxy); no unauthenticated control
-- Runs headless under Docker with `restart: unless-stopped`; **no runtime internet dependency**
-- Portable image export for rebuild-free redeploy
+- Runs headless under systemd with `Restart=on-failure`; **no runtime internet dependency**
+- Local wheelhouse for rebuild-free offline redeploy
 
 ## Install (Raspberry Pi)
 
@@ -32,9 +33,9 @@ It runs as a hardened Docker stack on a Raspberry Pi (or any Linux host) and nee
 curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | bash
 ```
 
-This installs Docker, configures the host, builds the image, generates the web credential and a
-local TLS certificate authority, and starts the stack. It prints the web URL, a one-time password,
-and the CA file to trust on client machines. See [docs/ref/deployment.md](docs/ref/deployment.md).
+This installs Caddy, builds the venv, configures the host, generates the web credential and a
+local TLS certificate authority, and enables the systemd services. It prints the web URL, a one-time
+password, and the CA file to trust on client machines. See [docs/ref/deployment.md](docs/ref/deployment.md).
 
 ## Configure
 
@@ -61,7 +62,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and the inva
 | [architecture.md](docs/ref/architecture.md) | Modules, threading, channels model, web↔engine bridge, testing |
 | [nmea-reference.md](docs/ref/nmea-reference.md) | Sentence field maps, checksum, coordinate conversion, AIS, baud budget |
 | [serial-hardware.md](docs/ref/serial-hardware.md) | USB-serial: simplex/duplex, persistent naming, latency, brltty |
-| [deployment.md](docs/ref/deployment.md) | Docker stack, device passthrough, image export/redeploy, time sync, autostart |
+| [deployment.md](docs/ref/deployment.md) | systemd + venv + Caddy, device access, offline wheelhouse redeploy, time sync, autostart |
 | [security.md](docs/ref/security.md) | Threat model, TLS + CA trust, auth, secrets, firewall, backups |
 
 ## License
