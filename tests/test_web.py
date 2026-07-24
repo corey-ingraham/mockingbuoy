@@ -122,6 +122,126 @@ def test_out_of_range_update_is_bad_request(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
+# --- per-channel enable/disable ----------------------------------------------------
+
+
+def _channel_entry(client: TestClient, channel_id: str) -> dict[str, Any]:
+    """Pull one channel's dict out of the ``/healthz`` payload (the same body the 1 Hz
+    health broadcast fans out to SSE clients, so asserting here covers both)."""
+    body = client.get("/healthz").json()
+    return next(c for c in body["channels"] if c["channel_id"] == channel_id)
+
+
+def test_health_payload_carries_enabled_per_channel(client: TestClient) -> None:
+    body = client.get("/healthz").json()
+    assert body["channels"]
+    # Every channel reports the flag, and the shipped config leaves them all on.
+    assert all("enabled" in c for c in body["channels"])
+    assert all(c["enabled"] is True for c in body["channels"])
+
+
+def test_channel_toggle_disables_then_re_enables(client: TestClient) -> None:
+    off = client.post(
+        "/api/control", json={"action": "channel", "channel_id": "gps", "enabled": False}
+    )
+    assert off.status_code == 200
+    assert off.json() == {"running": True, "channel_id": "gps", "enabled": False}
+
+    assert _channel_entry(client, "gps")["enabled"] is False
+    # Only the named channel moves; the rest of the config is untouched.
+    others = [c for c in client.get("/healthz").json()["channels"] if c["channel_id"] != "gps"]
+    assert others and all(c["enabled"] is True for c in others)
+
+    on = client.post(
+        "/api/control", json={"action": "channel", "channel_id": "gps", "enabled": True}
+    )
+    assert on.status_code == 200
+    assert on.json()["enabled"] is True
+    assert _channel_entry(client, "gps")["enabled"] is True
+
+
+def test_muted_channel_does_not_break_healthz(client: TestClient) -> None:
+    """Muting is not a fault: ``/healthz`` must stay 200 with the channel still alive."""
+    assert (
+        client.post(
+            "/api/control", json={"action": "channel", "channel_id": "ais", "enabled": False}
+        ).status_code
+        == 200
+    )
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    ais = next(c for c in resp.json()["channels"] if c["channel_id"] == "ais")
+    assert ais["enabled"] is False
+    assert ais["alive"] is True
+
+
+def test_channel_toggle_unknown_id_is_not_found(client: TestClient) -> None:
+    resp = client.post(
+        "/api/control", json={"action": "channel", "channel_id": "nope", "enabled": False}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "channel", "enabled": False},  # no channel_id
+        {"action": "channel", "channel_id": "gps"},  # no enabled
+        {"action": "channel"},  # neither
+    ],
+)
+def test_channel_toggle_requires_both_fields(client: TestClient, body: dict[str, Any]) -> None:
+    assert client.post("/api/control", json=body).status_code == 400
+
+
+def test_channel_toggle_while_stopped_conflicts(client: TestClient) -> None:
+    """Same guard as ``update``: there is no worker to flag when the engine is stopped."""
+    assert client.post("/api/control", json={"action": "stop"}).status_code == 200
+    resp = client.post(
+        "/api/control", json={"action": "channel", "channel_id": "gps", "enabled": False}
+    )
+    assert resp.status_code == 409
+
+
+def test_channel_fields_do_not_leak_into_state_update() -> None:
+    """``state_changes()`` walks ``_UPDATE_RANGES`` only, so the two field groups sharing
+    one request model cannot cross-contaminate — a channel toggle yields no state edit."""
+    from web.app import ControlRequest
+
+    toggle = ControlRequest(action="channel", channel_id="gps", enabled=False)
+    assert toggle.state_changes() == {}
+
+    update = ControlRequest(action="update", lat=1.5)
+    assert update.state_changes() == {"lat": 1.5}
+    assert update.channel_id is None
+    assert update.enabled is None
+
+
+def test_health_to_dict_includes_enabled() -> None:
+    """Unit-level check on the serializer itself, independent of a running engine."""
+    from nmea_sim.engine import ChannelHealth, HealthReport
+    from web.app import _health_to_dict
+
+    report = HealthReport(
+        ok=True,
+        physics_alive=True,
+        channels=[
+            ChannelHealth(
+                channel_id="gps",
+                alive=True,
+                emitted=3,
+                build_errors=0,
+                sinks=[],
+                last_emit_age_s=0.25,
+                enabled=False,
+            )
+        ],
+    )
+    channel = _health_to_dict(report)["channels"][0]
+    assert channel["enabled"] is False
+    assert channel["alive"] is True  # alive and enabled are reported independently
+
+
 # --- SSE ---------------------------------------------------------------------------
 
 

@@ -110,6 +110,7 @@ def _health_to_dict(report: HealthReport) -> dict[str, Any]:
             {
                 "channel_id": ch.channel_id,
                 "alive": ch.alive,
+                "enabled": ch.enabled,
                 "emitted": ch.emitted,
                 "build_errors": ch.build_errors,
                 "last_emit_age_s": ch.last_emit_age_s,
@@ -125,9 +126,14 @@ def _health_to_dict(report: HealthReport) -> dict[str, Any]:
 
 class ControlRequest(BaseModel):
     """Body of ``POST /api/control``. ``action`` is required; the numeric fields apply
-    only to ``action == "update"`` and are each optional."""
+    only to ``action == "update"`` and are each optional, while ``channel_id``/``enabled``
+    apply only to ``action == "channel"``. The two groups are kept in one model because
+    :meth:`state_changes` reads *only* the keys in :data:`_UPDATE_RANGES`, so a channel
+    toggle can never leak into a vessel-state update."""
 
     action: str
+    channel_id: str | None = None
+    enabled: bool | None = None
     lat: float | None = None
     lon: float | None = None
     sog_kn: float | None = None
@@ -285,6 +291,16 @@ class EngineManager:
         if self._engine is None:
             raise RuntimeError("engine is not running")
         return self._engine.update_state(**changes)
+
+    def set_channel_enabled(self, channel_id: str, enabled: bool) -> bool:
+        """Toggle one output channel on/off; ``False`` when the id is unknown.
+
+        A flag write only — the worker thread and its drift-free schedule are untouched, so
+        this needs no engine restart and cannot block the caller.
+        """
+        if self._engine is None:
+            raise RuntimeError("engine is not running")
+        return self._engine.set_channel_enabled(channel_id, enabled)
 
     def health(self) -> dict[str, Any]:
         """Serialized health dict; ``{"status": "stopped", ...}`` when not running."""
@@ -445,6 +461,21 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     )
             state = manager.update_state(**changes)
             return {"running": True, "state": _state_to_dict(state)}
+
+        if action == "channel":
+            if not manager.running:
+                raise HTTPException(status_code=409, detail="engine is not running")
+            if body.channel_id is None or body.enabled is None:
+                raise HTTPException(
+                    status_code=400, detail="channel action requires channel_id and enabled"
+                )
+            # Setting a flag on a live worker: no lock and no worker thread needed, unlike
+            # start/stop (which join threads and open ports) — offloading would only add
+            # latency to what is a single atomic write.
+            if not manager.set_channel_enabled(body.channel_id, body.enabled):
+                raise HTTPException(status_code=404, detail=f"unknown channel: {body.channel_id!r}")
+            # The toggle reaches every client through the existing 1 Hz health broadcast.
+            return {"running": True, "channel_id": body.channel_id, "enabled": body.enabled}
 
         raise HTTPException(status_code=400, detail=f"unknown action: {body.action!r}")
 

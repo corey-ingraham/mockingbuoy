@@ -39,7 +39,7 @@ from nmea_sim.config import (
     TcpTapSpec,
     TimeSourceSpec,
 )
-from nmea_sim.engine import Engine
+from nmea_sim.engine import ChannelHealth, Engine
 from nmea_sim.realism import Region
 from nmea_sim.writers import PtyWriter
 
@@ -261,6 +261,119 @@ def test_instrument_channel_emits_through_monitor_seam() -> None:
     msg = pynmea2.parse(vhw)  # raises on a bad checksum / malformed sentence
     assert msg.talker == "II"
     assert msg.sentence_type == "VHW"
+
+
+# --- 1c) per-channel runtime mute -------------------------------------------------
+
+
+def _channel_health(engine: Engine, channel_id: str) -> ChannelHealth:
+    return next(c for c in engine.health().channels if c.channel_id == channel_id)
+
+
+def test_channel_can_be_muted_and_resumed_at_runtime() -> None:
+    """Muting one channel must stop *only* that channel's output, with no engine restart.
+
+    The toggle is a flag read inside the sender's fire path, so the proof has to be
+    behavioural: the muted channel's line count must freeze while a sibling channel on the
+    same engine keeps climbing, and unmuting must resume delivery on the existing thread.
+    """
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("GGA", 20.0)],
+    )
+    heading = ChannelSpec(
+        id="heading",
+        role="heading",
+        path="none",
+        baud=38400,
+        talker="HE",
+        emit=[EmitSpec("HDT", 20.0)],
+    )
+    monitor = _Monitor()
+    engine = Engine(_base_config([gps, heading]), monitor=monitor.record)
+    engine.start()
+    try:
+        assert _wait_until(
+            lambda: bool(monitor.lines_for("gps")) and bool(monitor.lines_for("heading"))
+        ), "expected both channels emitting before the mute"
+        assert _channel_health(engine, "gps").enabled is True
+
+        assert engine.set_channel_enabled("gps", False) is True
+        assert _channel_health(engine, "gps").enabled is False
+        assert _channel_health(engine, "heading").enabled is True  # siblings untouched
+        # A tick already inside _fire when the flag flipped may still land; settle past one
+        # emission period (20 Hz => 0.05 s) before sampling the frozen baseline.
+        time.sleep(0.15)
+        muted_at = len(monitor.lines_for("gps"))
+        heading_at = len(monitor.lines_for("heading"))
+
+        # The sibling keeps emitting on the same engine while gps stays silent.
+        assert _wait_until(lambda: len(monitor.lines_for("heading")) > heading_at + 2)
+        assert len(monitor.lines_for("gps")) == muted_at
+
+        # The worker thread was never rebuilt, so unmuting resumes on the live schedule.
+        assert engine.set_channel_enabled("gps", True) is True
+        assert _channel_health(engine, "gps").enabled is True
+        assert _wait_until(
+            lambda: len(monitor.lines_for("gps")) > muted_at
+        ), "expected gps emission to resume after unmuting"
+        # Resumed output is still well-formed: the mute path skipped generation, not state.
+        pynmea2.parse(monitor.lines_for("gps")[-1])
+    finally:
+        engine.stop()
+
+
+def test_set_channel_enabled_reports_unknown_channel() -> None:
+    """An unmatched id returns False rather than raising, so the web seam can map it to a
+    404 without having to know the channel set itself."""
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("GGA", 5.0)],
+    )
+    monitor = _Monitor()
+    engine = Engine(_base_config([gps]), monitor=monitor.record)
+    engine.start()
+    try:
+        assert engine.set_channel_enabled("no-such-channel", False) is False
+        assert engine.set_channel_enabled("gps", False) is True
+        # A failed lookup must not have disturbed the real channel's flag either way.
+        assert _channel_health(engine, "gps").enabled is False
+    finally:
+        engine.stop()
+
+
+def test_muted_channel_stays_alive_and_healthy() -> None:
+    """``alive`` describes the thread and ``enabled`` describes permission to emit; muting
+    must not be mistaken for a dead worker, so overall health stays ok."""
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("GGA", 10.0)],
+    )
+    monitor = _Monitor()
+    engine = Engine(_base_config([gps]), monitor=monitor.record)
+    engine.start()
+    try:
+        assert _wait_until(lambda: bool(monitor.lines_for("gps")))
+        assert engine.set_channel_enabled("gps", False) is True
+        report = engine.health()
+        gps_health = next(c for c in report.channels if c.channel_id == "gps")
+        assert gps_health.enabled is False
+        assert gps_health.alive is True
+        assert report.ok is True
+    finally:
+        engine.stop()
 
 
 # --- 2) main.py end-to-end via main(argv) -----------------------------------------

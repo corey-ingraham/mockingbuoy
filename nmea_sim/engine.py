@@ -260,6 +260,9 @@ class ChannelHealth:
     build_errors: int
     sinks: list[SinkHealth]
     last_emit_age_s: float | None
+    # A muted channel is still a live, scheduled thread: ``alive`` reports the thread,
+    # ``enabled`` reports whether it is currently allowed to emit. They are independent.
+    enabled: bool
 
 
 @dataclass(frozen=True)
@@ -365,6 +368,11 @@ class _ChannelWorker(threading.Thread):
         self._stop_event = stop
         self._monitor = monitor
         self._emitters = emitters_for(spec)
+        # Mute switch. An Event is used rather than a plain bool because it is read by the
+        # sender thread and written by the control seam; set == the channel may emit.
+        self._enabled = threading.Event()
+        if spec.enabled:
+            self._enabled.set()
         self._alive = False
         self._emitted = 0
         self._build_errors = 0
@@ -380,7 +388,25 @@ class _ChannelWorker(threading.Thread):
             self._alive = False
             self._emit_status("stopped")
 
+    # -- runtime mute -------------------------------------------------------
+    @property
+    def channel_id(self) -> str:
+        return self._spec.id
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Mute or unmute this channel without touching its thread or schedule."""
+        if enabled:
+            self._enabled.set()
+        else:
+            self._enabled.clear()
+
+    def enabled(self) -> bool:
+        return self._enabled.is_set()
+
     def _loop(self) -> None:
+        # Invariant: the drift-free schedule keeps advancing while the channel is muted —
+        # ``_fire`` returns early but ``next_fire`` is still advanced below, so re-enabling
+        # resumes on the original cadence with no catch-up burst and no thread rebuild.
         start = time.monotonic()
         offsets = emission_offsets([em.period for em in self._emitters])
         for em, off in zip(self._emitters, offsets, strict=True):
@@ -401,6 +427,10 @@ class _ChannelWorker(threading.Thread):
 
     # -- emission -----------------------------------------------------------
     def _fire(self, em: _Emitter) -> None:
+        # Checked before generation so a muted channel costs nothing and suppresses every
+        # consumer at once — serial, TCP tap and the web monitor all hang off _fan_out.
+        if not self._enabled.is_set():
+            return
         state = self._shared.snapshot()
         try:
             lines = self._source.build(em.sentence, state)
@@ -448,6 +478,7 @@ class _ChannelWorker(threading.Thread):
             build_errors=self._build_errors,
             sinks=[SinkHealth(s.name, s.down, s.errors) for s in self._sinks],
             last_emit_age_s=age,
+            enabled=self._enabled.is_set(),
         )
 
 
@@ -600,6 +631,18 @@ class Engine:
     def update_state(self, **changes: object) -> VesselState:
         """Apply an external state edit (the web control seam)."""
         return self._shared.update(**changes)
+
+    def set_channel_enabled(self, channel_id: str, enabled: bool) -> bool:
+        """Mute/unmute one channel at runtime; False when no channel has that id.
+
+        Deliberately a flag write and nothing more: no worker is started, stopped or
+        rebuilt, so a toggle is cheap enough to serve straight from a request handler.
+        """
+        for worker in self._workers:
+            if worker.channel_id == channel_id:
+                worker.set_enabled(enabled)
+                return True
+        return False
 
     def health(self) -> HealthReport:
         channels = [w.health() for w in self._workers]

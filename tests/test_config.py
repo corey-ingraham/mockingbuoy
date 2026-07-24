@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from nmea_sim.config import EngineConfig, MovementSpec, TimeSourceSpec
+from nmea_sim.config import ChannelSpec, EngineConfig, MovementSpec, TimeSourceSpec
 from nmea_sim.validate import validate
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -68,6 +68,36 @@ def test_build_initial_state_new_field_defaults() -> None:
     assert state.depth_m == pytest.approx(10.0)
     assert state.sea_state == 1
     assert state.rot_dpm == pytest.approx(0.0)
+
+
+def _channel_raw(**overrides: object) -> dict[str, object]:
+    """Minimal raw channel dict (only the keys ``from_dict`` requires), plus overrides."""
+    raw: dict[str, object] = {"id": "gps", "role": "gps", "path": "none", "baud": 38400}
+    raw.update(overrides)
+    return raw
+
+
+def test_channel_enabled_defaults_to_true_when_key_absent() -> None:
+    """Configs written before per-channel toggling existed carry no ``enabled`` key; they
+    must keep emitting, so the absent key has to read as on — never as off."""
+    spec = ChannelSpec.from_dict(_channel_raw())
+    assert spec.enabled is True
+    assert ChannelSpec(id="gps", role="gps", path="none", baud=38400).enabled is True
+    # Every channel in the shipped config likewise defaults to on.
+    assert all(c.enabled is True for c in EngineConfig.load(CONFIG_PATH).channels)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_channel_enabled_round_trips_through_from_dict_and_to_dict(enabled: bool) -> None:
+    """Both serializers are hand-written, so the flag is only trustworthy if a value
+    survives the full dict -> spec -> dict -> spec cycle in both states."""
+    spec = ChannelSpec.from_dict(_channel_raw(enabled=enabled))
+    assert spec.enabled is enabled
+
+    as_dict = spec.to_dict()
+    assert as_dict["enabled"] is enabled  # emitted unconditionally, not only when False
+
+    assert ChannelSpec.from_dict(as_dict).enabled is enabled
 
 
 def test_movement_rejects_bad_hz() -> None:

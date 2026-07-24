@@ -211,6 +211,10 @@ class ChannelSpec:
     direction: str = "tx"  # tx | rx | both
     talker: str = ""
     rx_feeds_state: bool = False
+    # Startup default for the channel's runtime on/off flag. The engine owns the live
+    # value once running, so this only decides whether the channel emits from the first
+    # tick; an operator can flip it later without a restart and without touching config.
+    enabled: bool = True
     rx_accept: list[str] = field(default_factory=list)
     emit: list[EmitSpec] = field(default_factory=list)
     ais: AisSpec | None = None
@@ -229,6 +233,9 @@ class ChannelSpec:
             direction=str(data.get("direction", "tx")),
             talker=str(data.get("talker", "")),
             rx_feeds_state=bool(data.get("rx_feeds_state", False)),
+            # Absent key means "on": configs written before per-channel toggling existed
+            # must keep emitting exactly as they did.
+            enabled=bool(data.get("enabled", True)),
             rx_accept=[str(x) for x in data.get("rx_accept", [])],
             emit=[EmitSpec(str(e["sentence"]), float(e["rate_hz"])) for e in data.get("emit", [])],
             ais=AisSpec.from_dict(ais_data) if ais_data else None,
@@ -245,6 +252,7 @@ class ChannelSpec:
             "direction": self.direction,
             "talker": self.talker,
             "rx_feeds_state": self.rx_feeds_state,
+            "enabled": self.enabled,
             "rx_accept": list(self.rx_accept),
             "emit": [{"sentence": e.sentence, "rate_hz": e.rate_hz} for e in self.emit],
         }
