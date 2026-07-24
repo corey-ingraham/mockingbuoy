@@ -32,6 +32,7 @@ dev = [
 
 [project.scripts]
 mockingbuoy = "main:main"
+mockingbuoy-mon = "nmea_sim.cli_monitor:main"
 
 [tool.setuptools]
 packages = ["nmea_sim", "web"]
