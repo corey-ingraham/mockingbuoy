@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from . import budget
 from .gps_generator import SUPPORTED as _GPS_SENTENCES
 from .heading_generator import SUPPORTED as _HEADING_SENTENCES
+from .instrument_generator import SUPPORTED as _INSTRUMENT_SENTENCES
 
 if TYPE_CHECKING:
     from .config import ChannelSpec, EngineConfig
@@ -28,6 +29,7 @@ _AIS_SENTENCES = ("AIVDM", "AIVDO")
 _ROLE_SENTENCES: dict[str, tuple[str, ...]] = {
     "gps": _GPS_SENTENCES,
     "heading": _HEADING_SENTENCES,
+    "instrument": _INSTRUMENT_SENTENCES,
     "ais": _AIS_SENTENCES,
 }
 _VALID_ROLES = tuple(_ROLE_SENTENCES)

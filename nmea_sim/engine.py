@@ -34,6 +34,7 @@ from .ais_generator import AisGenerator
 from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
 from .gps_generator import GpsGenerator
 from .heading_generator import HeadingGenerator
+from .instrument_generator import InstrumentGenerator
 from .navigation import dead_reckon
 from .realism import RealismProfile, TargetSpawner
 from .seastate import sea_state_motion
@@ -72,6 +73,14 @@ class _GpsSource:
 class _HeadingSource:
     def __init__(self, talker: str) -> None:
         self._gen = HeadingGenerator(talker or "HE")
+
+    def build(self, sentence: str, state: VesselState) -> list[str]:
+        return [self._gen.build(state, (sentence,))[0]]
+
+
+class _InstrumentSource:
+    def __init__(self, talker: str) -> None:
+        self._gen = InstrumentGenerator(talker or "II")
 
     def build(self, sentence: str, state: VesselState) -> list[str]:
         return [self._gen.build(state, (sentence,))[0]]
@@ -166,6 +175,8 @@ def build_source(spec: ChannelSpec) -> SentenceSource:
         return _GpsSource(spec.talker)
     if spec.role == "heading":
         return _HeadingSource(spec.talker)
+    if spec.role == "instrument":
+        return _InstrumentSource(spec.talker)
     if spec.role == "ais":
         if spec.ais is None:
             raise ValueError(f"channel {spec.id!r} has role 'ais' but no ais config")

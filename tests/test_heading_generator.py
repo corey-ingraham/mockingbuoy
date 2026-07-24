@@ -34,6 +34,16 @@ def test_hdt_uses_true_heading_not_cog(gen: HeadingGenerator, sample_state: Vess
     assert float(parsed.heading) != pytest.approx(sample_state.cog_deg, abs=0.05)
 
 
+def test_ths_uses_true_heading_with_mode(gen: HeadingGenerator, sample_state: VesselState) -> None:
+    line = gen.ths(sample_state)
+    assert "\r" not in line and "\n" not in line
+    assert checksum.verify(line), line
+    parsed = pynmea2.parse(line)
+    assert parsed.talker == "HE"
+    assert float(parsed.heading) == pytest.approx(sample_state.heading_true_deg, abs=0.05)
+    assert parsed.mode_indicator == "A"
+
+
 def test_hdm_uses_magnetic_heading(gen: HeadingGenerator, sample_state: VesselState) -> None:
     parsed = pynmea2.parse(gen.hdm(sample_state))
     assert float(parsed.heading) == pytest.approx(sample_state.heading_mag_deg, abs=0.05)

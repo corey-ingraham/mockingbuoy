@@ -56,4 +56,4 @@ def test_bounded_null_run_completes(capsys: pytest.CaptureFixture[str]) -> None:
     # backend=null emits nowhere; --duration bounds the run so the test is deterministic.
     rc = cli.main(["--config", str(CONFIG_PATH), "--backend", "null", "--duration", "0.3"])
     assert rc == 0
-    assert "running 3 channel(s)" in capsys.readouterr().err
+    assert "running 4 channel(s)" in capsys.readouterr().err

@@ -25,7 +25,9 @@ from nmea_sim.engine import (
     Engine,
     PhysicsEngine,
     TimeSource,
+    _InstrumentSource,
     advance_next_fire,
+    build_source,
     emission_offsets,
 )
 from nmea_sim.state import VesselState
@@ -314,6 +316,45 @@ def test_ais_channel_emits_decodable_ownship() -> None:
     assert all(line.startswith("!AIVDO") for line in lines)  # own-ship uses VDO
     decoded = decode(lines[0])
     assert decoded.mmsi == 366000123
+
+
+# --- instrument source -----------------------------------------------------------
+
+
+def _checksum_ok(line: str) -> bool:
+    """Verify a `$`/`!`-framed NMEA line's XOR checksum matches its `*HH` suffix."""
+    if line[0] not in "$!" or "*" not in line:
+        return False
+    body, _, suffix = line[1:].partition("*")
+    got = 0
+    for ch in body:
+        got ^= ord(ch)
+    return f"{got:02X}" == suffix[:2].upper()
+
+
+def test_build_source_returns_instrument_source() -> None:
+    spec = ChannelSpec(
+        id="instrument",
+        role="instrument",
+        path="none",
+        baud=38400,
+        talker="II",
+        emit=[EmitSpec("VHW", 1.0)],
+    )
+    source = build_source(spec)
+    assert isinstance(source, _InstrumentSource)
+
+
+def test_instrument_source_builds_checksummed_lines() -> None:
+    state = VesselState(**_INITIAL, utc=datetime(2024, 1, 1, tzinfo=UTC))
+    source = _InstrumentSource("II")
+    for sentence in ("VHW", "ROT", "XDR"):
+        lines = source.build(sentence, state)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line[0] in "$!"
+        assert not line.endswith("\r\n")  # serial layer appends the terminator
+        assert _checksum_ok(line), line
 
 
 # --- TCP tap fan-out through the engine ------------------------------------------

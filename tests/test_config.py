@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from nmea_sim.config import EngineConfig, MovementSpec, TimeSourceSpec
+from nmea_sim.validate import validate
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -16,11 +17,25 @@ def test_load_example_config() -> None:
     cfg = EngineConfig.load(CONFIG_PATH)
     assert cfg.writer_backend == "log"
     ids = [c.id for c in cfg.channels]
-    assert ids == ["gps", "heading", "ais"]
+    assert ids == ["gps", "heading", "ais", "instrument"]
     ais = next(c for c in cfg.channels if c.role == "ais")
     assert ais.ais is not None
     assert ais.ais.include_type5 is True
     assert ais.ais.own_ship.mmsi == 366000001
+
+
+def test_load_example_config_instrument_channel() -> None:
+    cfg = EngineConfig.load(CONFIG_PATH)
+    inst = next(c for c in cfg.channels if c.id == "instrument")
+    assert inst.role == "instrument"
+    assert inst.talker == "II"
+    assert inst.baud == 38400  # 4800 is too tight for the instrument sentence set
+    emitted = [e.sentence for e in inst.emit]
+    assert emitted == ["VHW", "DPT", "MWV", "MWD", "ROT", "XDR", "RSA", "VDR", "PASHR"]
+    assert "DBT" not in emitted  # redundant with DPT
+    assert inst.tcp_tap is not None and inst.tcp_tap.enabled
+    # The whole shipped config (instrument channel included) validates cleanly.
+    assert validate(EngineConfig.load(CONFIG_PATH)) == []
 
 
 def test_build_initial_state_fills_utc() -> None:

@@ -90,6 +90,38 @@ def test_unknown_role_is_rejected() -> None:
     assert any("unknown role" in p for p in problems)
 
 
+def _instrument(**over: object) -> ChannelSpec:
+    base: dict[str, object] = {
+        "id": "instrument",
+        "role": "instrument",
+        "path": "/dev/serial/by-id/unit-i",
+        "baud": 38400,
+        "talker": "II",
+        "emit": [EmitSpec("VHW", 1.0), EmitSpec("ROT", 1.0)],
+    }
+    base.update(over)
+    return ChannelSpec(**base)  # type: ignore[arg-type]
+
+
+def test_instrument_is_a_valid_role() -> None:
+    # A well-formed instrument channel with legal sentences has no problems.
+    assert validate(_config([_instrument()])) == []
+
+
+def test_instrument_cannot_emit_gps_sentence() -> None:
+    # GGA is a GPS sentence; an instrument channel cannot build it.
+    problems = validate(_config([_instrument(emit=[EmitSpec("GGA", 1.0)])]))
+    assert any("cannot emit 'GGA'" in p for p in problems)
+
+
+def test_example_instrument_channel_fits_budget_at_38400() -> None:
+    # The shipped instrument channel emits its full sentence set at 1 Hz on 38400 8N1 —
+    # comfortably within budget (no overflow problem).
+    cfg = EngineConfig.load(CONFIG_PATH)
+    inst = next(c for c in cfg.channels if c.id == "instrument")
+    assert validate(_config([inst])) == []
+
+
 def test_gps_requires_talker() -> None:
     problems = validate(_config([_gps(talker="")]))
     assert any("requires a 'talker'" in p for p in problems)

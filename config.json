@@ -74,6 +74,29 @@
       "emit": [
         { "sentence": "AIVDM", "rate_hz": 0.2 }
       ]
+    },
+    {
+      "id": "instrument",
+      "role": "instrument",
+      "path": "/dev/serial/by-id/CHANGE-ME-instrument",
+      "baud": 38400,
+      "framing": "8N1",
+      "direction": "tx",
+      "talker": "II",
+      "rx_feeds_state": false,
+      "rx_accept": [],
+      "tcp_tap": { "enabled": true, "port": 10110 },
+      "emit": [
+        { "sentence": "VHW", "rate_hz": 1.0 },
+        { "sentence": "DPT", "rate_hz": 1.0 },
+        { "sentence": "MWV", "rate_hz": 1.0 },
+        { "sentence": "MWD", "rate_hz": 1.0 },
+        { "sentence": "ROT", "rate_hz": 1.0 },
+        { "sentence": "XDR", "rate_hz": 1.0 },
+        { "sentence": "RSA", "rate_hz": 1.0 },
+        { "sentence": "VDR", "rate_hz": 1.0 },
+        { "sentence": "PASHR", "rate_hz": 1.0 }
+      ]
     }
   ],
   "ais_targets": []

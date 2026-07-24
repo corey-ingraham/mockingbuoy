@@ -233,6 +233,36 @@ def test_headless_engine_smoke_emits_valid_gps_heading_ais() -> None:
     assert decode(ais_line).mmsi == 366000123
 
 
+# --- 1b) instrument channel through the monitor seam ------------------------------
+
+
+def test_instrument_channel_emits_through_monitor_seam() -> None:
+    instrument = ChannelSpec(
+        id="instrument",
+        role="instrument",
+        path="none",
+        baud=38400,
+        talker="II",
+        emit=[EmitSpec("VHW", 5.0), EmitSpec("ROT", 5.0), EmitSpec("XDR", 5.0)],
+    )
+    monitor = _Monitor()
+    engine = Engine(_base_config([instrument]), monitor=monitor.record)
+    engine.start()
+    try:
+        got = _wait_until(
+            lambda: any(x.startswith("$IIVHW") for x in monitor.lines_for("instrument"))
+        )
+        assert got, "expected an instrument VHW sentence within the poll window"
+    finally:
+        engine.stop()
+
+    lines = monitor.lines_for("instrument")
+    vhw = next(x for x in lines if x.startswith("$IIVHW"))
+    msg = pynmea2.parse(vhw)  # raises on a bad checksum / malformed sentence
+    assert msg.talker == "II"
+    assert msg.sentence_type == "VHW"
+
+
 # --- 2) main.py end-to-end via main(argv) -----------------------------------------
 
 
