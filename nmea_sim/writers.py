@@ -14,6 +14,7 @@ P1 provides the two hardware-free sinks: ``LogWriter`` and ``NullWriter``. P4 ad
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import sys
 from typing import Protocol, TextIO, runtime_checkable
@@ -73,6 +74,12 @@ class PtyWriter:
             raise RuntimeError("PtyWriter requires a POSIX host (os.openpty)")
         self._master, self._slave = openpty()
         self.slave_name: str = ttyname(self._slave)
+        # A fresh pty is in cooked mode, whose line discipline mangles CR/LF. A real serial
+        # port is raw (pyserial configures it so), so put the pty in raw mode too — otherwise
+        # the CRLF terminator we write would not survive to the reader.
+        tty = importlib.import_module("tty")  # POSIX-only; import guarded above
+        tty.setraw(self._master)
+        tty.setraw(self._slave)
 
     def write_line(self, line: str) -> None:
         os.write(self._master, (line + "\r\n").encode("ascii", "replace"))
