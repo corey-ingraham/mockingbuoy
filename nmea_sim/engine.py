@@ -34,6 +34,7 @@ import pynmea2
 from . import budget, rx
 from .ais_generator import AisGenerator
 from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
+from .diagnostics import CaptureSession, PortDiagnostics
 from .gps_generator import GpsGenerator, zda_from_datetime
 from .heading_generator import HeadingGenerator
 from .instrument_generator import InstrumentGenerator
@@ -52,6 +53,12 @@ from .writers import LogWriter, NullWriter, PtyWriter, Writer
 # into a position report and an optional periodic static/voyage report).
 AIS_POSITION = "AIS_POSITION"
 AIS_STATIC = "AIS_STATIC"
+
+# A single in-flight capture may carry at most this many bytes without a newline before the
+# runaway tail is flushed verbatim to the file — bounds the per-input capture residual (R28) so a
+# newline-less wire can never grow the tee buffer without limit.
+_MAX_CAPTURE_RESIDUAL = 4096
+
 
 # Shutdown sentinel pushed onto every worker inbox by ``Engine.stop``. A module-level singleton
 # so identity (``is``) comparison is unambiguous: a worker blocked in ``inbox.get`` wakes at once
@@ -659,6 +666,41 @@ class _ChannelWorker(threading.Thread):
         )
 
 
+# --- active-diagnostics port gating (R17) -----------------------------------------
+
+
+def targetable_slots(config: EngineConfig) -> set[str]:
+    """Input-slot ids eligible as an active-diagnostics target (send/loopback/baud-sweep).
+
+    The R17 rule, expressed once and shared by the engine accessor and the web layer: a slot is a
+    legal target ONLY if its :class:`InputSpec` declares ``function == "unused"`` AND no channel
+    names it in ``sources``. Everything carrying real traffic — an assigned input, an input a
+    channel draws from, an output channel — is excluded, so a bench action can never drive a wire
+    the running config depends on. Pure config read; empty when nothing qualifies.
+    """
+    referenced = {src for ch in config.channels for src in ch.sources}
+    return {
+        inp.id for inp in config.inputs if inp.function == "unused" and inp.id not in referenced
+    }
+
+
+def port_is_operational(config: EngineConfig, slot: str) -> bool:
+    """Whether ``slot`` names an operationally in-use port that an active action must refuse.
+
+    True for any output-channel id, any input slot with a real ``function`` (not ``"unused"``), or
+    any input a channel references in ``sources``. False for an unused/unreferenced input slot (a
+    legal target) and for an unknown id (which the caller still refuses as non-targetable). This is
+    the security-sensitive half of R17: an operational port is never a send/loopback/sweep target.
+    """
+    if any(ch.id == slot for ch in config.channels):
+        return True
+    referenced = {src for ch in config.channels for src in ch.sources}
+    for inp in config.inputs:
+        if inp.id == slot:
+            return inp.function != "unused" or inp.id in referenced
+    return False
+
+
 # --- the engine -------------------------------------------------------------------
 
 SinkHook = Callable[[ChannelSpec], Iterable[Writer]]
@@ -749,8 +791,20 @@ class Engine:
         # separate from ``_startables`` (the sinks) because start ORDER matters: readers must come
         # up only after their target workers are draining (R50), see ``start``.
         self._input_readers: list[SerialPort] = []
+        # AUTO-only bench diagnostics: one rolling per-input PortDiagnostics (keyed by input id,
+        # scored against that input's declared baud) fed from the reader's raw-bytes tap. Read-only
+        # — it observes the exact same chunks the dispatcher already processes and changes no
+        # emission, framing, or liveness. Empty in simulate mode, so simulate is untouched.
+        self._diagnostics: dict[str, PortDiagnostics] = {}
+        # Optional bounded raw captures, one active session per input at most (web layer enforces
+        # max-concurrent + total-data quota). Guarded because the tee runs on the reader thread
+        # while start/stop run on request handlers.
+        self._captures: dict[str, CaptureSession] = {}
+        self._capture_residual: dict[str, bytes] = {}
+        self._capture_lock = threading.Lock()
         if config.mode == "auto":
             for inp in config.inputs:
+                self._diagnostics[inp.id] = PortDiagnostics(inp.id, inp.baud)
                 self._input_readers.append(
                     SerialPort(
                         inp.path,
@@ -759,6 +813,7 @@ class Engine:
                         direction="rx",
                         read_timeout=inp.read_timeout_s,
                         on_rx=self._make_dispatch(inp.id),
+                        on_raw=self._make_raw_feed(inp.id),
                     )
                 )
 
@@ -823,6 +878,45 @@ class Engine:
                 utc = rx.parse_time(line)
             if utc is not None:
                 self._time_authority.note_time(input_id, utc, now)
+
+    def _make_raw_feed(self, input_id: str) -> Callable[[bytes], None]:
+        """Bind an input id to its PortDiagnostics + capture tee for the reader's raw-bytes tap.
+
+        Runs on the input reader thread for every chunk, before the dispatcher sees it. It only
+        folds bytes into the rolling scorer and, if a capture is armed for this slot, tees complete
+        lines into it — never touches a sink, the router, state, or liveness.
+        """
+        diag = self._diagnostics[input_id]
+
+        def feed(chunk: bytes) -> None:
+            now = time.monotonic()
+            diag.feed_bytes(chunk, now)
+            self._tee_capture(input_id, chunk, now)
+
+        return feed
+
+    def _tee_capture(self, input_id: str, chunk: bytes, now: float) -> None:
+        """Append newline-complete lines of ``chunk`` to this slot's active capture, if any.
+
+        Bounded (R28): a per-input residual holds at most one in-flight partial line, flushed
+        verbatim once it exceeds ``_MAX_CAPTURE_RESIDUAL`` (a newline-less runaway). When the
+        session trips its own byte/wall-clock cap it auto-stops and is dropped from the registry.
+        """
+        with self._capture_lock:
+            cap = self._captures.get(input_id)
+            if cap is None or not cap.active:
+                return
+            buf = self._capture_residual.get(input_id, b"") + chunk
+            *lines, residual = buf.split(b"\n")
+            if len(residual) > _MAX_CAPTURE_RESIDUAL:
+                lines.append(residual)
+                residual = b""
+            self._capture_residual[input_id] = residual
+            for line in lines:
+                if not cap.write_line(line + b"\n", now):
+                    self._captures.pop(input_id, None)
+                    self._capture_residual.pop(input_id, None)
+                    break
 
     def _rx_monitor(self, spec: ChannelSpec) -> Callable[[str], None] | None:
         """Forward a received line to the web monitor seam, tagged with the channel id."""
@@ -900,6 +994,15 @@ class Engine:
         for reader in self._input_readers:
             with contextlib.suppress(Exception):
                 reader.close()
+        # Flush + close any active raw captures so their files land intact on shutdown (the tee
+        # thread is winding down; do this after the readers stop so no further lines race in).
+        with self._capture_lock:
+            sessions = list(self._captures.values())
+            self._captures.clear()
+            self._capture_residual.clear()
+        for session in sessions:
+            with contextlib.suppress(Exception):
+                session.stop()
         deadline = time.monotonic() + timeout
         for thread in (self._physics, *self._workers):
             remaining = max(0.0, deadline - time.monotonic())
@@ -952,6 +1055,71 @@ class Engine:
                 }
             )
         return entries
+
+    def diagnostics_snapshot(self) -> list[dict[str, object]]:
+        """One rolling PortDiagnostics snapshot per input slot (read-only; auto mode only).
+
+        Ordered to match ``config.inputs``. Empty in simulate mode and whenever no inputs are
+        configured — there are no per-input scorers to report. Purely observational: reading it
+        never touches emission, the router, or state.
+        """
+        now = time.monotonic()
+        return [
+            self._diagnostics[inp.id].snapshot(now)
+            for inp in self._config.inputs
+            if inp.id in self._diagnostics
+        ]
+
+    def is_operational_port(self, slot: str) -> bool:
+        """R17 accessor: whether ``slot`` is an operational port an active action must refuse."""
+        return port_is_operational(self._config, slot)
+
+    def targetable_slots(self) -> set[str]:
+        """R17 accessor: the set of input-slot ids eligible as an active-diagnostics target."""
+        return targetable_slots(self._config)
+
+    def start_capture(
+        self, slot: str, *, data_dir: str, max_bytes: int, max_seconds: float
+    ) -> dict[str, object]:
+        """Arm a bounded raw capture on an input slot; the reader tee then fills it.
+
+        Server-owned lifecycle: the caller never supplies a filename (the session generates one
+        under ``data_dir``). Returns the session status. Idempotent — re-arming an already-active
+        slot returns the running session unchanged. Raises ``KeyError`` for a slot that is not a
+        read input (nothing feeds a capture on a port the engine does not read).
+        """
+        with self._capture_lock:
+            existing = self._captures.get(slot)
+            if existing is not None and existing.active:
+                return existing.status()
+            if slot not in self._diagnostics:
+                raise KeyError(slot)
+            session = CaptureSession(
+                slot,
+                data_dir,
+                time.monotonic(),
+                max_bytes=max_bytes,
+                max_seconds=max_seconds,
+            )
+            self._captures[slot] = session
+            self._capture_residual[slot] = b""
+            return session.status()
+
+    def stop_capture(self, slot: str) -> dict[str, object] | None:
+        """Stop and deregister the capture on ``slot``; return its final status, or None if none."""
+        with self._capture_lock:
+            session = self._captures.pop(slot, None)
+            self._capture_residual.pop(slot, None)
+        if session is None:
+            return None
+        session.stop()
+        return session.status()
+
+    def capture_status(self) -> list[dict[str, object]]:
+        """Status of every registered capture session (read-only snapshot)."""
+        with self._capture_lock:
+            sessions = list(self._captures.values())
+        return [s.status() for s in sessions]
 
     def update_state(self, **changes: object) -> VesselState:
         """Apply an external state edit (the web control seam)."""

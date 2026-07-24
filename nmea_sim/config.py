@@ -200,6 +200,48 @@ class TcpTapSpec:
 
 
 @dataclass(frozen=True)
+class VoltageSenseSpec:
+    """Optional differential line-voltage sensing for the diagnostics surface.
+
+    A wholly opt-in hardware seam: when ``enabled`` is false (the default) nothing touches an
+    ADC and the app runs identically on a box with no sensing hardware. When enabled, the
+    diagnostics layer reads idle A/B line voltages through the named ADC ``driver`` so an
+    INFERRED reversed-A/B verdict can be upgraded to a MEASURED one. The ADC library is
+    lazy-imported at use time, so this block is inert config until something actually reads it.
+
+    ``channels`` maps a logical slot id to its ADC-input wiring (opaque here — the driver
+    interprets it), and ``divider_ratio`` scales a resistor-divider'd reading back to the true
+    line voltage. This block is deliberately EXCLUDED from the persist allow-list: sensing wiring
+    is a local hardware fact, not something the running app should write back into config.
+    """
+
+    enabled: bool = False
+    driver: str = ""
+    i2c_address: int = 0
+    channels: dict[str, Any] = field(default_factory=dict)
+    divider_ratio: float = 1.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> VoltageSenseSpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            driver=str(data.get("driver", "")),
+            i2c_address=int(data.get("i2c_address", 0)),
+            channels=dict(data.get("channels", {})),
+            divider_ratio=float(data.get("divider_ratio", 1.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "driver": self.driver,
+            "i2c_address": self.i2c_address,
+            "channels": dict(self.channels),
+            "divider_ratio": self.divider_ratio,
+        }
+
+
+@dataclass(frozen=True)
 class InputSpec:
     """One physical INPUT slot a channel may draw live NMEA from in ``auto`` mode.
 
@@ -352,6 +394,10 @@ class EngineConfig:
     # Top-level INPUT-slot registry, referenced by ``ChannelSpec.sources``. Empty by default,
     # so simulate-only configs are unaffected. Inert until the router phase consumes it.
     inputs: list[InputSpec] = field(default_factory=list)
+    # Optional differential line-voltage sensing seam for diagnostics. None (the default) means
+    # "no sensing hardware", byte-identical to a config that never mentioned it. Excluded from
+    # the persist allow-list — sensing wiring is a local hardware fact, not persisted state.
+    voltage_sense: VoltageSenseSpec | None = None
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
@@ -375,6 +421,12 @@ class EngineConfig:
             # Absent -> "simulate" / empty, so configs written before this seam are unchanged.
             mode=str(data.get("mode", "simulate")),
             inputs=[InputSpec.from_dict(i) for i in data.get("inputs", [])],
+            # Absent -> None (disabled), so configs written before this seam are unchanged.
+            voltage_sense=(
+                VoltageSenseSpec.from_dict(vs)
+                if (vs := data.get("voltage_sense")) is not None
+                else None
+            ),
         )
 
     @classmethod
@@ -422,7 +474,7 @@ class EngineConfig:
     # -- serialisation ------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         """Serialise back to the JSON shape ``from_dict`` accepts (round-trips ``load``)."""
-        return {
+        out: dict[str, Any] = {
             "writer_backend": self.writer_backend,
             "movement": {"mode": self.movement.mode, "physics_hz": self.movement.physics_hz},
             "time_source": {
@@ -437,6 +489,11 @@ class EngineConfig:
             "mode": self.mode,
             "inputs": [i.to_dict() for i in self.inputs],
         }
+        # Emit "voltage_sense" only when present, so configs that never opted into the seam
+        # round-trip byte-identically.
+        if self.voltage_sense is not None:
+            out["voltage_sense"] = self.voltage_sense.to_dict()
+        return out
 
     def save(self, path: str | Path) -> None:
         """Atomically write the config as JSON.

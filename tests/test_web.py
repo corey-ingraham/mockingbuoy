@@ -841,3 +841,169 @@ def test_security_endpoint_shape_no_secret_leak(monkeypatch: pytest.MonkeyPatch)
         assert "s3cret-pass" not in raw
         assert "HASH" not in raw  # not even the env var NAME leaks
         assert "MOCKINGBUOY_APP_BASIC" not in raw
+
+
+# --- Phase C3: /api/diag* diagnostics surface --------------------------------------
+
+
+@pytest.fixture
+def auto_config(tmp_path: Path) -> Path:
+    """A tmp config in AUTO mode carrying an extra ``unused`` input slot.
+
+    Auto mode is what attaches a per-input ``PortDiagnostics`` (so ``GET /api/diag`` reports ports),
+    and the extra ``spare_in`` slot — ``function == "unused"`` and named by no channel's ``sources``
+    — is the only kind of port an active action (send/loopback/sweep) is allowed to target (R17).
+    The tolerant serial backend never opens the ``none`` device, so no hardware is needed."""
+    base = json.loads(CONFIG_PATH.read_text())
+    base["mode"] = "auto"
+    base.setdefault("inputs", []).append(
+        {"id": "spare_in", "path": "none", "function": "unused", "baud": 4800}
+    )
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(base))
+    return dest
+
+
+@pytest.fixture
+def auto_client(auto_config: Path) -> Iterator[TestClient]:
+    with TestClient(create_app(str(auto_config))) as test_client:
+        yield test_client
+
+
+_VALID_RMC = "$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A"
+
+
+def test_diag_reports_per_port_stats_when_running(auto_client: TestClient) -> None:
+    """Running in auto mode: one snapshot per input slot, each carrying the counters plus the
+    advisor's verdict/advice. With no bytes on the tolerant ports the verdict is deterministically
+    ``no-data``."""
+    resp = auto_client.get("/api/diag")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["running"] is True
+
+    ports = body["ports"]
+    assert {p["port_id"] for p in ports} == {"gps_in", "satcompass_in", "ais_in", "spare_in"}
+    for port in ports:
+        assert {"verdict", "advice", "valid", "bad_checksum", "malformed", "bus_load_pct"} <= set(
+            port
+        )
+        assert port["verdict"] == "no-data"
+
+
+def test_diag_ports_empty_when_stopped(auto_client: TestClient) -> None:
+    assert auto_client.post("/api/control", json={"action": "stop"}).status_code == 200
+    body = auto_client.get("/api/diag").json()
+    assert body["running"] is False
+    assert body["ports"] == []
+
+
+def test_diag_ports_empty_in_simulate_mode(client: TestClient) -> None:
+    """The shipped simulate config attaches no per-input scorers, so diag is empty even running."""
+    body = client.get("/api/diag").json()
+    assert body["running"] is True
+    assert body["ports"] == []
+
+
+def test_diag_decode_inspects_a_line(auto_client: TestClient) -> None:
+    resp = auto_client.post("/api/diag/decode", json={"line": _VALID_RMC})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sentence_type"] == "RMC"
+    assert body["checksum_ok"] is True
+    assert "lat" in body["fields"]
+
+
+@pytest.mark.parametrize("endpoint", ["baud-sweep", "send", "loopback"])
+def test_active_action_refused_on_operational_port(auto_client: TestClient, endpoint: str) -> None:
+    """R17 boundary: ``gps_in`` carries real traffic (a channel draws from it), so any active
+    action on it is refused 409 — a bench TX/reconfigure can never reach a live wire."""
+    payload = {"slot": "gps_in", "confirm": "gps_in"}
+    if endpoint == "send":
+        payload["line"] = _VALID_RMC
+    resp = auto_client.post(f"/api/diag/{endpoint}", json=payload)
+    assert resp.status_code == 409
+
+
+def test_active_action_requires_confirm_token(auto_client: TestClient) -> None:
+    """On a legal unused target the confirm friction still applies: missing token -> 400, a wrong
+    token -> 403; neither drives the port."""
+    missing = auto_client.post("/api/diag/loopback", json={"slot": "spare_in", "confirm": ""})
+    assert missing.status_code == 400
+
+    wrong = auto_client.post(
+        "/api/diag/loopback", json={"slot": "spare_in", "confirm": "not-the-slot"}
+    )
+    assert wrong.status_code == 403
+
+
+def test_active_action_accepted_on_unused_slot_with_confirm(auto_client: TestClient) -> None:
+    """A free unused slot with the correct confirm token is accepted; on a box with no hardware the
+    tolerant port never opens, so the probe reports it absent rather than raising."""
+    resp = auto_client.post(
+        "/api/diag/send",
+        json={"slot": "spare_in", "line": _VALID_RMC, "confirm": "spare_in"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["slot"] == "spare_in"
+    assert body["present"] is False  # no device on the dev box
+    assert body["sent"] is False
+
+
+def test_second_rapid_action_is_rejected_by_cooldown(auto_client: TestClient) -> None:
+    """Single-flight + per-slot cooldown: a first action lands, an immediate second on the same
+    slot is refused 429 (the port cannot be hammered back-to-back)."""
+    first = auto_client.post(
+        "/api/diag/baud-sweep", json={"slot": "spare_in", "confirm": "spare_in"}
+    )
+    assert first.status_code == 200
+    second = auto_client.post(
+        "/api/diag/baud-sweep", json={"slot": "spare_in", "confirm": "spare_in"}
+    )
+    assert second.status_code == 429
+
+
+def test_baud_sweep_returns_empty_scores_without_hardware(auto_client: TestClient) -> None:
+    """No per-baud capture IO is wired on the dev box, so the sweep scores an empty sample set and
+    returns ``winner=None`` (R29: no printable structure at any rate implicates wiring)."""
+    resp = auto_client.post(
+        "/api/diag/baud-sweep", json={"slot": "spare_in", "confirm": "spare_in"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ratios"] == {}
+    assert body["winner"] is None
+
+
+def test_capture_start_returns_server_generated_filename(auto_client: TestClient) -> None:
+    """Capture start hands back a server-generated filename under ``data/``; the caller never names
+    it. The generated file is cleaned up so the test leaves no artifact in the writable path."""
+    from web.app import _DIAG_DATA_DIR
+
+    resp = auto_client.post("/api/diag/capture", json={"slot": "spare_in", "action": "start"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] == "start"
+    filename = body["filename"]
+    written = Path(_DIAG_DATA_DIR) / filename
+    try:
+        # The name is server-owned: derived from the slot + a UTC timestamp, under data/ only.
+        assert filename.startswith("capture-spare_in-")
+        assert filename.endswith(".log")
+        assert "/" not in filename and "\\" not in filename
+        assert written.exists()
+    finally:
+        auto_client.post("/api/diag/capture", json={"slot": "spare_in", "action": "stop"})
+        written.unlink(missing_ok=True)
+
+
+def test_capture_rejects_caller_supplied_path(auto_client: TestClient) -> None:
+    """A caller can never smuggle a path/filename in: the request model forbids extras, so any such
+    field is a 422 before a file is ever opened (R18)."""
+    for extra in ("path", "filename", "file"):
+        resp = auto_client.post(
+            "/api/diag/capture",
+            json={"slot": "spare_in", "action": "start", extra: "/etc/passwd"},
+        )
+        assert resp.status_code == 422, f"{extra!r} should be rejected as a forbidden extra"

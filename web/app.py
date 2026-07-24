@@ -36,8 +36,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict
 
-from nmea_sim.config import EngineConfig
-from nmea_sim.engine import Engine, HealthReport
+from nmea_sim.config import EngineConfig, InputSpec
+from nmea_sim.diagnostics import decode_line, score_baud
+from nmea_sim.engine import Engine, HealthReport, port_is_operational, targetable_slots
+from nmea_sim.serialport import SerialPort
 from nmea_sim.state import VesselState
 from nmea_sim.wind import apparent_wind
 
@@ -69,6 +71,29 @@ _HEALTH_INTERVAL_S = 1.0
 #: state frame is never starved by the nmea flood under normal load. A fuller interest-filtered /
 #: latest-wins broker redesign (a separate diagnostics stream) is deferred to the diagnostics phase.
 _STATE_INTERVAL_S = 0.25
+
+#: Minimum seconds between two active diagnostics actions on the SAME slot. A deliberate friction
+#: (single-flight is enforced separately): a second action inside the cooldown is refused (429) so a
+#: bench port can't be hammered with back-to-back send/loopback/sweep drives.
+_DIAG_COOLDOWN_S = 5.0
+
+#: Where diagnostics captures are written — the sole writable path (``data/``, git-ignored). Every
+#: capture filename is SERVER-generated under here (R18); a caller can never supply a path.
+_DIAG_DATA_DIR = "data"
+
+#: At most this many raw captures may run at once (web-layer cap; per-file byte + wall-clock caps
+#: live in ``CaptureSession``, the total-``data/`` quota is checked below).
+_CAPTURE_MAX_CONCURRENT = 2
+
+#: Per-capture-file hard byte cap (handed to ``CaptureSession``; it auto-stops on reaching it).
+_CAPTURE_MAX_BYTES = 1 << 20  # 1 MiB
+
+#: Per-capture wall-clock ceiling in seconds (``CaptureSession`` auto-stops on reaching it).
+_CAPTURE_MAX_SECONDS = 300.0
+
+#: Total-``data/`` byte quota. A new capture is refused once the directory already holds this much,
+#: so runaway captures can never fill the only writable path.
+_CAPTURE_DATA_QUOTA_BYTES = 64 << 20  # 64 MiB
 
 #: Accepted numeric state-edit fields and their inclusive ``(min, max)`` ranges.
 #: ``None`` means unbounded on that side. Mirrors ``nmea_sim.validate`` where sensible.
@@ -217,6 +242,53 @@ def _input_mismatch(function: str, detected_class: str | None) -> bool:
     return False
 
 
+# --- diagnostics active-action IO (bounded, best-effort) --------------------------
+
+
+def _nmea_checksum(body: str) -> str:
+    """XOR the sentence body (between ``$`` and ``*``) into the two-hex-digit ``*HH`` suffix."""
+    cs = 0
+    for ch in body:
+        cs ^= ord(ch)
+    return f"{cs:02X}"
+
+
+def _loopback_sentence() -> str:
+    """A well-formed, vendor-neutral self-test sentence written during a loopback probe."""
+    body = "PMBLOOPBACK,1"
+    return f"${body}*{_nmea_checksum(body)}"
+
+
+def _tx_probe(path: str, baud: int, framing: str, line: str) -> dict[str, Any]:
+    """Best-effort single-line TX on a bench port, then close. Bounded and tolerant.
+
+    Uses the ordinary tolerant :class:`SerialPort`: a missing/absent device never raises — it
+    reports ``present=False`` and the write is silently dropped. On a dev box with no hardware the
+    port never opens, so ``sent`` is ``False``. Runs off the event loop (the caller offloads it).
+    The device ``path`` is consumed here and never returned (R19 info-leak hygiene).
+    """
+    port = SerialPort(path, baud, framing=framing, direction="tx")
+    port.start()
+    try:
+        port.write_line(line)
+        return {"sent": port.present, "present": port.present}
+    finally:
+        port.close()
+
+
+def _data_dir_bytes(data_dir: str) -> int:
+    """Total size in bytes of regular files directly under ``data_dir`` (0 if it does not exist)."""
+    root = Path(data_dir)
+    if not root.is_dir():
+        return 0
+    total = 0
+    for child in root.iterdir():
+        if child.is_file():
+            with contextlib.suppress(OSError):
+                total += child.stat().st_size
+    return total
+
+
 # --- control request model --------------------------------------------------------
 
 
@@ -315,6 +387,55 @@ class InitialStateRequest(BaseModel):
     mode: str | None = None
     channels: list[ChannelDefault] | None = None
     inputs: list[InputDefault] | None = None
+
+
+# --- diagnostics request models ---------------------------------------------------
+
+
+class DecodeRequest(BaseModel):
+    """Body of ``POST /api/diag/decode``. Read-only single-line inspector — no port is touched."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    line: str
+
+
+class BaudSweepRequest(BaseModel):
+    """Body of ``POST /api/diag/baud-sweep``. ``confirm`` must echo the slot id (R17 friction)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: str
+    confirm: str
+
+
+class SendRequest(BaseModel):
+    """Body of ``POST /api/diag/send``. ``confirm`` must echo the slot id (R17 friction)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: str
+    line: str
+    confirm: str
+
+
+class LoopbackRequest(BaseModel):
+    """Body of ``POST /api/diag/loopback``. ``confirm`` must echo the slot id (R17 friction)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: str
+    confirm: str
+
+
+class CaptureRequest(BaseModel):
+    """Body of ``POST /api/diag/capture``. ``action`` is ``start`` or ``stop``; the filename is
+    always server-generated under ``data/`` (R18) — a caller can never supply a path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: str
+    action: str
 
 
 # --- broker: engine threads <-> event loop <-> SSE clients -------------------------
@@ -492,6 +613,70 @@ class EngineManager:
             for inp in self._config.inputs
         ]
 
+    # -- diagnostics (read-only + gated active actions) --------------------
+    def _input_spec(self, slot: str) -> InputSpec | None:
+        """The :class:`InputSpec` for ``slot`` (or None). Its ``path`` stays internal — R19."""
+        return next((inp for inp in self._config.inputs if inp.id == slot), None)
+
+    def diagnostics_snapshot(self) -> list[dict[str, Any]]:
+        """Per-input PortDiagnostics snapshots (empty when stopped or in simulate mode)."""
+        return self._engine.diagnostics_snapshot() if self._engine is not None else []
+
+    def is_operational_port(self, slot: str) -> bool:
+        """R17 gate half: whether ``slot`` is an operational port an active action must refuse."""
+        return port_is_operational(self._config, slot)
+
+    def targetable_slots(self) -> set[str]:
+        """R17 gate half: input-slot ids eligible as an active-diagnostics target."""
+        return targetable_slots(self._config)
+
+    def baud_sweep(self, slot: str) -> dict[str, Any]:
+        """Score a baud sweep on a bench slot. No hardware retune/capture is wired on this box, so
+        the scorer runs over an empty sample set and returns ``winner=None`` (R29: no printable
+        structure at any rate implicates polarity/wiring, not baud). Real per-baud capture IO is
+        the hardware extension point."""
+        if self._input_spec(slot) is None:
+            raise KeyError(slot)
+        return score_baud({})
+
+    def send_test(self, slot: str, line: str) -> dict[str, Any]:
+        """Best-effort single-line TX on a bench slot (bounded, tolerant). Blocking — offload it."""
+        spec = self._input_spec(slot)
+        if spec is None:
+            raise KeyError(slot)
+        return _tx_probe(spec.path, spec.baud, spec.framing, line)
+
+    def loopback_test(self, slot: str) -> dict[str, Any]:
+        """TX a canned self-test sentence on a bench slot (bounded, tolerant). Blocking; offload."""
+        spec = self._input_spec(slot)
+        if spec is None:
+            raise KeyError(slot)
+        line = _loopback_sentence()
+        result = _tx_probe(spec.path, spec.baud, spec.framing, line)
+        return {"probe": "loopback", "sent_line": line, **result}
+
+    def start_capture(self, slot: str) -> dict[str, Any]:
+        """Arm a bounded raw capture (server-named file under ``data/``). Requires a running engine
+        and a slot the engine reads; raises ``RuntimeError``/``KeyError`` otherwise."""
+        if self._engine is None:
+            raise RuntimeError("engine is not running")
+        return self._engine.start_capture(
+            slot,
+            data_dir=_DIAG_DATA_DIR,
+            max_bytes=_CAPTURE_MAX_BYTES,
+            max_seconds=_CAPTURE_MAX_SECONDS,
+        )
+
+    def stop_capture(self, slot: str) -> dict[str, Any] | None:
+        """Stop + deregister the capture on ``slot``; None if none was active."""
+        if self._engine is None:
+            raise RuntimeError("engine is not running")
+        return self._engine.stop_capture(slot)
+
+    def capture_status(self) -> list[dict[str, Any]]:
+        """Status of every registered capture (empty when stopped)."""
+        return self._engine.capture_status() if self._engine is not None else []
+
     def health(self) -> dict[str, Any]:
         """Serialized health dict; ``{"status": "stopped", ...}`` when not running.
 
@@ -608,6 +793,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
     # Serializes Save-as-defaults writes so two concurrent persists can't interleave their
     # validate -> save; the atomic writer handles crash safety, this handles request concurrency.
     persist_lock = asyncio.Lock()
+    # Active-diagnostics single-flight + per-slot cooldown state. ``diag_lock`` guards both maps so
+    # the check-and-reserve is atomic across concurrent requests; ``diag_inflight`` holds slots with
+    # an action running now (reject a second with 429), ``diag_last_action`` the monotonic finish
+    # time per slot (reject a follow-up inside the cooldown with 429).
+    diag_lock = asyncio.Lock()
+    diag_inflight: set[str] = set()
+    diag_last_action: dict[str, float] = {}
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -854,6 +1046,123 @@ def create_app(config_path: str | None = None) -> FastAPI:
             # are the reverse proxy's job); report the empty set honestly, not something misleading.
             "headers": [],
         }
+
+    # -- diagnostics (Maintenance tab backend) ------------------------------
+    # R23/R25 future home: a SAMPLED live raw-diag SSE stream (~10-20 lines/s/port, its OWN stream
+    # separate from /api/stream) lands with the Maintenance UI phase. For now the monitor POLLS
+    # GET /api/diag for rolling stats; we deliberately do NOT flood /api/stream with per-line diag
+    # frames here, so the conning stream is never starved by a diagnostics flood.
+
+    def _reject_non_target(slot: str) -> None:
+        """R17 refusal for an ACTIVE action: an operational port, or any slot that is not a free
+        unused target, is refused with 409 (the port is busy/ineligible, not a malformed request).
+        This is the security boundary — a bench TX/reconfigure can never reach a live wire."""
+        if manager.is_operational_port(slot):
+            raise HTTPException(status_code=409, detail=f"slot {slot!r} is an operational port")
+        if slot not in manager.targetable_slots():
+            raise HTTPException(
+                status_code=409, detail=f"slot {slot!r} is not a free unused target"
+            )
+
+    def _check_confirm(slot: str, confirm: str) -> None:
+        """The confirm token is the slot id echoed back — a deliberate friction, never a secret.
+        Missing token -> 400; present but wrong -> 403."""
+        if not confirm:
+            raise HTTPException(status_code=400, detail="confirm token required")
+        if confirm != slot:
+            raise HTTPException(status_code=403, detail="confirm token does not match slot")
+
+    @contextlib.asynccontextmanager
+    async def _single_flight(slot: str) -> AsyncIterator[None]:
+        """Reserve ``slot`` for one in-flight action under a per-slot cooldown; release on exit.
+
+        A second concurrent action on the same slot, or a follow-up inside the cooldown, is refused
+        with 429. The check-and-reserve is atomic under ``diag_lock`` so two racing requests cannot
+        both slip through.
+        """
+        async with diag_lock:
+            now = time.monotonic()
+            if slot in diag_inflight:
+                raise HTTPException(status_code=429, detail=f"action already running on {slot!r}")
+            last = diag_last_action.get(slot)
+            if last is not None and now - last < _DIAG_COOLDOWN_S:
+                raise HTTPException(status_code=429, detail=f"slot {slot!r} in cooldown")
+            diag_inflight.add(slot)
+        try:
+            yield
+        finally:
+            async with diag_lock:
+                diag_inflight.discard(slot)
+                diag_last_action[slot] = time.monotonic()
+
+    @app.get("/api/diag")
+    async def api_diag(_: None = Depends(auth)) -> dict[str, Any]:
+        # Read-only per-input rolling diagnostics. Empty ports when stopped or in simulate mode.
+        return {"running": manager.running, "ports": manager.diagnostics_snapshot()}
+
+    @app.post("/api/diag/decode")
+    async def api_diag_decode(body: DecodeRequest, _: None = Depends(auth)) -> dict[str, Any]:
+        # Read-only single-line inspector (click-to-decode). Never touches a port; never raises.
+        return decode_line(body.line)
+
+    @app.post("/api/diag/baud-sweep")
+    async def api_diag_baud_sweep(
+        body: BaudSweepRequest, _: None = Depends(auth)
+    ) -> dict[str, Any]:
+        _reject_non_target(body.slot)
+        _check_confirm(body.slot, body.confirm)
+        async with _single_flight(body.slot):
+            result = await asyncio.to_thread(manager.baud_sweep, body.slot)
+        return {"slot": body.slot, **result}
+
+    @app.post("/api/diag/send")
+    async def api_diag_send(body: SendRequest, _: None = Depends(auth)) -> dict[str, Any]:
+        _reject_non_target(body.slot)
+        _check_confirm(body.slot, body.confirm)
+        async with _single_flight(body.slot):
+            result = await asyncio.to_thread(manager.send_test, body.slot, body.line)
+        return {"slot": body.slot, **result}
+
+    @app.post("/api/diag/loopback")
+    async def api_diag_loopback(body: LoopbackRequest, _: None = Depends(auth)) -> dict[str, Any]:
+        _reject_non_target(body.slot)
+        _check_confirm(body.slot, body.confirm)
+        async with _single_flight(body.slot):
+            result = await asyncio.to_thread(manager.loopback_test, body.slot)
+        return {"slot": body.slot, **result}
+
+    @app.post("/api/diag/capture")
+    async def api_diag_capture(body: CaptureRequest, _: None = Depends(auth)) -> dict[str, Any]:
+        # Capture is READ-ONLY recording, so it is NOT gated to unused targets (recording a live
+        # feed is legitimate) and takes no confirm token — only quotas and a server-owned filename.
+        action = body.action.strip().lower()
+        if action == "stop":
+            if not manager.running:
+                raise HTTPException(status_code=409, detail="engine is not running")
+            status = manager.stop_capture(body.slot)
+            if status is None:
+                raise HTTPException(status_code=404, detail=f"no active capture on {body.slot!r}")
+            return {"action": "stop", **status}
+        if action != "start":
+            raise HTTPException(
+                status_code=400, detail=f"action must be start|stop, got {body.action!r}"
+            )
+        if not manager.running:
+            raise HTTPException(status_code=409, detail="engine is not running")
+        # Web-layer quotas (R18): bound concurrent captures and the total data/ footprint before
+        # arming; the per-file byte + wall-clock caps are the CaptureSession's own responsibility.
+        active = [s for s in manager.capture_status() if s.get("active")]
+        if len(active) >= _CAPTURE_MAX_CONCURRENT:
+            raise HTTPException(status_code=429, detail="max concurrent captures reached")
+        if _data_dir_bytes(_DIAG_DATA_DIR) >= _CAPTURE_DATA_QUOTA_BYTES:
+            raise HTTPException(status_code=507, detail="data/ capture quota exhausted")
+        try:
+            status = await asyncio.to_thread(manager.start_capture, body.slot)
+        except KeyError:
+            raise HTTPException(
+                status_code=404, detail=f"unknown or non-read slot: {body.slot!r}"
+            ) from None
+        return {"action": "start", **status}
 
     return app
 

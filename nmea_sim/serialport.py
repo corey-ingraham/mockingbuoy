@@ -95,6 +95,7 @@ class SerialPort:
         write_timeout: float = 1.0,
         read_timeout: float = 0.5,
         on_rx: Callable[[str], None] | None = None,
+        on_raw: Callable[[bytes], None] | None = None,
         state_feed: Callable[[dict[str, float]], None] | None = None,
         rx_feeds_state: bool = False,
         rx_accept: list[str] | None = None,
@@ -108,6 +109,11 @@ class SerialPort:
         self._write_timeout = write_timeout
         self._read_timeout = read_timeout
         self._on_rx = on_rx
+        # Optional raw-bytes tap fed each chunk BEFORE line-splitting (the diagnostics seam). Left
+        # None on every existing caller, so rx/both/tx behaviour is byte-identical; only the AUTO
+        # engine attaches it to feed a per-input PortDiagnostics. It never influences framing,
+        # checksum verification, state feed, or liveness — it is a pure best-effort observer.
+        self._on_raw = on_raw
         self._state_feed = state_feed
         self._rx_feeds_state = rx_feeds_state
         self._rx_accept = list(rx_accept or [])
@@ -219,6 +225,14 @@ class SerialPort:
                 continue
             if not chunk:
                 continue
+            # Raw tap (diagnostics): hand the untouched chunk to the observer BEFORE any line
+            # splitting or checksum work, so the analyzer sees exactly what the wire delivered
+            # (partial lines, garble, reversed-pair noise). Best-effort and fully isolated — a
+            # raising or slow observer must never break or stall the reader (R28 boundedness is
+            # the observer's own responsibility, never accumulated here).
+            if self._on_raw is not None:
+                with contextlib.suppress(Exception):
+                    self._on_raw(chunk)
             buf += chunk
             while b"\n" in buf:
                 raw, _, buf = buf.partition(b"\n")
