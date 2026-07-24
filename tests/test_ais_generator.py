@@ -14,8 +14,8 @@ from nmea_sim.state import AIS_HEADING_NA, AisTarget, VesselState
 def _class_a() -> AisTarget:
     return AisTarget(
         mmsi=366000001,
-        lat=10.0,
-        lon=-40.0,
+        lat=10.2,
+        lon=-30.4,
         sog_kn=10.2,
         cog_deg=95.0,
         heading_deg=280,
@@ -32,8 +32,8 @@ def _class_a() -> AisTarget:
 def _class_b() -> AisTarget:
     return AisTarget(
         mmsi=366000002,
-        lat=10.0,
-        lon=-40.0,
+        lat=10.05,
+        lon=-30.6,
         sog_kn=5.0,
         cog_deg=100.0,
         heading_deg=AIS_HEADING_NA,
@@ -127,8 +127,8 @@ def test_heading_sentinel_survives_roundtrip() -> None:
 
 def _sample_vessel() -> VesselState:
     return VesselState(
-        lat=10.0,
-        lon=-40.0,
+        lat=10.1,
+        lon=-30.5,
         sog_kn=8.0,
         cog_deg=110.0,
         heading_true_deg=115.0,

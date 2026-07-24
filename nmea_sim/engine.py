@@ -183,6 +183,20 @@ def emitters_for(spec: ChannelSpec) -> list[_Emitter]:
     return [_Emitter(e.sentence, 1.0 / e.rate_hz) for e in spec.emit]
 
 
+def advance_next_fire(next_fire: float, period: float, now: float) -> float:
+    """Advance a per-emitter ``next_fire`` clock by one ``period``, drift-free.
+
+    Normally returns ``next_fire + period``. If the scheduler fell behind (the naive
+    advance would still be due, i.e. ``<= now``), resync to ``now + period`` instead of
+    letting the caller fire a catch-up burst — the "fell behind, resync without a burst"
+    rule shared by the physics tick and every channel worker's emission schedule.
+    """
+    advanced = next_fire + period
+    if advanced <= now:
+        return now + period
+    return advanced
+
+
 def emission_offsets(periods: list[float]) -> list[float]:
     """Deterministic start offsets that spread emissions across their periods.
 
@@ -306,9 +320,7 @@ class _PhysicsThread(threading.Thread):
             prev = now
             changes = self._physics.advance(self._shared.snapshot(), dt)
             self._shared.update(**changes)
-            next_tick += self._period
-            if next_tick <= now:  # fell behind; resync without a catch-up burst
-                next_tick = now + self._period
+            next_tick = advance_next_fire(next_tick, self._period, now)
 
 
 # --- per-channel sender -----------------------------------------------------------
@@ -366,9 +378,7 @@ class _ChannelWorker(threading.Thread):
             for em in self._emitters:
                 if em.next_fire <= now:
                     self._fire(em)
-                    em.next_fire += em.period
-                    if em.next_fire <= now:  # behind by >1 period: resync, no burst
-                        em.next_fire = now + em.period
+                    em.next_fire = advance_next_fire(em.next_fire, em.period, now)
 
     # -- emission -----------------------------------------------------------
     def _fire(self, em: _Emitter) -> None:

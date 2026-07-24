@@ -27,11 +27,12 @@ import os
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import janus
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from nmea_sim.config import EngineConfig
@@ -320,15 +321,18 @@ def _make_auth_dependency() -> Callable[..., Awaitable[None]]:
 
         return _noop
 
-    from fastapi.security import HTTPBasic, HTTPBasicCredentials
     from passlib.context import CryptContext
 
     security = HTTPBasic()
     pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-    async def _verify(
-        credentials: Annotated[HTTPBasicCredentials, Depends(security)],
-    ) -> None:
+    # `security` is captured as a default-argument value (evaluated eagerly at def time),
+    # not inside the annotation itself — with `from __future__ import annotations` every
+    # annotation is a lazily-evaluated string, and a closure-local name like `security`
+    # is not visible to that later `eval()` (which only sees module globals). Putting the
+    # `Depends(...)` call in the annotation (e.g. `Annotated[T, Depends(security)]`) would
+    # silently fail to resolve as a security dependency and mis-parse the request instead.
+    async def _verify(credentials: HTTPBasicCredentials = Depends(security)) -> None:  # noqa: B008
         user_ok = secrets.compare_digest(credentials.username, user)
         pass_ok = pwd_context.verify(credentials.password, password_hash)
         if not (user_ok and pass_ok):

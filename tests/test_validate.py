@@ -20,8 +20,8 @@ from nmea_sim.validate import ConfigError, validate, validate_or_raise
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 _STATE = {
-    "lat": 10.0,
-    "lon": -40.0,
+    "lat": 10.1,
+    "lon": -30.5,
     "sog_kn": 0.0,
     "cog_deg": 90.0,
     "heading_true_deg": 90.0,

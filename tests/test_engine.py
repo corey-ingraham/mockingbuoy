@@ -24,14 +24,15 @@ from nmea_sim.engine import (
     Engine,
     PhysicsEngine,
     TimeSource,
+    advance_next_fire,
     emission_offsets,
 )
 from nmea_sim.state import VesselState
 from nmea_sim.tcp_tap import TcpTap
 
 _INITIAL = {
-    "lat": 10.0,
-    "lon": -40.0,
+    "lat": 10.1,
+    "lon": -30.5,
     "sog_kn": 10.0,
     "cog_deg": 90.0,
     "heading_true_deg": 92.0,
@@ -121,6 +122,38 @@ def test_physics_static_holds_position() -> None:
     state = VesselState(**_INITIAL, utc=ts.initial())
     changes = physics.advance(state, dt_s=3600.0)
     assert "lat" not in changes and "lon" not in changes
+
+
+def test_advance_next_fire_accumulates_period_with_no_drift() -> None:
+    """Steady on-time ticks must accumulate exactly ``period`` each step, with zero drift
+    over many iterations (no floating point creep, no resync triggered)."""
+    period = 0.25
+    start = 100.0
+    next_fire = start
+    for i in range(1, 5000):
+        # `now` sits exactly at the previous next_fire, i.e. the scheduler is never behind.
+        now = next_fire
+        next_fire = advance_next_fire(next_fire, period, now)
+        assert next_fire == pytest.approx(start + i * period, abs=1e-9)
+
+
+def test_advance_next_fire_resyncs_once_when_far_behind() -> None:
+    """A ``now`` far past ``next_fire`` (the scheduler fell behind by many periods) resyncs
+    to exactly ``now + period`` in a single step — never a catch-up burst of missed fires."""
+    period = 1.0
+    next_fire = 10.0
+    now = 500.0  # ~490 periods behind
+    resynced = advance_next_fire(next_fire, period, now)
+    assert resynced == pytest.approx(now + period)
+
+    # A second call starting from the resynced value, with `now` unchanged, does not
+    # resync again (it advances normally by one more period).
+    again = advance_next_fire(resynced, period, now)
+    assert again == pytest.approx(resynced + period)
+
+
+def test_advance_next_fire_returns_naive_advance_when_on_time() -> None:
+    assert advance_next_fire(next_fire=10.0, period=2.0, now=9.0) == pytest.approx(12.0)
 
 
 def test_emission_offsets_spread_equal_periods() -> None:
@@ -261,11 +294,17 @@ def test_engine_fans_out_to_tcp_tap() -> None:
     engine.start()  # engine must start() I/O sinks before emission
     try:
         client = socket.create_connection(("127.0.0.1", tap.bound_port), timeout=2.0)
-        client.settimeout(2.0)
+        client.settimeout(0.5)
         buf = b""
         deadline = time.monotonic() + 2.0
         while b"\r\n" not in buf and time.monotonic() < deadline:
-            buf += client.recv(4096)
+            try:
+                chunk = client.recv(4096)
+            except TimeoutError:
+                continue
+            if not chunk:
+                break
+            buf += chunk
         client.close()
         assert b"\r\n" in buf  # the tap delivered a CRLF-terminated sentence
         assert buf.lstrip().startswith(b"$GP")

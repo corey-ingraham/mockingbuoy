@@ -51,11 +51,28 @@ def test_rx_only_port_never_transmits() -> None:
     port.close()
 
 
+def test_backoff_doubles_and_retry_time_advances() -> None:
+    """Repeated failed reopens double the backoff (capped at ``_REOPEN_MAX``) and push the
+    next-retry time forward each attempt. Platform-neutral: never opens a real device."""
+    port = SerialPort("/dev/does-not-exist-xyz", 4800, direction="tx")
+    port.start()  # first open attempt fails -> _schedule_retry already doubles once
+    assert port._backoff == pytest.approx(serialport._REOPEN_MIN * 2)
+
+    seen_backoffs = [port._backoff]
+    for _ in range(5):
+        before = time.monotonic()
+        port._next_retry = 0.0  # force the retry to be due right now, no real sleep needed
+        port._reopen_if_due()  # device still absent -> fails again, backoff doubles
+        assert port._next_retry > before  # retry time pushed into the future
+        seen_backoffs.append(port._backoff)
+
+    for prev, nxt in zip(seen_backoffs, seen_backoffs[1:], strict=False):
+        assert nxt == pytest.approx(min(prev * 2, serialport._REOPEN_MAX))
+    assert seen_backoffs[-1] == pytest.approx(serialport._REOPEN_MAX)  # saturates at the cap
+    port.close()
+
+
 # --- RX gate (deterministic, no hardware) ----------------------------------------
-
-
-def _collector() -> tuple[list, list]:
-    return [], []
 
 
 def test_rx_feeds_only_whitelisted_fields(sample_state: VesselState) -> None:
@@ -110,6 +127,34 @@ def test_rx_feeds_state_disabled_never_feeds(sample_state: VesselState) -> None:
     assert fed == []
 
 
+def test_rx_parse_error_is_counted_and_never_feeds_state(sample_state: VesselState) -> None:
+    """A valid checksum over a malformed NMEA body must count as a parse error, not a state
+    update, and must never reach the monitor via a feed callback."""
+    fed: list[dict] = []
+    seen: list[str] = []
+    port = SerialPort(
+        "unused",
+        4800,
+        direction="both",
+        rx_feeds_state=True,
+        rx_accept=["heading_true_deg"],
+        state_feed=fed.append,
+        on_rx=seen.append,
+    )
+    # A recognised talker+type (HDT) with none of its required data fields: the checksum
+    # is computed correctly over the body, but pynmea2 cannot parse the sentence itself.
+    body = "HEHDT"
+    line = "$" + body + "*" + serialport.checksum.compute(body)
+    assert serialport.checksum.verify(line)  # checksum is valid; the body is what's malformed
+
+    port._handle_rx_line(line)
+
+    assert seen == [line]  # a verified line always reaches the monitor
+    assert port.stats.rx_parse_errors == 1
+    assert port.stats.rx_state_updates == 0
+    assert fed == []  # a parse error must never feed state
+
+
 def test_rx_rejects_bad_checksum(sample_state: VesselState) -> None:
     fed: list[dict] = []
     seen: list[str] = []
@@ -148,6 +193,35 @@ def test_pty_tx_writes_crlf_terminated_lines() -> None:
         data = os.read(master, 4096)
         assert data.endswith(b"\r\n")  # CRLF on the wire, explicitly
         assert b"$GPGGA,hello" in data
+    finally:
+        port.close()
+        os.close(master)
+
+
+@posix_only
+def test_self_heals_when_device_reappears() -> None:
+    """A port opened against a dead path, then repointed at a live pty and forced to retry,
+    must reopen, resume transmitting, and record the reopen in its stats."""
+    port = SerialPort("/dev/does-not-exist-xyz", 4800, direction="tx")
+    port.start()
+    assert port.present is False
+    reopens_before = port.stats.reopens
+
+    master, slave = os.openpty()
+    slave_name = os.ttyname(slave)
+    os.close(slave)  # hand the slave to pyserial exclusively
+    try:
+        port._path = slave_name  # repoint at a now-live device
+        port._next_retry = 0.0  # force the next write to attempt a reopen immediately
+        port.write_line("$GPGGA,heal*00")
+
+        assert port.present is True
+        assert port.stats.reopens == reopens_before + 1
+
+        ready, _, _ = select.select([master], [], [], 2.0)
+        assert ready, "no bytes appeared on the pty master after self-heal"
+        data = os.read(master, 4096)
+        assert b"$GPGGA,heal" in data
     finally:
         port.close()
         os.close(master)

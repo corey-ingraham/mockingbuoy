@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import replace
 
 import pytest
 
@@ -29,6 +30,21 @@ def _bay_profile() -> RealismProfile:
         motion_model="transiting",
         class_a_fraction=0.6,
     )
+
+
+def test_region_clamp_holds_points_already_inside() -> None:
+    region = Region(min_lat=10.0, max_lat=10.5, min_lon=-30.5, max_lon=-30.0)
+    assert region.clamp(10.25, -30.25) == (10.25, -30.25)
+
+
+def test_region_clamp_pins_each_edge_to_its_boundary() -> None:
+    region = Region(min_lat=10.0, max_lat=10.5, min_lon=-30.5, max_lon=-30.0)
+    assert region.clamp(9.0, -30.25) == (10.0, -30.25)  # below min_lat
+    assert region.clamp(11.0, -30.25) == (10.5, -30.25)  # above max_lat
+    assert region.clamp(10.25, -31.0) == (10.25, -30.5)  # below min_lon
+    assert region.clamp(10.25, -29.0) == (10.25, -30.0)  # above max_lon
+    # A point outside on both axes clamps both independently.
+    assert region.clamp(20.0, -40.0) == (10.5, -30.5)
 
 
 def test_default_profile_is_area_neutral() -> None:
@@ -99,6 +115,21 @@ def test_transiting_targets_move_and_stay_in_region() -> None:
     if t.sog_kn > 0:
         assert (moved.lat, moved.lon) != (t.lat, t.lon)
     assert profile.region.contains(moved.lat, moved.lon)
+
+
+def test_transiting_target_exiting_region_is_clamped_to_boundary() -> None:
+    """A fast target driven due east for a long dt would dead-reckon outside a tiny region;
+    ``advance()`` must clamp it back onto the boundary rather than let it escape."""
+    region = Region(min_lat=10.0, max_lat=10.1, min_lon=-30.1, max_lon=-30.0)
+    profile = RealismProfile(region=region, motion_model="transiting", target_count=1)
+    spawner = TargetSpawner(profile, seed=11)
+    base = spawner.spawn(1)[0]
+    target = replace(base, lat=10.05, lon=-30.05, sog_kn=20.0, cog_deg=90.0)  # due east, fast
+
+    moved = spawner.advance(target, dt_s=36_000.0)  # ~10h at 20kn: far past the 0.1deg box
+
+    assert region.contains(moved.lat, moved.lon)
+    assert moved.lon == pytest.approx(region.max_lon)  # pinned to the eastern boundary
 
 
 def test_invalid_motion_model_rejected() -> None:

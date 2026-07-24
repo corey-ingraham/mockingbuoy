@@ -122,17 +122,30 @@ class TcpTap:
                 break
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             with self._lock:
-                self._clients = [c for c in self._clients if c.alive]
+                self._prune_dead()
                 self._clients.append(_Client(sock, self._max_queue))
+
+    def _prune_dead(self) -> list[_Client]:
+        """Drop dead clients, closing each one's socket (caller must hold ``self._lock``).
+
+        Pruning without closing would leak the accepted server-side socket until GC — so
+        each dropped client is closed here. Returns the surviving live clients.
+        """
+        live: list[_Client] = []
+        for client in self._clients:
+            if client.alive:
+                live.append(client)
+            else:
+                client.close()
+        self._clients = live
+        return live
 
     # -- Writer protocol ----------------------------------------------------
     def write_line(self, line: str) -> None:
         """Broadcast ``line`` + CRLF to every live client (drop-oldest on slow ones)."""
         data = (line + "\r\n").encode("ascii", "replace")
         with self._lock:
-            live = [c for c in self._clients if c.alive]
-            self._clients = live
-            for client in live:
+            for client in self._prune_dead():
                 client.enqueue(data)
 
     def close(self) -> None:

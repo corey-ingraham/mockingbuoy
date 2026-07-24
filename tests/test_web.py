@@ -104,6 +104,14 @@ def test_update_while_stopped_conflicts(client: TestClient) -> None:
     assert resp.status_code == 409
 
 
+def test_state_endpoint_stopped_branch(client: TestClient) -> None:
+    """``GET /api/state`` returns 200 with a minimal ``{"running": False}`` when stopped."""
+    assert client.post("/api/control", json={"action": "stop"}).status_code == 200
+    resp = client.get("/api/state")
+    assert resp.status_code == 200
+    assert resp.json() == {"running": False}
+
+
 def test_unknown_action_is_bad_request(client: TestClient) -> None:
     resp = client.post("/api/control", json={"action": "frobnicate"})
     assert resp.status_code == 400
@@ -206,8 +214,12 @@ def test_broker_drop_oldest_on_overflow() -> None:
                     # Let the pump drain the ingress queue so drops happen at the bounded
                     # per-subscriber queue (what we are testing), not at ingress.
                     await asyncio.sleep(0)
-                # Small in-process settle for the janus sync->async bridge; not timing-flaky.
-                await asyncio.sleep(0.1)
+
+                # Bounded poll for the janus sync->async bridge to settle, instead of a
+                # fixed sleep: wait until the subscriber queue has drained to exactly `cap`.
+                deadline = asyncio.get_event_loop().time() + 2.0
+                while sub.qsize() != cap and asyncio.get_event_loop().time() < deadline:
+                    await asyncio.sleep(0.01)
 
                 drained: list[str] = []
                 while not sub.empty():
@@ -247,6 +259,35 @@ def test_half_configured_basic_auth_fails_closed(monkeypatch: pytest.MonkeyPatch
         create_app(str(CONFIG_PATH))
 
 
+def test_basic_auth_verify_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When both Basic-auth env vars are set, credentials are actually checked.
+
+    No creds -> 401 with ``WWW-Authenticate: Basic``; correct user/pass -> 200; wrong
+    password -> 401. Skips if the passlib argon2 backend is unavailable in this env.
+    """
+    passlib_context = pytest.importorskip("passlib.context")
+    pwd_context = passlib_context.CryptContext(schemes=["argon2"], deprecated="auto")
+    try:
+        password_hash = pwd_context.hash("s3cret-pass")
+    except Exception as exc:  # pragma: no cover - environment without argon2 backend
+        pytest.skip(f"argon2 backend unavailable: {exc!r}")
+
+    monkeypatch.setenv("MOCKINGBUOY_BASIC_USER", "operator")
+    monkeypatch.setenv("MOCKINGBUOY_BASIC_HASH", password_hash)
+
+    app = create_app(str(CONFIG_PATH))
+    with TestClient(app) as authed_client:
+        no_creds = authed_client.get("/healthz")
+        assert no_creds.status_code == 401
+        assert no_creds.headers["www-authenticate"].lower().startswith("basic")
+
+        ok = authed_client.get("/healthz", auth=("operator", "s3cret-pass"))
+        assert ok.status_code == 200
+
+        wrong = authed_client.get("/healthz", auth=("operator", "not-the-password"))
+        assert wrong.status_code == 401
+
+
 # --- SSE subscriber cap ------------------------------------------------------------
 
 
@@ -272,14 +313,56 @@ def test_subscriber_cap_rejects_over_limit() -> None:
     asyncio.run(scenario())
 
 
+def test_broker_unsubscribe_leaves_no_leaked_subscriber() -> None:
+    """subscribe() then unsubscribe() must return the Broker's subscriber set to empty.
+
+    Exercises the same teardown path the SSE stream generator's ``finally`` clause drives
+    on client disconnect, at the Broker level (deterministic, no ASGI plumbing needed).
+    """
+
+    async def scenario() -> None:
+        broker = Broker()
+        queue: janus.Queue[dict[str, Any]] = janus.Queue(maxsize=10_000)
+        broker.bind(queue)
+
+        sub = broker.subscribe()
+        assert len(broker._subscribers) == 1
+        broker.unsubscribe(sub)
+        assert len(broker._subscribers) == 0
+
+        # Idempotent: unsubscribing an already-removed (or unknown) queue is a no-op.
+        broker.unsubscribe(sub)
+        assert len(broker._subscribers) == 0
+        broker.close()
+
+    asyncio.run(scenario())
+
+
 # --- import layering ---------------------------------------------------------------
 
 
 def test_no_tkinter_imported() -> None:
+    import ast
+    import inspect
     import sys
 
-    assert "web.app" in sys.modules or web_app is not None
+    import nmea_sim.engine as engine_module
+
     assert "tkinter" not in sys.modules
+
+    # The dependency arrow is one-way (web -> nmea_sim): the pure engine layer must never
+    # import the web framework or its ASGI server. Checked statically so it is meaningful
+    # even though ``web.app`` is already imported elsewhere in this test module.
+    tree = ast.parse(inspect.getsource(engine_module))
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_names.add(node.module.split(".")[0])
+    assert "web" not in imported_names
+    assert "uvicorn" not in imported_names
+    assert web_app is not None  # sanity: the web module itself still imports fine
 
 
 # --- clean shutdown (no leaked engine threads) -------------------------------------

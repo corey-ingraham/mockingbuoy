@@ -99,6 +99,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and the inva
 | [serial-hardware.md](docs/ref/serial-hardware.md) | USB-serial: simplex/duplex, persistent naming, latency, brltty |
 | [deployment.md](docs/ref/deployment.md) | systemd + venv + Caddy, device access, offline wheelhouse redeploy, time sync, autostart |
 | [security.md](docs/ref/security.md) | Threat model, TLS + CA trust, auth, secrets, firewall, backups |
+| [testing.md](docs/ref/testing.md) | Verification plan: CI gate, dry-run (no hardware), hardware-in-the-loop checklist, offline redeploy |
 
 ## License
 
