@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockingbuoy Monitor</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-hdr: #1c2431;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --down: #f85149;
+    --warn: #d29922;
+    --mono: ui-monospace, "Cascadia Code", "Consolas", "SFMono-Regular", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel-hdr);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 {
+    font-size: 16px;
+    margin: 0;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  header h1 .buoy { color: var(--accent); }
+  .conn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 0 rgba(0,0,0,0);
+    transition: background .3s;
+  }
+  .dot.live { background: var(--ok); }
+  .dot.dead { background: var(--down); }
+  .spacer { flex: 1; }
+  button {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--text);
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover { background: #2d333b; border-color: #484f58; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+  button.primary:hover { background: #2ea043; }
+  button.danger { background: #4b2224; border-color: #6e2c30; color: #ffb4b0; }
+  button.danger:hover { background: #612b2e; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+
+  main {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+    padding: 12px;
+  }
+  .pane {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    min-height: 320px;
+  }
+  .pane-hdr {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--panel-hdr);
+    border-bottom: 1px solid var(--border);
+  }
+  .pane-hdr .role {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .pane-hdr .role .talker { color: var(--muted); font-weight: 400; }
+  .badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: #21262d;
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .badge.gps { color: var(--accent); border-color: #1f4b7a; }
+  .badge.heading { color: var(--warn); border-color: #6b5320; }
+  .badge.ais { color: #d2a8ff; border-color: #4b3a6b; }
+
+  .stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    padding: 7px 10px;
+    font-size: 11px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: #12171f;
+  }
+  .stats b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .stat-alive.up { color: var(--ok); }
+  .stat-alive.down { color: var(--down); }
+  .sinks { display: inline-flex; gap: 6px; }
+  .sink {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .sink .dot { width: 7px; height: 7px; }
+
+  .tcp {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+    background: #12171f;
+  }
+  .tcp code {
+    font-family: var(--mono);
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: var(--accent);
+    user-select: all;
+  }
+  .tcp .label { color: var(--muted); }
+  .tcp .note { color: var(--muted); font-style: italic; }
+
+  .feed {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: 120px;
+  }
+  .feed .line { color: var(--text); }
+  .feed .line .crlf {
+    color: #56606b;
+    user-select: none;
+  }
+  .feed.frozen { opacity: 0.6; }
+
+  .pane-ctl {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-hdr);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .pane-ctl .frozen-tag { color: var(--warn); font-weight: 600; }
+
+  .controls {
+    margin: 0 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .controls h2 {
+    font-size: 13px;
+    margin: 0 0 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+  .ctl-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px 14px;
+  }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  .field input {
+    width: 110px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .msg {
+    margin-left: auto;
+    font-size: 12px;
+    min-height: 16px;
+    align-self: center;
+  }
+  .msg.err { color: var(--down); }
+  .msg.ok { color: var(--ok); }
+  .toast {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #21262d;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .25s;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="buoy">◈</span> Mockingbuoy</h1>
+  <span class="conn"><span id="sse-dot" class="dot"></span><span id="sse-label">connecting…</span></span>
+  <span class="spacer"></span>
+  <span class="conn"><span id="eng-dot" class="dot"></span><span id="eng-label">engine …</span></span>
+  <button id="btn-start" class="primary small">Start</button>
+  <button id="btn-stop" class="danger small">Stop</button>
+</header>
+
+<main id="panes"></main>
+
+<section class="controls">
+  <h2>Vessel State</h2>
+  <div class="ctl-row" id="state-form">
+    <div class="field"><label for="f-lat">Latitude</label><input id="f-lat" type="number" step="any" placeholder="lat"></div>
+    <div class="field"><label for="f-lon">Longitude</label><input id="f-lon" type="number" step="any" placeholder="lon"></div>
+    <div class="field"><label for="f-sog">SOG (kn)</label><input id="f-sog" type="number" step="any" placeholder="sog_kn"></div>
+    <div class="field"><label for="f-cog">COG (°)</label><input id="f-cog" type="number" step="any" placeholder="cog_deg"></div>
+    <div class="field"><label for="f-hdg">Heading T (°)</label><input id="f-hdg" type="number" step="any" placeholder="heading_true_deg"></div>
+    <button id="btn-apply" class="primary">Apply</button>
+    <button id="btn-load" class="small">Load current</button>
+    <span id="ctl-msg" class="msg"></span>
+  </div>
+</section>
+
+<div id="toast" class="toast"></div>
+
+<script>
+"use strict";
+(function () {
+  const MAX_LINES = 300;
+  const panesEl = document.getElementById("panes");
+  const sseDot = document.getElementById("sse-dot");
+  const sseLabel = document.getElementById("sse-label");
+  const engDot = document.getElementById("eng-dot");
+  const engLabel = document.getElementById("eng-label");
+  const ctlMsg = document.getElementById("ctl-msg");
+  const toastEl = document.getElementById("toast");
+
+  // channel_id -> { feed, frozen, badges..., stat nodes }
+  const panes = {};
+
+  function el(tag, cls, txt) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (txt != null) n.textContent = txt;
+    return n;
+  }
+
+  function toast(text) {
+    toastEl.textContent = text;
+    toastEl.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => toastEl.classList.remove("show"), 1800);
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Copied: " + text);
+    } catch (e) {
+      // Fallback for non-secure contexts / no clipboard API.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand("copy");
+        toast("Copied: " + text);
+      } catch (e2) {
+        toast("Copy failed — select manually");
+      }
+      document.body.removeChild(ta);
+    }
+  }
+
+  function buildPane(ch, tcpHost) {
+    const role = String(ch.role || ch.id || "").toLowerCase();
+    const pane = el("div", "pane");
+
+    // Header
+    const hdr = el("div", "pane-hdr");
+    const roleEl = el("div", "role");
+    roleEl.appendChild(el("span", null, ch.id));
+    if (ch.talker) {
+      const t = el("span", "talker", "  " + ch.talker);
+      roleEl.appendChild(t);
+    }
+    hdr.appendChild(roleEl);
+    hdr.appendChild(el("span", "badge " + role, role));
+    pane.appendChild(hdr);
+
+    // Stats
+    const stats = el("div", "stats");
+    const sAlive = el("span", "stat-alive", "…");
+    const sEmit = document.createElement("span");
+    sEmit.innerHTML = 'emitted <b>0</b>';
+    const sEmitVal = sEmit.querySelector("b");
+    const sErr = document.createElement("span");
+    sErr.innerHTML = 'build err <b>0</b>';
+    const sErrVal = sErr.querySelector("b");
+    const sSinks = el("span", "sinks");
+    stats.appendChild(sAlive);
+    stats.appendChild(sEmit);
+    stats.appendChild(sErr);
+    stats.appendChild(sSinks);
+    pane.appendChild(stats);
+
+    // TCP connect string
+    const tap = ch.tcp_tap;
+    if (tap && tap.enabled && tap.port) {
+      const conn = (tcpHost || "127.0.0.1") + ":" + tap.port;
+      const tcp = el("div", "tcp");
+      tcp.appendChild(el("span", "label", "TCP tap"));
+      const code = el("code", null, conn);
+      tcp.appendChild(code);
+      const btn = el("button", "small", "Copy");
+      btn.addEventListener("click", () => copyText(conn));
+      tcp.appendChild(btn);
+      tcp.appendChild(el("span", "note", "(raw TCP, not a URL)"));
+      pane.appendChild(tcp);
+    }
+
+    // Feed
+    const feed = el("div", "feed");
+    pane.appendChild(feed);
+
+    // Controls (freeze)
+    const ctl = el("div", "pane-ctl");
+    const frozenTag = el("span", "frozen-tag", "");
+    const btnFreeze = el("button", "small", "Pause");
+    const btnClear = el("button", "small", "Clear");
+    ctl.appendChild(btnFreeze);
+    ctl.appendChild(btnClear);
+    ctl.appendChild(frozenTag);
+    pane.appendChild(ctl);
+
+    const state = {
+      feed, frozen: false, count: 0,
+      sAlive, sEmitVal, sErrVal, sSinks, frozenTag, btnFreeze,
+    };
+
+    btnFreeze.addEventListener("click", () => {
+      state.frozen = !state.frozen;
+      btnFreeze.textContent = state.frozen ? "Resume" : "Pause";
+      feed.classList.toggle("frozen", state.frozen);
+      frozenTag.textContent = state.frozen ? "FROZEN (paused)" : "";
+    });
+    btnClear.addEventListener("click", () => {
+      feed.textContent = "";
+      state.count = 0;
+    });
+
+    panes[ch.id] = state;
+    panesEl.appendChild(pane);
+  }
+
+  function appendLine(chId, line) {
+    const p = panes[chId];
+    if (!p || p.frozen) return;
+    const div = el("div", "line");
+    div.appendChild(document.createTextNode(line));
+    const crlf = el("span", "crlf", "␍␊");
+    crlf.title = "\\r\\n (CR LF)";
+    div.appendChild(crlf);
+    p.feed.appendChild(div);
+    p.count++;
+    while (p.count > MAX_LINES && p.feed.firstChild) {
+      p.feed.removeChild(p.feed.firstChild);
+      p.count--;
+    }
+    // Autoscroll only if pinned near bottom.
+    const nearBottom = p.feed.scrollHeight - p.feed.scrollTop - p.feed.clientHeight < 40;
+    if (nearBottom) p.feed.scrollTop = p.feed.scrollHeight;
+  }
+
+  function applyHealth(h) {
+    if (!h || typeof h !== "object") return;
+    const stopped = h.status === "stopped" || h.ok === false && !h.channels;
+    if (h.status === "stopped") {
+      engDot.className = "dot dead";
+      engLabel.textContent = "engine stopped";
+    } else {
+      const ok = h.ok !== false;
+      engDot.className = "dot " + (ok ? "live" : "dead");
+      engLabel.textContent = ok ? "engine ok" : "engine degraded";
+    }
+    const chans = Array.isArray(h.channels) ? h.channels : [];
+    for (const c of chans) {
+      const id = c.channel_id || c.id;
+      const p = panes[id];
+      if (!p) continue;
+      const alive = c.alive !== false;
+      p.sAlive.textContent = alive ? "● alive" : "○ dead";
+      p.sAlive.className = "stat-alive " + (alive ? "up" : "down");
+      if (typeof c.emitted === "number") p.sEmitVal.textContent = c.emitted.toLocaleString();
+      if (typeof c.build_errors === "number") p.sErrVal.textContent = c.build_errors;
+      // Sinks
+      p.sSinks.textContent = "";
+      const sinks = Array.isArray(c.sinks) ? c.sinks : [];
+      if (sinks.length === 0) {
+        p.sSinks.appendChild(el("span", "sink", "no sinks"));
+      }
+      for (const s of sinks) {
+        const wrap = el("span", "sink");
+        const down = s.down === true;
+        const dot = el("span", "dot " + (down ? "dead" : "live"));
+        wrap.appendChild(dot);
+        wrap.appendChild(document.createTextNode(s.name + (s.errors ? " (" + s.errors + ")" : "")));
+        p.sSinks.appendChild(wrap);
+      }
+    }
+  }
+
+  // ---- SSE ----
+  let es = null;
+  function connectStream() {
+    es = new EventSource("/api/stream");
+    es.addEventListener("open", () => {
+      sseDot.className = "dot live";
+      sseLabel.textContent = "stream live";
+    });
+    es.addEventListener("error", () => {
+      sseDot.className = "dot dead";
+      sseLabel.textContent = "stream reconnecting…";
+    });
+    es.addEventListener("nmea", (ev) => {
+      let d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d && d.channel != null) appendLine(d.channel, d.line != null ? d.line : "");
+    });
+    es.addEventListener("health", (ev) => {
+      let d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      applyHealth(d);
+    });
+  }
+
+  // ---- Control ----
+  function setMsg(text, cls) {
+    ctlMsg.textContent = text || "";
+    ctlMsg.className = "msg" + (cls ? " " + cls : "");
+  }
+
+  async function control(body) {
+    const res = await fetch("/api/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    if (!res.ok) {
+      const detail = data && (data.detail || data.error || data.message);
+      throw new Error(detail || ("HTTP " + res.status));
+    }
+    return data;
+  }
+
+  document.getElementById("btn-start").addEventListener("click", async () => {
+    try { await control({ action: "start" }); setMsg("Engine started.", "ok"); }
+    catch (e) { setMsg("Start failed: " + e.message, "err"); }
+  });
+  document.getElementById("btn-stop").addEventListener("click", async () => {
+    try { await control({ action: "stop" }); setMsg("Engine stopped.", "ok"); }
+    catch (e) { setMsg("Stop failed: " + e.message, "err"); }
+  });
+
+  const fieldMap = {
+    lat: "f-lat", lon: "f-lon", sog_kn: "f-sog",
+    cog_deg: "f-cog", heading_true_deg: "f-hdg",
+  };
+
+  document.getElementById("btn-apply").addEventListener("click", async () => {
+    const body = { action: "update" };
+    let any = false;
+    for (const [key, id] of Object.entries(fieldMap)) {
+      const raw = document.getElementById(id).value.trim();
+      if (raw === "") continue;
+      const num = Number(raw);
+      if (!Number.isFinite(num)) { setMsg("Invalid number in " + key, "err"); return; }
+      body[key] = num;
+      any = true;
+    }
+    if (!any) { setMsg("Enter at least one field to apply.", "err"); return; }
+    try {
+      await control(body);
+      setMsg("State updated.", "ok");
+    } catch (e) {
+      setMsg("Update failed: " + e.message, "err");
+    }
+  });
+
+  async function loadCurrent() {
+    try {
+      const res = await fetch("/api/state");
+      const s = await res.json();
+      if (!s || s.running === false) { setMsg("Engine not running — no state.", "err"); return; }
+      for (const [key, id] of Object.entries(fieldMap)) {
+        if (s[key] != null) document.getElementById(id).value = s[key];
+      }
+      setMsg("Loaded current state.", "ok");
+    } catch (e) {
+      setMsg("Load failed: " + e.message, "err");
+    }
+  }
+  document.getElementById("btn-load").addEventListener("click", loadCurrent);
+
+  // ---- Bootstrap ----
+  async function init() {
+    let cfg;
+    try {
+      const res = await fetch("/api/config");
+      cfg = await res.json();
+    } catch (e) {
+      panesEl.appendChild(el("div", null, "Failed to load config: " + e.message));
+      return;
+    }
+    const tcpHost = cfg.tcp_tap_host || "127.0.0.1";
+    const channels = Array.isArray(cfg.channels) ? cfg.channels : [];
+    for (const ch of channels) buildPane(ch, tcpHost);
+    connectStream();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
