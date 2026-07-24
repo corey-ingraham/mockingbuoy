@@ -10,9 +10,9 @@ mockingbuoy is a multi-port **NMEA 0183 simulator/generator**. One Python proces
 small **web UI** over the LAN for monitoring and control.
 
 It runs as a hardened **native service** — a Python virtualenv driven by systemd, fronted by a
-natively-installed Caddy reverse proxy (TLS from an internal CA + HTTP Basic auth, app bound to
-loopback only). It needs internet **only to install**; there is **no runtime internet
-dependency**. Channels are a generic list — GPS, heading, and AIS are just three configured
+natively-installed Caddy reverse proxy (TLS from an internal CA + HTTP Basic auth, and the app bound to a
+**unix socket** — no host TCP port — that only Caddy can reach). It needs internet **only to install**;
+there is **no runtime internet dependency**. Channels are a generic list — GPS, heading, and AIS are just three configured
 channel instances, and any additional channel (for example an instrument channel) is another
 instance of the same model.
 
@@ -33,6 +33,9 @@ vessel state:
   and an **apparent + true wind rose**.
 - **Digital readouts:** SOG, STW, COG, HDG, LAT, LON, DEPTH, UTC, SEA STATE.
 
+The gauges update live from a **`state` server-sent event (~4 Hz)** carried on the same stream as the
+raw `nmea` lines and the `health` events, so the display tracks the engine without polling.
+
 Every value is tagged **LIVE / SIM / OFF** using **both colour and text** (never colour alone,
 so the display stays colourblind-safe):
 
@@ -50,7 +53,7 @@ channel is emitting and whether the data is real or simulated.
 
 Where you drive the simulation.
 
-- **Operating-mode selector:** Simulate / Auto (see *Operating Modes* below).
+- **Operating-mode selector:** Simulate / Auto / Replay (see *Operating Modes* below).
 - **Grouped manual vessel inputs:** position, SOG, COG, heading (true / mag), variation, STW,
   depth, rate-of-turn, true wind speed / direction, the **sea-state selector (0–9)**, and GPS
   detail (altitude, fix quality, satellites, HDOP).
@@ -73,7 +76,7 @@ value** — it never renders a secret. See *Security Posture* below.
 
 ## Operating Modes
 
-Set the mode on the Config tab. The choice applies per run and is one of two:
+Set the mode on the Config tab. The choice applies per run and is one of three:
 
 ### Simulate
 
@@ -94,6 +97,14 @@ Input lines are classified by **sentence class** (gnss / heading / ais) and rout
 correct output from a **per-output source-priority list**; if no live source satisfies an
 output, that output simulates. Use Auto when you have real gear on the bench and want
 mockingbuoy to relay it, fill the gaps, and give you one unified live/sim picture.
+
+### Replay
+
+Re-inject a **captured NMEA file** so a recorded session drives the outputs and the web display exactly
+as a live source would. Replay runs the file back through the **same single writer path** the live modes
+use — so downstream a recording is indistinguishable from a real source, and there is no separate playback
+engine to behave differently. Use Replay to reproduce a captured scenario deterministically for
+regression or demo.
 
 ## GPS Position, Time Routing, and Priorities
 
@@ -141,9 +152,10 @@ Config tab's per-channel enable checkbox and it takes effect **without an engine
 start.
 
 The optional **instrument channel** (talker **II**) carries the derived instrument data:
-VHW, DPT, DBT, MWV (apparent), MWD (true), ROT, XDR, plus realism sentences GSA / GSV / MTW /
-THS / RSA / VDR / `$PASHR`. Its values (pitch, roll, STW, depth, rate-of-turn, true wind, rudder
-angle, set/drift) come from the shared vessel state; apparent wind is derived from vessel motion.
+VHW, DPT, DBT, MWV (apparent), MWD (true), ROT, XDR, RSA, VDR, and `$PASHR`. Its values (pitch, roll,
+STW, depth, rate-of-turn, true wind, rudder angle, set/drift) come from the shared vessel state; apparent
+wind is derived from vessel motion (SOG at COG, not heading). The **THS** sentence (true heading + status)
+rides the **heading channel** (talker **HE**) alongside HDT / HDG / HDM, not the instrument channel.
 
 ### The sea-state selector
 
@@ -262,8 +274,8 @@ by value** — it **never renders a secret**. It shows:
 
 - **TLS active** (served from the internal CA).
 - **Which auth layers are enabled** — reported by presence only, never the credential itself.
-- **Loopback-only app bind** (the engine publishes no host port; Caddy reaches it over
-  localhost).
+- **Unix-socket app bind** (the engine publishes no host TCP port; Caddy reaches it over a local
+  unix socket).
 - **TCP-tap ports**, **subscriber count / cap**, **uptime**, and the active **security headers**.
 
 The **primary login is rotated at the host, not in the browser** — you change the web password
@@ -272,3 +284,21 @@ password-change form because nothing secret is ever surfaced there. Underneath, 
 with systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, an empty
 `CapabilityBoundingSet`, explicit `DeviceAllow` rules, a `SystemCallFilter`), and dependencies
 are hash-locked with an offline wheelhouse for rebuild-free redeploy.
+
+## Under the Hood: the HTTP Surface
+
+You never need these to operate the UI, but scripted clients and `mockingbuoy-mon` (attach mode) use
+them. The live stream is `GET /api/stream` (SSE: `nmea` / `health` / `state` events). Everything the tabs
+do maps to a small endpoint set:
+
+- **`POST /api/control`** — the Config-tab actions: `start` / `stop`, `update` (vessel params),
+  `channel` (per-channel enable), `route` (mode + source routing), and `fault` (GPS-fault injection,
+  simulate-only).
+- **`POST /api/config/initial-state`** — *Save as defaults* (allow-listed → `data/config.local.json`).
+- **`GET /api/inputs`** — the sensed/assigned input slots and their function.
+- **`GET /api/security`** — the Security tab's posture booleans (never a secret).
+- **`GET /api/diag`** + **`POST /api/diag/decode`** — the Maintenance snapshot and click-to-decode;
+  the transmit-capable diagnostics (`/api/diag/baud-sweep` \| `send` \| `loopback` \| `capture`) are
+  **gated** (opt-in, confirmed, non-operational port only).
+
+Full detail (SSE events, the bridge, layering) → [architecture.md](ref/architecture.md).

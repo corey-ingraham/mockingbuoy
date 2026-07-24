@@ -11,11 +11,27 @@ host) and needs no desktop.
 ## What it does
 
 - **GPS** channel — `GGA`, `RMC`, `VTG`, `ZDA` (+ `GLL`), `GP` talker
-- **Heading** channel — `HDT` (+ `HDG`/`HDM`), `HE` talker
+- **Heading** channel — `HDT` (+ `HDG`/`HDM`/`THS`), `HE` talker
+- **Instrument** channel — motion/environment suite `VHW`, `DPT`, `DBT`, `MWV` (apparent wind),
+  `MWD` (true wind), `ROT`, `XDR`, `RSA`, `VDR`, `$PASHR`, `II` talker
 - **AIS** channel — `!AIVDM`/`!AIVDO` (own-ship + optional simulated targets), via a proven encoder
-- One shared vessel state keeps position, course, speed, and heading **synchronized** across all channels
-- **Static** or **moving** modes (geodetically-correct dead reckoning)
-- Runtime control from the browser — edit position/course/speed/heading/AIS without restarting
+- One shared vessel state keeps position, course, speed, heading, **speed-through-water, depth, wind,
+  rate-of-turn, rudder, and set/drift synchronized** across all channels; apparent wind is derived from
+  true wind + vessel motion so the two can never disagree
+- **Sea-state motion model (WMO 0–9)** — pitch/roll are derived so the hull is always gently in motion,
+  never a dead-flat "stuck sensor"
+- **Static** or **moving** modes (geodetically-correct dead reckoning); route/waypoint playback
+- **Three operating modes** — **simulate** (fully synthetic), **auto** (priority-routed *verbatim*
+  passthrough of real NMEA on physical inputs with sentence-class cross-routing and seamless failover to
+  generation on input loss), and **replay** (re-inject a captured NMEA file through the same writer path)
+- **Conning display** — glanceable SVG gauges (compass, rate-of-turn, inclinometer, wind rose) with
+  colourblind-safe **LIVE / SIM / OFF** provenance tagging on every value
+- **Per-channel runtime toggle** — enable/disable any output channel live, no restart, with a persisted
+  default
+- **Maintenance diagnostics** — a bench NMEA workbench (multi-port monitor, per-port stats, auto-baud
+  sweep, click-to-decode, and a guided fault advisor that infers causes like a reversed A/B pair),
+  plus **`mockingbuoy-mon`**, a web-free CLI peer to the same diagnostics core for headless/SSH/DR use
+- Runtime control from the browser — edit position/course/speed/heading/AIS/instruments without restarting
 - **Hardware-agnostic:** any USB-serial adapter; each channel is **simplex (TX) or full-duplex (TX+RX)**
   purely by config. RX (where enabled) parses inbound sentences and can optionally feed the sim state.
 

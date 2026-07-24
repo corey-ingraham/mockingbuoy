@@ -215,9 +215,10 @@ deployment surface).
 ## Instrument channel and true→apparent wind
 
 **Decision** Add an optional `instrument` channel (talker `II`) that emits the motion/environment
-sentence set — `VHW`, `DPT`, `DBT`, `MWV` (apparent), `MWD` (true), `ROT`, `XDR`, plus realism
-sentences `GSA`/`GSV`/`MTW`/`THS`/`RSA`/`VDR`/`$PASHR` — and derive **apparent** wind from **true**
-wind plus vessel motion rather than storing both independently.
+sentence set — `VHW`, `DPT`, `DBT`, `MWV` (apparent), `MWD` (true), `ROT`, `XDR`, `RSA`, `VDR`, `$PASHR`
+— and derive **apparent** wind from **true** wind plus vessel motion rather than storing both
+independently. `THS` (true heading + status) rides the **heading** channel (talker `HE`) alongside
+HDT/HDG/HDM, not the instrument channel — it is a heading sentence.
 
 **Context** A realistic bench source needs speed-through-water, depth, rate-of-turn, wind, rudder
 angle, and set/drift, not just position and heading. Wind in particular has a true and an apparent
@@ -279,28 +280,35 @@ transient toggle would quietly rewrite boot behavior).
 
 ---
 
-## Two operating modes: Simulate and Auto (priority-routed passthrough)
+## Three operating modes: Simulate, Auto (priority-routed passthrough), and Replay
 
-**Decision** Offer two modes. **Simulate** is always-synthetic per channel. **Auto** senses a real
-NMEA input on each channel: valid live NMEA passes through verbatim to the matching output and updates
-the web display; on loss the channel seamlessly falls back to simulating. Auto is a **priority-routed
-passthrough** — input lines are classified by sentence class (`gnss`/`heading`/`ais`) and routed to
-the correct output per a per-output source-priority list, else the channel simulates.
+**Decision** Offer three modes (`mode` in `{simulate, auto, replay}`). **Simulate** is always-synthetic
+per channel. **Auto** senses a real NMEA input on each channel: valid live NMEA passes through verbatim
+to the matching output and updates the web display; on loss the channel seamlessly falls back to
+simulating. Auto is a **priority-routed passthrough** — input lines are classified by sentence class
+(`gnss`/`heading`/`ais`) and routed to the correct output per a per-output source-priority list, else the
+channel simulates. **Replay** re-injects a captured NMEA file back through the **same single-writer worker
+path** the live modes use, so a recorded session drives the outputs and the web display identically.
 
 **Context** The tool is used both as a pure generator (bench, demo, no real sensors) and as an
 inline realism aid alongside real electronics, where genuine sensor data should pass through untouched
-and synthetic data should fill only the gaps.
+and synthetic data should fill only the gaps — and, separately, to reproduce a previously-captured
+session deterministically for regression and demo.
 
 **Why** Passing valid live NMEA through **verbatim** means a real sensor's exact bytes reach the
 consumer — the simulator never becomes a lossy transcoder of real data. Classifying by sentence class
 and routing per an explicit priority list lets one physical input feed the correct logical output (and
 supports cross-routing, below) while a clean fallback to simulation keeps every output alive across a
-sensor dropout. Simulate mode stays a simple, fully-synthetic path for the no-hardware case.
+sensor dropout. Simulate mode stays a simple, fully-synthetic path for the no-hardware case. Replay reuses
+the **one** writer path rather than a second emit route, so a captured file is indistinguishable
+downstream from a live source and there is no parallel code path to drift — a recording is just another
+line source feeding the single writer.
 
 **Alternatives rejected** A single mode that always simulates (cannot pass real data through); blind
 input→output patching without sentence-class routing (a mixed-content input could not fan its sentence
 classes to their correct outputs); dropping outputs on sensor loss instead of falling back (consumers
-would see a dead bus).
+would see a dead bus); a separate playback engine for replay (a divergent second emit path that could
+drift from live behavior — reusing the single writer keeps replay byte-faithful).
 
 **Date** 2026-07-24
 

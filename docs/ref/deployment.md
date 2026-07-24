@@ -55,9 +55,16 @@ Two native systemd services:
   from the venv, as the non-login `mockingbuoy` user (member of `dialout` for serial). Hardened with
   systemd sandboxing — drop privileges, make the filesystem read-only, and cap resources: `NoNewPrivileges`,
   `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, empty `CapabilityBoundingSet`, restricted address
-  families, `MemoryMax`/`TasksMax`, `Restart=on-failure`, `ReadWritePaths=/opt/mockingbuoy/data`. The
-  app binds **loopback only**; Caddy reaches it over localhost. No host port is published by the app.
-- **`caddy.service`** (native package) — TLS termination + Basic auth (see security.md). Has
+  families, `MemoryMax`/`TasksMax`, `Restart=on-failure`, `ReadWritePaths=/opt/mockingbuoy/data`. Device
+  access is confined by the **activated cgroup device controller** — an explicit `DeviceAllow=` allowlist,
+  nothing else on `/dev`. The app binds a **unix socket** (`unix//run/mockingbuoy/app.sock`, owned by the
+  service user, group-shared with Caddy at mode `0660`); Caddy reaches it over that socket. **No host TCP
+  port is published by the app.**
+  > **⚠ Validate on target hardware:** the unix-socket bind + Caddy-over-socket wiring is **not yet
+  > validated on the target hardware**. On first deploy, confirm the socket path, its ownership/group and
+  > `0660` perms, and that Caddy can proxy to it before treating the socket path as proven.
+- **`caddy.service`** (native package) — TLS termination + Basic auth (see security.md), with the **admin
+  API disabled** (`admin off`), so a config change is a **restart**, not an API reload. Has
   `cap_net_bind_service` to bind 443 and publishes `<LAN_IP>:443` only.
 
 > **Serial gotcha:** do **not** set `PrivateDevices=yes` on the service — it hides `/dev/tty*`. Grant
@@ -71,13 +78,34 @@ also creates friendly `/dev/nmea-*` symlinks). Because it is a native process, d
 and the port's tolerant open picks it back up. Point each channel's `path` at `/dev/serial/by-id/...`
 (or `/dev/nmea-*`).
 
-Grant the device nodes to the service in the unit:
+Grant the device nodes to the service in the unit (outputs, plus the input slots used by Auto/replay, plus
+— only if enabled — the ADC I2C bus):
 ```ini
 DeviceAllow=/dev/nmea-gps rw
 DeviceAllow=/dev/nmea-heading rw
 DeviceAllow=/dev/nmea-ais rw
+DeviceAllow=/dev/nmea-instrument rw
+DeviceAllow=/dev/nmea-in-1 rw
+DeviceAllow=/dev/nmea-in-2 rw
+# … one per input slot in use (nmea-in-1 … nmea-in-6)
+# DeviceAllow=/dev/i2c-1 rw   # only if the optional ADC voltage-sense add-on is enabled
 SupplementaryGroups=dialout
 ```
+
+### Input slots (Auto / replay)
+
+Auto and replay read real NMEA on physical **input** slots. `setup.sh` provisions stable by-id udev
+symlinks `/dev/nmea-in-1 … /dev/nmea-in-6`; grant each one in use with a `DeviceAllow=` line as above.
+Wire each input through an **isolated, listen-only** RS-422 adapter — NMEA 0183 is a differential A/B bus,
+so a listen-only isolated tap lets the tool read a live bus without driving or ground-looping it (wiring +
+grounding detail → security.md).
+
+### Optional ADC voltage-sense add-on
+
+The Maintenance diagnostics can optionally read A/B voltages via a small ADC (e.g. ADS1115 over I2C) to
+*confirm* an electrical fault. It is off unless configured. A **protective analog front-end is required
+before tapping A/B**, and the unit grants only the specific I2C bus (`DeviceAllow=/dev/i2c-1 rw`). The app
+runs fine with no ADC present. Config + safety detail → security.md.
 
 ## Time / clock
 

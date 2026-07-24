@@ -38,6 +38,20 @@ jobs:
       - name: Pytest
         run: pytest
 
+      # Public-artifact scrub gate (R39). Scans TRACKED files for tokens that must never
+      # appear in this repo: assistant/tooling references, offline-framing phrases, and a
+      # stray codename. Policy is placeholders + a short accepted-exceptions list (repo-owner
+      # handle, ftdi_sio, Airmar) which these narrow patterns do not match, so the scan stays
+      # green on a clean tree. This workflow file is excluded because it necessarily embeds
+      # the token list below. git grep exits 1 when it finds nothing, so we invert it: any
+      # match => fail the build; no match => pass.
+      - name: Scrub scan (banned tokens)
+        run: |
+          if git grep -nEi 'claude|anthropic|co-authored-by|ai-generated|air[ -]?gap|safe to unplug|monterey' -- . ':(exclude).github/workflows/ci.yml'; then
+            echo "::error::Scrub scan found banned token(s) above. Use placeholders (see R39)."
+            exit 1
+          fi
+
       # Advisory dependency-CVE scan. continue-on-error so a newly-disclosed upstream
       # advisory surfaces as an annotation without blocking unrelated PRs; review the log.
       - name: pip-audit (advisory)
