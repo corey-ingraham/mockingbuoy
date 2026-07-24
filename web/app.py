@@ -299,19 +299,24 @@ class EngineManager:
 def _make_auth_dependency() -> Callable[..., Awaitable[None]]:
     """Return an auth dependency.
 
-    If both ``MOCKINGBUOY_BASIC_USER`` and ``MOCKINGBUOY_BASIC_HASH`` (a passlib argon2
-    hash) are set, verify HTTP Basic credentials; otherwise a no-op. Caddy remains the
-    primary auth layer — no credential is ever embedded here.
+    This is an OPTIONAL defense-in-depth layer, off by default. Caddy is the primary auth
+    layer. These env vars are deliberately distinct from Caddy's ``MOCKINGBUOY_BASIC_*``
+    (which carry a *bcrypt* hash from ``caddy hash-password``): if the app reused those, the
+    service would load Caddy's credential and try to verify a bcrypt hash with the argon2
+    scheme below, rejecting every already-Caddy-authenticated request. To turn this layer on,
+    set both ``MOCKINGBUOY_APP_BASIC_USER`` and ``MOCKINGBUOY_APP_BASIC_HASH`` — a passlib
+    **argon2** hash (``from passlib.hash import argon2; argon2.hash("...")``). No credential
+    is ever embedded here.
     """
-    user = os.environ.get("MOCKINGBUOY_BASIC_USER")
-    password_hash = os.environ.get("MOCKINGBUOY_BASIC_HASH")
+    user = os.environ.get("MOCKINGBUOY_APP_BASIC_USER")
+    password_hash = os.environ.get("MOCKINGBUOY_APP_BASIC_HASH")
 
     # Fail closed on a half-configured auth: setting exactly one env var must NOT silently
     # serve every endpoint unauthenticated while the operator believes Basic is enabled.
     if bool(user) != bool(password_hash):
         raise RuntimeError(
-            "in-app Basic auth is half-configured: set BOTH MOCKINGBUOY_BASIC_USER and "
-            "MOCKINGBUOY_BASIC_HASH, or neither"
+            "in-app Basic auth is half-configured: set BOTH MOCKINGBUOY_APP_BASIC_USER and "
+            "MOCKINGBUOY_APP_BASIC_HASH, or neither"
         )
 
     if not user or not password_hash:

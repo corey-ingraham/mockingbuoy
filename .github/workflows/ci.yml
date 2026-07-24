@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: no job needs write access to the repo.
+permissions:
+  contents: read
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
@@ -33,3 +37,11 @@ jobs:
 
       - name: Pytest
         run: pytest
+
+      # Advisory dependency-CVE scan. continue-on-error so a newly-disclosed upstream
+      # advisory surfaces as an annotation without blocking unrelated PRs; review the log.
+      - name: pip-audit (advisory)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit --strict --desc || true

@@ -26,6 +26,9 @@ setup.env
 images/
 *.tar
 config.local.json
+# Offline redeploy wheel cache — third-party binaries, never commit
+wheelhouse/
+*.whl
 
 # Private area-realism work — NEVER commit (local-only data, profiles, tooling)
 private/

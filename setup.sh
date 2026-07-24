@@ -260,8 +260,10 @@ else
     # so a fixed 48-byte source would average only ~12). `|| true` absorbs tr's SIGPIPE.
     _pw="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 24 || true)"
     [ "${#_pw}" -eq 24 ] || die "failed to generate a 24-char password"
-    # Feed the plaintext via stdin, not argv (argv is world-readable in /proc/<pid>/cmdline).
-    _hash="$(printf '%s' "${_pw}" | caddy hash-password 2>/dev/null || caddy hash-password --plaintext "${_pw}")"
+    # Feed the plaintext via stdin, never argv (argv is world-readable in /proc/<pid>/cmdline).
+    # No --plaintext fallback: that would put the secret on the command line. Fail instead.
+    _hash="$(printf '%s' "${_pw}" | caddy hash-password 2>/dev/null || true)"
+    [ -n "${_hash}" ] || die "caddy hash-password failed (need Caddy v2 with stdin support)"
     # Append the hash to the file (never echoed to the terminal/journal).
     printf 'MOCKINGBUOY_BASIC_HASH="%s"\n' "${_hash}" >> "${SVC_ENV}"
     chmod 0600 "${SVC_ENV}"

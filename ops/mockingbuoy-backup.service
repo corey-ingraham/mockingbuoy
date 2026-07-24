@@ -29,7 +29,12 @@ User=mockingbuoy
 Group=mockingbuoy
 
 # MOCKINGBUOY_BACKUP_DEST=<rsync destination> (LAN share, e.g. user@host:/path, or a
-# locally-mounted share). Note: for an rsync-over-ssh destination the service user's
+# locally-mounted share). This backup carries SENSITIVE material — the Caddy root CA
+# private key and the Basic-auth hash — so use an ENCRYPTED transport (rsync-over-ssh,
+# user@host:/path) and a destination readable only by you. Avoid clear rsync-daemon
+# (host::module) or world-readable mounts. For stricter DR, exclude the CA private key
+# and re-mint it on restore, or encrypt the backup at rest.
+# Note: for an rsync-over-ssh destination the service user's
 # ~/.ssh must be reachable — set the user's home to /opt/mockingbuoy (not under /home,
 # which ProtectHome=true hides) or use a mounted-share destination path.
 EnvironmentFile=-/opt/mockingbuoy/secrets/service.env

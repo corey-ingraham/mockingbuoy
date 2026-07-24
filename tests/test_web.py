@@ -247,14 +247,14 @@ def test_broker_drop_oldest_on_overflow() -> None:
 
 def test_half_configured_basic_auth_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Setting exactly one of the two Basic-auth env vars must raise, not silently disable."""
-    monkeypatch.setenv("MOCKINGBUOY_BASIC_USER", "operator")
-    monkeypatch.delenv("MOCKINGBUOY_BASIC_HASH", raising=False)
+    monkeypatch.setenv("MOCKINGBUOY_APP_BASIC_USER", "operator")
+    monkeypatch.delenv("MOCKINGBUOY_APP_BASIC_HASH", raising=False)
     with pytest.raises(RuntimeError, match="half-configured"):
         create_app(str(CONFIG_PATH))
 
     # The symmetric case (hash without user) also fails closed.
-    monkeypatch.delenv("MOCKINGBUOY_BASIC_USER", raising=False)
-    monkeypatch.setenv("MOCKINGBUOY_BASIC_HASH", "$argon2id$dummy")
+    monkeypatch.delenv("MOCKINGBUOY_APP_BASIC_USER", raising=False)
+    monkeypatch.setenv("MOCKINGBUOY_APP_BASIC_HASH", "$argon2id$dummy")
     with pytest.raises(RuntimeError, match="half-configured"):
         create_app(str(CONFIG_PATH))
 
@@ -272,8 +272,8 @@ def test_basic_auth_verify_path(monkeypatch: pytest.MonkeyPatch) -> None:
     except Exception as exc:  # pragma: no cover - environment without argon2 backend
         pytest.skip(f"argon2 backend unavailable: {exc!r}")
 
-    monkeypatch.setenv("MOCKINGBUOY_BASIC_USER", "operator")
-    monkeypatch.setenv("MOCKINGBUOY_BASIC_HASH", password_hash)
+    monkeypatch.setenv("MOCKINGBUOY_APP_BASIC_USER", "operator")
+    monkeypatch.setenv("MOCKINGBUOY_APP_BASIC_HASH", password_hash)
 
     app = create_app(str(CONFIG_PATH))
     with TestClient(app) as authed_client:
