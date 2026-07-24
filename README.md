@@ -32,7 +32,7 @@ host) and needs no desktop.
 On a fresh Linux host (Raspberry Pi or any Debian/Ubuntu box), run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/corey-ingraham/mockingbuoy/main/bootstrap.sh | sudo bash
 ```
 
 `bootstrap.sh` installs `git`+`curl`, clones this repo, and hands off to `setup.sh`, which

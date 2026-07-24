@@ -8,7 +8,7 @@ two systemd units — nothing else to build or ship.
 
 On the target host (needs internet only to install apt packages + Python wheels):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/corey-ingraham/mockingbuoy/main/bootstrap.sh | sudo bash
 ```
 `bootstrap.sh` installs `git`+`curl`, clones the repo into `/opt/src/mockingbuoy` (idempotent: it
 `git pull`s if the clone already exists), and execs `./setup.sh`, which (idempotently):

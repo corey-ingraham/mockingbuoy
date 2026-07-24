@@ -3,7 +3,7 @@
 # bootstrap.sh — one-command entrypoint fetched on a fresh host.
 #
 # Canonical install one-liner:
-#   curl -fsSL https://raw.githubusercontent.com/<you>/mockingbuoy/main/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/corey-ingraham/mockingbuoy/main/bootstrap.sh | sudo bash
 #
 # It gets the repo onto the box and hands off to setup.sh, which does the real
 # provisioning (venv + native Caddy + systemd, CA + one-time web password). The
@@ -14,7 +14,7 @@
 #
 set -euo pipefail
 
-REPO_URL="${MOCKINGBUOY_REPO_URL:-https://github.com/<you>/mockingbuoy}"
+REPO_URL="${MOCKINGBUOY_REPO_URL:-https://github.com/corey-ingraham/mockingbuoy}"
 SRC_DIR="${MOCKINGBUOY_SRC_DIR:-/opt/src/mockingbuoy}"
 
 # --- must run as root ---------------------------------------------------------
