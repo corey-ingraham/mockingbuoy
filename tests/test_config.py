@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from nmea_sim.config import ChannelSpec, EngineConfig, MovementSpec, TimeSourceSpec
+from nmea_sim.config import (
+    ChannelSpec,
+    EngineConfig,
+    InputSpec,
+    MovementSpec,
+    TimeSourceSpec,
+)
 from nmea_sim.validate import validate
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -98,6 +104,115 @@ def test_channel_enabled_round_trips_through_from_dict_and_to_dict(enabled: bool
     assert as_dict["enabled"] is enabled  # emitted unconditionally, not only when False
 
     assert ChannelSpec.from_dict(as_dict).enabled is enabled
+
+
+# --- operating mode (B3a config seam) ---------------------------------------------
+
+
+def test_mode_defaults_to_simulate() -> None:
+    """Every config written before the auto-mode seam existed carries no ``mode`` key; the
+    absent key must read as today's behaviour, never silently arm passthrough."""
+    assert EngineConfig().mode == "simulate"
+    assert EngineConfig.from_dict({}).mode == "simulate"
+    assert EngineConfig.load(CONFIG_PATH).mode == "simulate"
+
+
+def test_mode_round_trips_auto_through_from_dict_and_to_dict() -> None:
+    cfg = EngineConfig(mode="auto")
+    assert cfg.to_dict()["mode"] == "auto"
+    assert EngineConfig.from_dict(cfg.to_dict()).mode == "auto"
+
+
+def test_unknown_mode_rejected_by_dataclass_guard() -> None:
+    # "replay" is planned for a later phase but the engine cannot honour it yet, so the guard
+    # must refuse it rather than let a silently-unhonoured mode through.
+    with pytest.raises(ValueError):
+        EngineConfig(mode="replay")
+
+
+# --- InputSpec (B3a config seam) --------------------------------------------------
+
+
+def test_input_spec_defaults_when_optional_keys_absent() -> None:
+    """Only ``id`` and ``path`` are required; the rest take the documented defaults."""
+    spec = InputSpec.from_dict({"id": "gps_in", "path": "none"})
+    assert spec.function == "unused"
+    assert spec.baud == 4800
+    assert spec.framing == "8N1"
+    assert spec.liveness_timeout_s == pytest.approx(3.0)
+    assert spec.read_timeout_s == pytest.approx(0.03)
+
+
+def test_input_spec_all_fields_round_trip() -> None:
+    """Both serializers are hand-written, so every field is only trustworthy once a fully
+    populated value survives the dict -> spec -> dict -> spec cycle unchanged."""
+    raw = {
+        "id": "satcompass_in",
+        "path": "/dev/serial/by-id/unit-sat",
+        "function": "sat",
+        "baud": 38400,
+        "framing": "8N1",
+        "liveness_timeout_s": 5.0,
+        "read_timeout_s": 0.05,
+    }
+    spec = InputSpec.from_dict(raw)
+    assert spec.to_dict() == raw
+    assert InputSpec.from_dict(spec.to_dict()) == spec
+
+
+def test_input_spec_rejects_unknown_function() -> None:
+    with pytest.raises(ValueError):
+        InputSpec(id="x", path="none", function="radar")
+
+
+# --- ChannelSpec.sources (B3a config seam) ----------------------------------------
+
+
+def test_channel_sources_defaults_to_empty_when_key_absent() -> None:
+    """Absent ``sources`` means "always simulate" — the behaviour every pre-auto config keeps."""
+    assert ChannelSpec.from_dict(_channel_raw()).sources == []
+    assert ChannelSpec(id="gps", role="gps", path="none", baud=38400).sources == []
+
+
+def test_channel_sources_round_trips_populated_list() -> None:
+    spec = ChannelSpec.from_dict(_channel_raw(sources=["gps_in", "satcompass_in"]))
+    assert spec.sources == ["gps_in", "satcompass_in"]
+    assert spec.to_dict()["sources"] == ["gps_in", "satcompass_in"]
+    assert ChannelSpec.from_dict(spec.to_dict()).sources == ["gps_in", "satcompass_in"]
+
+
+def test_full_config_with_inputs_and_sources_round_trips() -> None:
+    """Regression guard for the hand-written serializers: a config exercising BOTH new fields
+    must survive to_dict -> from_dict byte-for-byte. A field added to one serializer but not the
+    other (or a shape mismatch) drops out here, comparing dicts rather than object identity."""
+    cfg = EngineConfig(
+        mode="auto",
+        writer_backend="serial",
+        inputs=[
+            InputSpec(id="gps_in", path="/dev/serial/by-id/unit-g", function="gps"),
+            InputSpec(id="sat_in", path="/dev/serial/by-id/unit-s", function="sat", baud=38400),
+        ],
+        channels=[
+            ChannelSpec(
+                id="gps",
+                role="gps",
+                path="/dev/serial/by-id/unit-out-g",
+                baud=4800,
+                talker="GP",
+                sources=["gps_in", "sat_in"],
+            ),
+            ChannelSpec(
+                id="heading",
+                role="heading",
+                path="/dev/serial/by-id/unit-out-h",
+                baud=4800,
+                talker="HE",
+                sources=["sat_in"],
+            ),
+        ],
+    )
+    reloaded = EngineConfig.from_dict(cfg.to_dict())
+    assert reloaded.to_dict() == cfg.to_dict()
 
 
 def test_movement_rejects_bad_hz() -> None:

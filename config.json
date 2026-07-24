@@ -33,6 +33,7 @@
       "talker": "GP",
       "rx_feeds_state": false,
       "rx_accept": [],
+      "sources": ["gps_in", "satcompass_in"],
       "emit": [
         { "sentence": "GGA", "rate_hz": 1.0 },
         { "sentence": "RMC", "rate_hz": 1.0 },
@@ -50,6 +51,7 @@
       "talker": "HE",
       "rx_feeds_state": false,
       "rx_accept": [],
+      "sources": ["satcompass_in"],
       "emit": [
         { "sentence": "HDT", "rate_hz": 10.0 }
       ]
@@ -63,6 +65,7 @@
       "direction": "tx",
       "rx_feeds_state": false,
       "rx_accept": [],
+      "sources": ["ais_in"],
       "ais": {
         "mode": "ownship",
         "own_ship": { "mmsi": 366000001, "class": "A", "name": "MOCKINGBUOY", "call_sign": "MB1", "ship_type": 37 },
@@ -97,6 +100,35 @@
         { "sentence": "VDR", "rate_hz": 1.0 },
         { "sentence": "PASHR", "rate_hz": 1.0 }
       ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "gps_in",
+      "path": "/dev/serial/by-id/CHANGE-ME-gps-in",
+      "function": "gps",
+      "baud": 4800,
+      "framing": "8N1",
+      "liveness_timeout_s": 3.0,
+      "read_timeout_s": 0.03
+    },
+    {
+      "id": "satcompass_in",
+      "path": "/dev/serial/by-id/CHANGE-ME-satcompass-in",
+      "function": "sat",
+      "baud": 4800,
+      "framing": "8N1",
+      "liveness_timeout_s": 3.0,
+      "read_timeout_s": 0.03
+    },
+    {
+      "id": "ais_in",
+      "path": "/dev/serial/by-id/CHANGE-ME-ais-in",
+      "function": "ais",
+      "baud": 38400,
+      "framing": "8N1",
+      "liveness_timeout_s": 3.0,
+      "read_timeout_s": 0.03
     }
   ],
   "ais_targets": []

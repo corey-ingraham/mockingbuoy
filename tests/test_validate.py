@@ -11,6 +11,7 @@ from nmea_sim.config import (
     ChannelSpec,
     EmitSpec,
     EngineConfig,
+    InputSpec,
     MovementSpec,
     TcpTapSpec,
     TimeSourceSpec,
@@ -51,6 +52,12 @@ def _config(channels: list[ChannelSpec], **over: object) -> EngineConfig:
     base: dict[str, object] = {"initial_state_raw": dict(_STATE), "channels": channels}
     base.update(over)
     return EngineConfig(**base)  # type: ignore[arg-type]
+
+
+def _input(**over: object) -> InputSpec:
+    base: dict[str, object] = {"id": "gps_in", "path": "/dev/serial/by-id/in-a", "function": "gps"}
+    base.update(over)
+    return InputSpec(**base)  # type: ignore[arg-type]
 
 
 # --- the shipped example config must be valid -------------------------------------
@@ -283,6 +290,94 @@ def test_over_budget_channel_rejected() -> None:
         emit=[EmitSpec("HDT", 10.0), EmitSpec("HDG", 10.0)],
     )
     assert any("over baud budget" in p for p in validate(_config([heading])))
+
+
+# --- operating mode + inputs seam (B3a) -------------------------------------------
+
+
+def test_bad_mode_rejected_by_validator() -> None:
+    # The dataclass guard already refuses a bad mode at construction, so reach the validator's
+    # belt-and-braces check by writing the frozen field directly (what a bypassing caller does).
+    cfg = _config([_gps()])
+    object.__setattr__(cfg, "mode", "replay")
+    assert any("mode 'replay' invalid" in p and "simulate|auto" in p for p in validate(cfg))
+
+
+def test_auto_mode_requires_serial_backend() -> None:
+    cfg = _config([_gps()], mode="auto", writer_backend="log", inputs=[_input()])
+    problems = validate(cfg)
+    assert any("mode 'auto' requires writer_backend 'serial'" in p for p in problems)
+
+
+def test_auto_mode_requires_at_least_one_input() -> None:
+    cfg = _config([_gps()], mode="auto", writer_backend="serial", inputs=[])
+    assert any("mode 'auto' requires at least one entry in 'inputs'" in p for p in validate(cfg))
+
+
+def test_channel_source_must_name_a_defined_input() -> None:
+    cfg = _config([_gps(sources=["ghost_in"])], inputs=[])
+    assert any("source 'ghost_in' does not match any inputs[].id" in p for p in validate(cfg))
+
+
+def test_duplicate_input_id_rejected() -> None:
+    # Placeholder paths keep this focused on the id clash, not a path collision.
+    inputs = [_input(id="dup", path="none"), _input(id="dup", path="none")]
+    assert any("duplicate input id 'dup'" in p for p in validate(_config([_gps()], inputs=inputs)))
+
+
+def test_input_path_colliding_with_channel_path_rejected() -> None:
+    shared = "/dev/serial/by-id/shared-tty"
+    cfg = _config([_gps(path=shared)], inputs=[_input(path=shared)])
+    problems = validate(cfg)
+    assert any("already used by" in p and "input 'gps_in'" in p for p in problems)
+
+
+def test_input_path_colliding_with_another_input_path_rejected() -> None:
+    shared = "/dev/serial/by-id/shared-in"
+    inputs = [_input(id="a", path=shared), _input(id="b", path=shared)]
+    assert any("already used by" in p for p in validate(_config([_gps()], inputs=inputs)))
+
+
+def test_input_bad_function_rejected_by_validator() -> None:
+    # InputSpec's own guard refuses a bad function at construction, so reach the validator's
+    # belt-and-braces check by writing the frozen field directly.
+    inp = _input()
+    object.__setattr__(inp, "function", "radar")
+    problems = validate(_config([_gps()], inputs=[inp]))
+    assert any("unknown function 'radar'" in p and "gps|sat|ais|unused" in p for p in problems)
+
+
+def test_input_non_positive_timeouts_rejected() -> None:
+    liveness = validate(_config([_gps()], inputs=[_input(liveness_timeout_s=0.0)]))
+    assert any("liveness_timeout_s must be > 0" in p for p in liveness)
+    read = validate(_config([_gps()], inputs=[_input(read_timeout_s=-0.01)]))
+    assert any("read_timeout_s must be > 0" in p for p in read)
+
+
+def test_input_non_positive_baud_rejected() -> None:
+    problems = validate(_config([_gps()], inputs=[_input(baud=0)]))
+    assert any("input 'gps_in': baud must be > 0" in p for p in problems)
+
+
+def test_auto_sources_and_rx_feeds_state_conflict_rejected() -> None:
+    # Both the top-level input and the per-channel rx_feeds_state path would write shared state
+    # from the same wire in auto mode — a hard error.
+    ch = _gps(
+        direction="both",
+        sources=["gps_in"],
+        rx_feeds_state=True,
+        rx_accept=["lat"],
+    )
+    cfg = _config([ch], mode="auto", writer_backend="serial", inputs=[_input()])
+    assert any(
+        "cannot set both 'sources' and rx_feeds_state=true in auto mode" in p for p in validate(cfg)
+    )
+
+
+def test_shipped_config_still_validates_and_stays_simulate() -> None:
+    cfg = EngineConfig.load(CONFIG_PATH)
+    assert cfg.mode == "simulate"
+    assert validate(cfg) == []
 
 
 # --- validate_or_raise ------------------------------------------------------------

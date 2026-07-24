@@ -200,6 +200,62 @@ class TcpTapSpec:
 
 
 @dataclass(frozen=True)
+class InputSpec:
+    """One physical INPUT slot a channel may draw live NMEA from in ``auto`` mode.
+
+    Inputs are a separate top-level registry (not a channel field) because a single wire can
+    feed MORE than one output: a satellite compass carries heading sentences (for the heading
+    output) AND GNSS position/time sentences (for the GPS output). So the model is N input
+    slots, each ``ChannelSpec.sources`` naming an ordered priority list of these ids.
+
+    This is a pure config seam — nothing here opens a port. The router/arbiter that consumes it
+    lands in a later phase; until then every field is inert.
+    """
+
+    id: str
+    path: str
+    # What the operator says is wired here. "sat" = satellite compass (heading AND position),
+    # so one sat input legitimately appears in both the heading and gps channels' sources.
+    function: str = "unused"
+    baud: int = 4800
+    framing: str = "8N1"
+    # How long without a valid sentence before this source counts as dead and the channel
+    # falls back to simulating.
+    liveness_timeout_s: float = 3.0
+    # Deliberately much shorter than the 0.5 s the output-side serial reader uses: on an input
+    # port every read blocks the passthrough path, so a tight timeout bounds passthrough
+    # latency (and how fast a channel notices the source went dead) rather than TX cadence.
+    read_timeout_s: float = 0.03
+
+    def __post_init__(self) -> None:
+        if self.function not in ("gps", "sat", "ais", "unused"):
+            raise ValueError(f"input.function must be gps|sat|ais|unused, got {self.function!r}")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> InputSpec:
+        return cls(
+            id=str(data["id"]),
+            path=str(data["path"]),
+            function=str(data.get("function", "unused")),
+            baud=int(data.get("baud", 4800)),
+            framing=str(data.get("framing", "8N1")),
+            liveness_timeout_s=float(data.get("liveness_timeout_s", 3.0)),
+            read_timeout_s=float(data.get("read_timeout_s", 0.03)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "path": self.path,
+            "function": self.function,
+            "baud": self.baud,
+            "framing": self.framing,
+            "liveness_timeout_s": self.liveness_timeout_s,
+            "read_timeout_s": self.read_timeout_s,
+        }
+
+
+@dataclass(frozen=True)
 class ChannelSpec:
     """One output channel — a generic serial-capable stream, defined by capability only."""
 
@@ -216,6 +272,11 @@ class ChannelSpec:
     # tick; an operator can flip it later without a restart and without touching config.
     enabled: bool = True
     rx_accept: list[str] = field(default_factory=list)
+    # Ordered INPUT-slot ids (see ``InputSpec.id``) this channel may draw live NMEA from in
+    # ``auto`` mode, highest priority first. This channel's own ``path`` stays its OUTPUT port;
+    # ``sources`` names INPUT slots, never output ports. Empty (the default) means "always
+    # simulate" — which is exactly what every pre-``auto`` config gets.
+    sources: list[str] = field(default_factory=list)
     emit: list[EmitSpec] = field(default_factory=list)
     ais: AisSpec | None = None
     tcp_tap: TcpTapSpec | None = None
@@ -237,6 +298,8 @@ class ChannelSpec:
             # must keep emitting exactly as they did.
             enabled=bool(data.get("enabled", True)),
             rx_accept=[str(x) for x in data.get("rx_accept", [])],
+            # Absent key -> empty list, i.e. "always simulate".
+            sources=[str(x) for x in data.get("sources", [])],
             emit=[EmitSpec(str(e["sentence"]), float(e["rate_hz"])) for e in data.get("emit", [])],
             ais=AisSpec.from_dict(ais_data) if ais_data else None,
             tcp_tap=TcpTapSpec.from_dict(tap_data) if tap_data else None,
@@ -254,6 +317,7 @@ class ChannelSpec:
             "rx_feeds_state": self.rx_feeds_state,
             "enabled": self.enabled,
             "rx_accept": list(self.rx_accept),
+            "sources": list(self.sources),
             "emit": [{"sentence": e.sentence, "rate_hz": e.rate_hz} for e in self.emit],
         }
         if self.ais is not None:
@@ -278,9 +342,25 @@ class EngineConfig:
     ais_targets: list[dict[str, Any]] = field(default_factory=list)
     # Host that TCP taps bind to — a LAN IP in production, never the 0.0.0.0 wildcard.
     tcp_tap_host: str = "127.0.0.1"
+    # Operating mode. "simulate" (default, today's behaviour) emits synthetic sentences on
+    # every channel; "auto" lets each channel pass through live NMEA from its ``sources`` and
+    # fall back to simulating when the source goes dead. The enum is extended in a later phase
+    # (a "replay" mode is planned) — do NOT accept a mode the engine cannot yet honour, since a
+    # silently-unhonoured mode is a trap. All new fields carry defaults so every positional or
+    # partial EngineConfig(...) construction keeps working unchanged.
+    mode: str = "simulate"
+    # Top-level INPUT-slot registry, referenced by ``ChannelSpec.sources``. Empty by default,
+    # so simulate-only configs are unaffected. Inert until the router phase consumes it.
+    inputs: list[InputSpec] = field(default_factory=list)
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
+
+    def __post_init__(self) -> None:
+        # Belt-and-braces with validate._validate_globals; construction should fail loudly on a
+        # mode the engine cannot honour. "replay" is intentionally NOT accepted yet.
+        if self.mode not in ("simulate", "auto"):
+            raise ValueError(f"mode must be simulate|auto, got {self.mode!r}")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EngineConfig:
@@ -292,6 +372,9 @@ class EngineConfig:
             channels=[ChannelSpec.from_dict(c) for c in data.get("channels", [])],
             ais_targets=[dict(t) for t in data.get("ais_targets", [])],
             tcp_tap_host=str(data.get("tcp_tap_host", "127.0.0.1")),
+            # Absent -> "simulate" / empty, so configs written before this seam are unchanged.
+            mode=str(data.get("mode", "simulate")),
+            inputs=[InputSpec.from_dict(i) for i in data.get("inputs", [])],
         )
 
     @classmethod
@@ -351,6 +434,8 @@ class EngineConfig:
             "channels": [c.to_dict() for c in self.channels],
             "ais_targets": [dict(t) for t in self.ais_targets],
             "tcp_tap_host": self.tcp_tap_host,
+            "mode": self.mode,
+            "inputs": [i.to_dict() for i in self.inputs],
         }
 
     def save(self, path: str | Path) -> None:

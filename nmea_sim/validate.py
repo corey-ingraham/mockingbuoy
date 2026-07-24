@@ -21,7 +21,7 @@ from .heading_generator import SUPPORTED as _HEADING_SENTENCES
 from .instrument_generator import SUPPORTED as _INSTRUMENT_SENTENCES
 
 if TYPE_CHECKING:
-    from .config import ChannelSpec, EngineConfig
+    from .config import ChannelSpec, EngineConfig, InputSpec
 
 # Sentence names each role's generator can actually build. AIS is modelled in config as a
 # single ``AIVDM`` emit entry (own-ship reports go out as !AIVDO on the wire).
@@ -34,6 +34,15 @@ _ROLE_SENTENCES: dict[str, tuple[str, ...]] = {
 }
 _VALID_ROLES = tuple(_ROLE_SENTENCES)
 _VALID_DIRECTIONS = ("tx", "rx", "both")
+
+# Operating modes the engine can honour THIS phase. A "replay" mode is planned later; it is
+# deliberately not accepted yet, so a config asking for a mode the engine can't run is rejected
+# loudly here rather than silently degrading to simulate.
+_VALID_MODES = ("simulate", "auto")
+
+# What an operator can declare an input slot is wired to. "sat" = satellite compass, which
+# carries both heading and GNSS position/time, so it can feed more than one output channel.
+_VALID_FUNCTIONS = ("gps", "sat", "ais", "unused")
 
 # VesselState fields an RX channel is allowed to feed back into shared state.
 _STATE_FIELDS = frozenset(
@@ -244,9 +253,60 @@ def _validate_ais_traffic(spec: ChannelSpec, errors: list[str]) -> None:
         )
 
 
+def _validate_input(spec: InputSpec, errors: list[str]) -> None:
+    """Local structural checks for one input slot (belt-and-braces alongside the dataclass guard).
+
+    Bounds mirror the channel-baud idiom (``baud > 0``); the two timeouts must be strictly
+    positive because a zero/negative liveness window would never let a source count as dead, and a
+    non-positive read timeout is not a valid poll bound.
+    """
+    where = f"input {spec.id!r}"
+
+    if spec.function not in _VALID_FUNCTIONS:
+        errors.append(
+            f"{where}: unknown function {spec.function!r} (expected {'|'.join(_VALID_FUNCTIONS)})"
+        )
+    if spec.baud <= 0:
+        errors.append(f"{where}: baud must be > 0, got {spec.baud}")
+    if spec.liveness_timeout_s <= 0:
+        errors.append(f"{where}: liveness_timeout_s must be > 0, got {spec.liveness_timeout_s}")
+    if spec.read_timeout_s <= 0:
+        errors.append(f"{where}: read_timeout_s must be > 0, got {spec.read_timeout_s}")
+
+
+def _validate_sources(config: EngineConfig, errors: list[str]) -> None:
+    """Cross-check each channel's ``sources`` against the top-level input registry.
+
+    A source names an input slot the channel may draw from, so every id must resolve to a defined
+    ``inputs[].id``. Separately, in auto mode a channel that both lists ``sources`` and still has
+    the older ``rx_feeds_state`` set would have two subsystems writing shared vessel state from the
+    same wire and racing — the ``inputs`` registry supersedes that path, so it is a hard error.
+    """
+    defined = {inp.id for inp in config.inputs}
+    auto = config.mode == "auto"
+
+    for spec in config.channels:
+        for sid in spec.sources:
+            if sid not in defined:
+                errors.append(
+                    f"channel {spec.id!r}: source {sid!r} does not match any inputs[].id "
+                    "(define an input with that id, or remove it from this channel's sources)"
+                )
+        if auto and spec.sources and spec.rx_feeds_state:
+            errors.append(
+                f"channel {spec.id!r}: cannot set both 'sources' and rx_feeds_state=true in auto "
+                "mode — both would feed shared vessel state from the same wire and race; the "
+                "top-level 'inputs' registry supersedes the per-channel rx_feeds_state path, so "
+                "drop rx_feeds_state on this channel"
+            )
+
+
 def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:
     ids: dict[str, int] = {}
-    paths: dict[str, str] = {}  # real device path -> channel id that first claimed it
+    # Device paths share ONE namespace across outputs and inputs: an output port and an input port
+    # are both physical ttys, so no two may name the same device. Value is (kind, id) of the first
+    # claimant so a collision can name what it clashed with.
+    paths: dict[str, tuple[str, str]] = {}  # real device path -> (kind, id) that first claimed it
     tap_ports: dict[int, str] = {}  # tap port -> channel id
 
     for spec in config.channels:
@@ -255,12 +315,19 @@ def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:
         if not _is_placeholder(spec.path):
             key = spec.path.strip()
             if key in paths:
-                errors.append(
-                    f"channel {spec.id!r}: device path {spec.path!r} already used by "
-                    f"channel {paths[key]!r} (each channel needs its own port)"
-                )
+                kind, owner = paths[key]
+                if kind == "channel":
+                    errors.append(
+                        f"channel {spec.id!r}: device path {spec.path!r} already used by "
+                        f"channel {owner!r} (each channel needs its own port)"
+                    )
+                else:
+                    errors.append(
+                        f"channel {spec.id!r}: device path {spec.path!r} already used by "
+                        f"input {owner!r} (an output and an input may not share a device path)"
+                    )
             else:
-                paths[key] = spec.id
+                paths[key] = ("channel", spec.id)
 
         if spec.tcp_tap is not None and spec.tcp_tap.enabled:
             port = spec.tcp_tap.port
@@ -272,9 +339,30 @@ def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:
             else:
                 tap_ports[port] = spec.id
 
+    # Inputs join the same path namespace (checked after channels so a clash is reported against
+    # the channel that claimed the path first) and get their own duplicate-id check.
+    input_ids: dict[str, int] = {}
+    for inp in config.inputs:
+        input_ids[inp.id] = input_ids.get(inp.id, 0) + 1
+
+        if not _is_placeholder(inp.path):
+            key = inp.path.strip()
+            if key in paths:
+                kind, owner = paths[key]
+                errors.append(
+                    f"input {inp.id!r}: device path {inp.path!r} already used by "
+                    f"{kind} {owner!r} (each port needs its own device path)"
+                )
+            else:
+                paths[key] = ("input", inp.id)
+
     for cid, count in ids.items():
         if count > 1:
             errors.append(f"duplicate channel id {cid!r} appears {count} times")
+
+    for iid, count in input_ids.items():
+        if count > 1:
+            errors.append(f"duplicate input id {iid!r} appears {count} times")
 
 
 def _validate_initial_state(config: EngineConfig, errors: list[str]) -> None:
@@ -316,6 +404,26 @@ def _validate_globals(config: EngineConfig, errors: list[str]) -> None:
     if not config.channels:
         errors.append("config has no channels")
 
+    # Belt-and-braces mode guard: the dataclass __post_init__ already rejects a bad mode, but a
+    # test (or any caller) can construct EngineConfig directly, so re-check here.
+    if config.mode not in _VALID_MODES:
+        errors.append(f"mode {config.mode!r} invalid (expected {'|'.join(_VALID_MODES)})")
+
+    # In auto mode a channel first tries to pass through real NMEA from a physical input, falling
+    # back to simulating only when the input goes dead. Two preconditions make that meaningful:
+    if config.mode == "auto":
+        if config.writer_backend != "serial":
+            errors.append(
+                f"mode 'auto' requires writer_backend 'serial', got {config.writer_backend!r} — "
+                "the log/pty/null backends have no real input port, so auto would silently be "
+                "identical to simulate (use 'serial', or set mode 'simulate')"
+            )
+        if not config.inputs:
+            errors.append(
+                "mode 'auto' requires at least one entry in 'inputs' — auto passes through live "
+                "input, so define the input slots your channels draw from (or set mode 'simulate')"
+            )
+
 
 def validate(config: EngineConfig) -> list[str]:
     """Return a list of human-readable problems (empty list == the config is valid)."""
@@ -324,7 +432,10 @@ def validate(config: EngineConfig) -> list[str]:
     _validate_initial_state(config, errors)
     for spec in config.channels:
         _validate_channel(spec, errors)
+    for inp in config.inputs:
+        _validate_input(inp, errors)
     _validate_cross_channel(config, errors)
+    _validate_sources(config, errors)
     return errors
 
 
