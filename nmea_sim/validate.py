@@ -35,10 +35,10 @@ _ROLE_SENTENCES: dict[str, tuple[str, ...]] = {
 _VALID_ROLES = tuple(_ROLE_SENTENCES)
 _VALID_DIRECTIONS = ("tx", "rx", "both")
 
-# Operating modes the engine can honour THIS phase. A "replay" mode is planned later; it is
-# deliberately not accepted yet, so a config asking for a mode the engine can't run is rejected
-# loudly here rather than silently degrading to simulate.
-_VALID_MODES = ("simulate", "auto")
+# Operating modes the engine can honour. "simulate" emits synthetic sentences; "auto" passes
+# through live NMEA and falls back to simulating; "replay" re-injects a recorded capture. A mode
+# outside this set is rejected loudly here rather than silently degrading to simulate.
+_VALID_MODES = ("simulate", "auto", "replay")
 
 # What an operator can declare an input slot is wired to. "sat" = satellite compass, which
 # carries both heading and GNSS position/time, so it can feed more than one output channel.
@@ -385,6 +385,63 @@ def _validate_initial_state(config: EngineConfig, errors: list[str]) -> None:
             errors.append(f"initial_state.{name}: {value} above maximum {hi}")
 
 
+def _validate_route_replay(config: EngineConfig, errors: list[str]) -> None:
+    """Cross-field rules for the route-playback (F1) and record-and-replay (F2) seams.
+
+    Both drive own-ship position, so they are mutually exclusive. Route playback only makes sense
+    while simulating with dead-reckoning on; replay mode needs a real capture that exists on this
+    host (checked eagerly so a missing file fails at validate/start, not mid-run).
+    """
+    route = config.route
+    replay = config.replay
+
+    # F1 (R53/R54): route.enabled preconditions.
+    if route is not None and route.enabled:
+        if config.mode != "simulate":
+            errors.append(
+                f"route.enabled requires mode 'simulate', got {config.mode!r} — route playback "
+                "drives synthetic own-ship motion, which only applies when simulating"
+            )
+        if config.movement.mode != "underway":
+            errors.append(
+                "route.enabled requires movement.mode 'underway' so dead-reckoning can drive "
+                f"own-ship along the route (got movement.mode {config.movement.mode!r})"
+            )
+        if len(route.waypoints) < 2:
+            errors.append(
+                f"route.enabled requires at least 2 waypoints, got {len(route.waypoints)}"
+            )
+
+    # F2 (R54): replay mode needs an enabled replay block naming a capture that exists.
+    if config.mode == "replay":
+        if replay is None or not replay.enabled:
+            errors.append(
+                "mode 'replay' requires a 'replay' block with enabled=true (the capture file is "
+                "the source of truth in replay mode)"
+            )
+        elif not replay.file.strip():
+            errors.append(
+                "mode 'replay' requires replay.file to name a capture to replay (got empty)"
+            )
+        else:
+            from pathlib import Path
+
+            if not Path(replay.file).exists():
+                errors.append(
+                    f"replay.file {replay.file!r} does not exist "
+                    "(set it to an NMEA capture present on this host)"
+                )
+
+    # F2 (R54): replay and route both own position — reject enabling both.
+    route_on = route is not None and route.enabled
+    replay_on = config.mode == "replay" or (replay is not None and replay.enabled)
+    if route_on and replay_on:
+        errors.append(
+            "route.enabled is incompatible with replay — both drive own-ship position; enable at "
+            "most one (disable route playback, or leave replay mode)"
+        )
+
+
 def _validate_globals(config: EngineConfig, errors: list[str]) -> None:
     host = config.tcp_tap_host.strip()
     if host in ("", "0.0.0.0"):  # noqa: S104 - explicitly rejecting the wildcard bind
@@ -443,6 +500,7 @@ def validate(config: EngineConfig) -> list[str]:
         _validate_input(inp, errors)
     _validate_cross_channel(config, errors)
     _validate_sources(config, errors)
+    _validate_route_replay(config, errors)
     return errors
 
 

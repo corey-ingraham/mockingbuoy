@@ -18,6 +18,7 @@ from nmea_sim.config import (
     EmitSpec,
     EngineConfig,
     MovementSpec,
+    RouteSpec,
     TimeSourceSpec,
 )
 from nmea_sim.engine import (
@@ -26,9 +27,11 @@ from nmea_sim.engine import (
     PhysicsEngine,
     TimeSource,
     _InstrumentSource,
+    _RouteDriver,
     advance_next_fire,
     build_source,
     emission_offsets,
+    emitters_for,
 )
 from nmea_sim.state import VesselState
 from nmea_sim.tcp_tap import TcpTap
@@ -195,6 +198,112 @@ def test_emission_offsets_spread_equal_periods() -> None:
     offsets = emission_offsets([1.0, 1.0, 1.0, 1.0])
     assert offsets == [0.0, 0.25, 0.5, 0.75]
     assert len(set(offsets)) == 4  # no two emissions fire at the same instant
+
+
+# --- per-sentence enable (F4) ----------------------------------------------------
+
+
+def test_emitters_for_skips_disabled_emit() -> None:
+    spec = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("GGA", 1.0), EmitSpec("RMC", 1.0, enabled=False)],
+    )
+    assert [e.sentence for e in emitters_for(spec)] == ["GGA"]  # the disabled RMC is not scheduled
+
+
+def test_engine_does_not_emit_a_disabled_sentence() -> None:
+    """A per-sentence disable stops that sentence at the source: the channel keeps emitting its
+    enabled sentence while the disabled one never reaches a sink."""
+    collector = CollectingWriter()
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("GGA", 20.0), EmitSpec("RMC", 20.0, enabled=False)],
+    )
+    engine = Engine(_config([gps]), sink_hook=lambda spec: [collector])
+    engine.start()
+    time.sleep(0.4)
+    engine.stop()
+
+    lines = collector.snapshot()
+    assert any(line.startswith("$GPGGA") for line in lines)  # the enabled sentence flows
+    assert not any(line.startswith("$GPRMC") for line in lines)  # the disabled one never emits
+
+
+# --- route driver (F1, pure/deterministic — no threads) --------------------------
+
+
+def _driver(
+    waypoints: list[tuple[float, float]], *, speed_kn: float = 600.0, loop: bool = False
+) -> _RouteDriver:
+    return _RouteDriver(RouteSpec(enabled=True, waypoints=waypoints, speed_kn=speed_kn, loop=loop))
+
+
+def test_route_driver_steers_toward_active_waypoint() -> None:
+    driver = _driver([(0.0, 0.0), (0.0, 1.0)])
+    # Well short of waypoint 0 (at the origin), which lies due east of the current position.
+    steer = driver.step(0.0, -0.5, 1.0)
+    assert steer is not None
+    cog, sog = steer
+    assert cog == pytest.approx(90.0, abs=1.0)  # steered due east toward the active waypoint
+    assert sog == pytest.approx(600.0)  # driven at the configured speed
+    assert driver.progress()["active_waypoint"] == 0  # still short of it, cursor unmoved
+
+
+def test_route_driver_progress_is_surfaced() -> None:
+    driver = _driver([(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)])
+    progress = driver.progress()
+    assert progress["active_waypoint"] == 0
+    assert progress["waypoint_count"] == 3
+    assert progress["fraction"] == pytest.approx(0.0)
+    assert progress["paused"] is False
+    assert progress["finished"] is False
+
+
+def test_route_driver_pause_holds_position_and_reset_rewinds() -> None:
+    driver = _driver([(0.0, 0.0), (0.0, 0.001)])
+    # Stepping through waypoint 0 (we start on it) advances the cursor to waypoint 1.
+    driver.step(0.0, 0.0, 1.0)
+    assert driver.progress()["active_waypoint"] == 1
+
+    assert driver.control("pause") is True
+    assert driver.step(0.0, 0.0005, 1.0) is None  # paused -> no steering, caller holds position
+    assert driver.progress()["paused"] is True
+
+    assert driver.control("reset") is True
+    reset = driver.progress()
+    assert reset["active_waypoint"] == 0  # cursor rewound to the first waypoint
+    assert reset["paused"] is False
+    assert reset["finished"] is False
+
+
+def test_route_driver_finishes_at_last_waypoint_without_loop() -> None:
+    driver = _driver([(0.0, 0.0), (0.0, 0.001)], loop=False)
+    driver.step(0.0, 0.0, 1.0)  # consume waypoint 0, steer to waypoint 1
+    assert driver.step(0.0, 0.001, 1.0) is None  # arriving at the last waypoint finishes the route
+    assert driver.progress()["finished"] is True
+
+
+def test_route_driver_loops_back_to_first_waypoint() -> None:
+    driver = _driver([(0.0, 0.0), (0.0, 0.001)], loop=True)
+    driver.step(0.0, 0.0, 1.0)  # -> cursor at waypoint 1
+    steer = driver.step(0.0, 0.001, 1.0)  # arrive at last -> wrap to waypoint 0
+    assert steer is not None
+    cog, _sog = steer
+    assert cog == pytest.approx(270.0, abs=1.0)  # now steering back west toward waypoint 0
+    assert driver.progress()["active_waypoint"] == 0
+
+
+def test_route_driver_rejects_unknown_op() -> None:
+    driver = _driver([(0.0, 0.0), (0.0, 1.0)])
+    assert driver.control("frobnicate") is False
 
 
 # --- running engine --------------------------------------------------------------

@@ -9,9 +9,12 @@ import pytest
 
 from nmea_sim.config import (
     ChannelSpec,
+    EmitSpec,
     EngineConfig,
     InputSpec,
     MovementSpec,
+    ReplaySpec,
+    RouteSpec,
     TimeSourceSpec,
 )
 from nmea_sim.validate import validate
@@ -124,10 +127,15 @@ def test_mode_round_trips_auto_through_from_dict_and_to_dict() -> None:
 
 
 def test_unknown_mode_rejected_by_dataclass_guard() -> None:
-    # "replay" is planned for a later phase but the engine cannot honour it yet, so the guard
-    # must refuse it rather than let a silently-unhonoured mode through.
+    # Only simulate|auto|replay are honoured; the guard must refuse anything else rather than let
+    # a silently-unhonoured mode through.
     with pytest.raises(ValueError):
-        EngineConfig(mode="replay")
+        EngineConfig(mode="bogus")
+
+
+def test_replay_mode_accepted_by_dataclass_guard() -> None:
+    # "replay" is now a first-class operating mode, so construction must accept it.
+    assert EngineConfig(mode="replay").mode == "replay"
 
 
 # --- InputSpec (B3a config seam) --------------------------------------------------
@@ -213,6 +221,104 @@ def test_full_config_with_inputs_and_sources_round_trips() -> None:
     )
     reloaded = EngineConfig.from_dict(cfg.to_dict())
     assert reloaded.to_dict() == cfg.to_dict()
+
+
+# --- EmitSpec.enabled (F4 per-sentence on/off) ------------------------------------
+
+
+def test_emit_enabled_defaults_true_when_key_absent() -> None:
+    """Configs written before the per-sentence switch carry no ``enabled`` on an emit entry;
+    the absent key must read as on so every listed sentence keeps emitting."""
+    spec = ChannelSpec.from_dict(_channel_raw(emit=[{"sentence": "GGA", "rate_hz": 1.0}]))
+    assert spec.emit[0].enabled is True
+    assert EmitSpec("GGA", 1.0).enabled is True
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_emit_enabled_round_trips_through_channel_serializers(enabled: bool) -> None:
+    """Both channel serializers are hand-written, so the per-sentence flag is only trustworthy
+    once a value survives the full dict -> spec -> dict -> spec cycle in either state."""
+    raw = _channel_raw(emit=[{"sentence": "GGA", "rate_hz": 1.0, "enabled": enabled}])
+    spec = ChannelSpec.from_dict(raw)
+    assert spec.emit[0].enabled is enabled
+
+    as_dict = spec.to_dict()
+    assert as_dict["emit"][0]["enabled"] is enabled  # emitted unconditionally, not only when off
+
+    assert ChannelSpec.from_dict(as_dict).emit[0].enabled is enabled
+
+
+# --- RouteSpec (F1 config seam) ---------------------------------------------------
+
+
+def test_route_absent_is_none_and_omitted_from_to_dict() -> None:
+    """A config that never named a route reads back as None and omits the key entirely, so it
+    round-trips byte-identically to a pre-route config."""
+    assert EngineConfig.from_dict({}).route is None
+    assert "route" not in EngineConfig().to_dict()
+
+
+def test_route_spec_round_trips_through_from_dict_and_to_dict() -> None:
+    cfg = EngineConfig(
+        route=RouteSpec(
+            enabled=True,
+            waypoints=[(10.0, -30.0), (10.5, -29.5)],
+            speed_kn=8.0,
+            loop=True,
+        )
+    )
+    d = cfg.to_dict()
+    # JSON has no tuples: waypoints are emitted as [lat, lon] lists.
+    assert d["route"] == {
+        "enabled": True,
+        "waypoints": [[10.0, -30.0], [10.5, -29.5]],
+        "speed_kn": 8.0,
+        "loop": True,
+    }
+    reloaded = EngineConfig.from_dict(d)
+    assert reloaded.route is not None
+    # ...and normalised straight back to tuples on load.
+    assert reloaded.route.waypoints == [(10.0, -30.0), (10.5, -29.5)]
+    assert all(isinstance(wp, tuple) for wp in reloaded.route.waypoints)
+    assert reloaded.to_dict() == d
+
+
+def test_route_from_dict_defaults_when_keys_absent() -> None:
+    spec = RouteSpec.from_dict({})
+    assert spec.enabled is False
+    assert spec.waypoints == []
+    assert spec.speed_kn == pytest.approx(0.0)
+    assert spec.loop is False
+
+
+# --- ReplaySpec + "replay" mode (F2 config seam) ----------------------------------
+
+
+def test_replay_absent_is_none_and_omitted_from_to_dict() -> None:
+    assert EngineConfig.from_dict({}).replay is None
+    assert "replay" not in EngineConfig().to_dict()
+
+
+def test_replay_spec_and_mode_round_trip() -> None:
+    cfg = EngineConfig(
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file="cap.nmea", loop=True, speed=2.0),
+    )
+    d = cfg.to_dict()
+    assert d["mode"] == "replay"
+    assert d["replay"] == {"enabled": True, "file": "cap.nmea", "loop": True, "speed": 2.0}
+    reloaded = EngineConfig.from_dict(d)
+    assert reloaded.mode == "replay"
+    assert reloaded.replay == ReplaySpec(enabled=True, file="cap.nmea", loop=True, speed=2.0)
+    assert reloaded.to_dict() == d
+
+
+def test_replay_from_dict_defaults_when_keys_absent() -> None:
+    spec = ReplaySpec.from_dict({})
+    assert spec.enabled is False
+    assert spec.file == ""
+    assert spec.loop is False
+    assert spec.speed == pytest.approx(1.0)
 
 
 def test_movement_rejects_bad_hz() -> None:

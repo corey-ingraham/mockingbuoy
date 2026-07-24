@@ -34,7 +34,7 @@ import janus
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from nmea_sim.config import EngineConfig, InputSpec
 from nmea_sim.diagnostics import decode_line, score_baud
@@ -136,6 +136,15 @@ _INITIAL_STATE_MANUAL_FIELDS: tuple[str, ...] = (
     "set_deg",
     "drift_kn",
 )
+
+#: Inclusive ``(min, max)`` bounds for the value-bearing GPS-fault actions (F3). ``hdop_spike`` and
+#: ``drop_sats`` each carry a numeric magnitude that is range-checked here before it reaches
+#: ``update_state`` — a fault can never poke a field outside these bounds. The valueless faults
+#: (``no_fix``/``restore_fix``/``gps_kill``/``gps_restore``) set a fixed value and take no value.
+_FAULT_BOUNDS: dict[str, tuple[float, float]] = {
+    "hdop_spike": (0.0, 99.0),
+    "drop_sats": (0.0, 64.0),
+}
 
 
 # --- (de)serialization helpers ----------------------------------------------------
@@ -302,6 +311,13 @@ class ControlRequest(BaseModel):
     action: str
     channel_id: str | None = None
     enabled: bool | None = None
+    # Route-playback control (action == "route"): op in {start, pause, reset}. Fault injection
+    # (action == "fault"): ``fault`` names the allow-listed fault; ``value`` is the magnitude for
+    # the value-bearing faults (hdop_spike/drop_sats). None of these three are in _UPDATE_RANGES, so
+    # ``state_changes`` never picks them up — a route/fault control can't leak into a state update.
+    op: str | None = None
+    fault: str | None = None
+    value: float | None = None
     lat: float | None = None
     lon: float | None = None
     sog_kn: float | None = None
@@ -339,14 +355,57 @@ class ControlRequest(BaseModel):
 # --- persist (Save-as-defaults) request models ------------------------------------
 
 
+class EmitDefault(BaseModel):
+    """One per-sentence enable/rate override in a persist request (F4, R47). Names an EXISTING emit
+    sentence on the channel and flips its ``enabled`` and/or ``rate_hz``; ``sentence`` is required,
+    the two knobs optional so a caller can toggle one without disturbing the other. Extras forbidden
+    so no other EmitSpec field can be smuggled in. The merged config is deep-validated before save,
+    so a re-enable/re-rate that blows the channel's baud budget is rejected, never written."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sentence: str
+    enabled: bool | None = None
+    rate_hz: float | None = None
+
+
 class ChannelDefault(BaseModel):
     """One per-channel enable default in a persist request. Extras are forbidden so a request can
-    never smuggle an unrelated channel field (path, baud, framing, ...) through this narrow seam."""
+    never smuggle an unrelated channel field (path, baud, framing, ...) through this narrow seam.
+    ``emit`` optionally carries per-sentence enable/rate overrides (F4) applied to this channel."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     enabled: bool
+    emit: list[EmitDefault] | None = None
+
+
+class RouteDefault(BaseModel):
+    """The route-playback block in a persist request (F1). ``waypoints`` are ``(lat, lon)`` pairs;
+    the fixed-length tuple type makes a malformed waypoint a 422. Extras forbidden. The merged
+    config is deep-validated (validate_or_raise) before save, which enforces the R53/R54
+    preconditions (simulate mode, movement underway, >= 2 waypoints, not both route and replay)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    waypoints: list[tuple[float, float]] = Field(default_factory=list)
+    speed_kn: float = 0.0
+    loop: bool = False
+
+
+class ReplayDefault(BaseModel):
+    """The record-and-replay block in a persist request (F2). ``file`` names a capture to re-inject.
+    Extras forbidden. The merged config is deep-validated before save, which enforces that
+    ``mode == 'replay'`` has an enabled block whose file exists (R54)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    file: str = ""
+    loop: bool = False
+    speed: float = 1.0
 
 
 class InputDefault(BaseModel):
@@ -363,14 +422,16 @@ class InitialStateRequest(BaseModel):
     """Body of ``POST /api/config/initial-state`` — the Save-as-defaults persist allow-list (R15).
 
     This is a DEDICATED model, not :class:`ControlRequest`: it exposes ONLY the operator-editable
-    manual own-ship fields, an optional operating ``mode``, per-channel enable defaults, and
-    per-slot input-function assignments. Every field an attacker might use to redirect I/O or leak
-    paths —
-    ``path``, ``tcp_tap*``, ``baud``, ``writer_backend``, ``direction``, ``framing``,
-    ``voltage_sense``, ``rx_feeds_state``, ``emit`` — is simply absent, and ``extra="forbid"`` turns
-    any unknown key into a 422 rather than a silently-ignored write. ``mode`` is validated in the
-    handler (not a pydantic ``Literal``) so a bad value is a 400 with a clear message; ``"replay"``
-    is rejected — it is a later feature the engine cannot yet honour.
+    manual own-ship fields, an optional operating ``mode`` (``simulate``/``auto``/``replay``),
+    per-channel enable defaults (each optionally carrying per-sentence emit overrides, F4), per-slot
+    input-function assignments, and the opt-in ``route`` (F1) / ``replay`` (F2) blocks. Every field
+    an attacker might use to redirect I/O or leak paths — ``path``, ``tcp_tap*``, ``baud``,
+    ``writer_backend``, ``direction``, ``framing``, ``voltage_sense``, ``rx_feeds_state`` — is
+    simply absent, and ``extra="forbid"`` turns any unknown key into a 422 rather than a silent
+    write. ``mode`` is validated in the handler (not a pydantic ``Literal``) so a bad value is a 400
+    with a clear message; ``"replay"`` is now accepted, but the merged config is deep-validated
+    before save, so a bare ``mode: "replay"`` with no valid replay block is still a 400.
+    ``voltage_sense`` deliberately stays OUT of the allow-list.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -387,6 +448,8 @@ class InitialStateRequest(BaseModel):
     mode: str | None = None
     channels: list[ChannelDefault] | None = None
     inputs: list[InputDefault] | None = None
+    route: RouteDefault | None = None
+    replay: ReplayDefault | None = None
 
 
 # --- diagnostics request models ---------------------------------------------------
@@ -601,6 +664,24 @@ class EngineManager:
         if self._engine is None:
             raise RuntimeError("engine is not running")
         return self._engine.set_channel_enabled(channel_id, enabled)
+
+    def route_control(self, op: str) -> bool:
+        """Runtime route-playback control (``start``/``pause``/``reset``) — a cheap cursor-flag
+        write like the channel toggle, no restart. ``False`` when no route is active (not simulate
+        route mode) or the op is unknown, so the web layer can 4xx a no-op cleanly."""
+        if self._engine is None:
+            raise RuntimeError("engine is not running")
+        return self._engine.route_control(op)
+
+    def route_status(self) -> dict[str, Any] | None:
+        """Current route-playback progress (active waypoint / count / fraction / flags), or ``None``
+        when no route is active or the engine is stopped — the read side of the F1 progress."""
+        return self._engine.route_status() if self._engine is not None else None
+
+    def gps_channel_id(self) -> str | None:
+        """Config id of the channel whose role is ``gps`` (or ``None``) — the target the
+        ``gps_kill``/``gps_restore`` faults toggle. Resolved by ROLE, not a hard-coded id."""
+        return next((c.id for c in self._config.channels if c.role == "gps"), None)
 
     def input_status(self) -> list[dict[str, object]]:
         """Per-slot detection view. When running, delegates to :meth:`Engine.input_status` (which
@@ -850,7 +931,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
         state = manager.snapshot()
         if state is None:
             return {"running": False}
-        return _state_to_dict(state)
+        out = _state_to_dict(state)
+        # F1: attach route-playback progress when a route is active. Additive — absent (no key) for
+        # every config with no route driver, so a non-route config's state dict is unchanged.
+        route = manager.route_status()
+        if route is not None:
+            out["route"] = route
+        return out
 
     @app.post("/api/control")
     async def api_control(body: ControlRequest, _: None = Depends(auth)) -> dict[str, Any]:
@@ -894,6 +981,62 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"unknown channel: {body.channel_id!r}")
             # The toggle reaches every client through the existing 1 Hz health broadcast.
             return {"running": True, "channel_id": body.channel_id, "enabled": body.enabled}
+
+        if action == "route":
+            # F1 runtime route control: pause/resume/reset the route cursor. A flag write, no
+            # restart. The route driver exists only in simulate route mode, so a missing driver
+            # (409) is the natural gate — no separate mode check needed.
+            if not manager.running:
+                raise HTTPException(status_code=409, detail="engine is not running")
+            op = (body.op or "").strip().lower()
+            if op not in ("start", "pause", "reset"):
+                raise HTTPException(
+                    status_code=400, detail=f"route op must be start|pause|reset, got {body.op!r}"
+                )
+            if not manager.route_control(op):
+                raise HTTPException(status_code=409, detail="no active route to control")
+            return {"running": True, "op": op, "route": manager.route_status()}
+
+        if action == "fault":
+            # F3 GPS-fault injection: a SIMULATE-ONLY testing tool. Each fault is an allow-listed,
+            # range-checked write to an EXISTING state field (or the gps channel toggle) — never a
+            # generic field poke. Refused outside simulate mode (fault injection is a bench tool).
+            if not manager.running:
+                raise HTTPException(status_code=409, detail="engine is not running")
+            if manager.config.mode != "simulate":
+                raise HTTPException(
+                    status_code=409,
+                    detail="fault injection is a simulate-mode testing tool",
+                )
+            fault = (body.fault or "").strip().lower()
+            if fault in ("gps_kill", "gps_restore"):
+                gps_id = manager.gps_channel_id()
+                if gps_id is None:
+                    raise HTTPException(status_code=409, detail="no gps channel to fault")
+                enabled = fault == "gps_restore"
+                manager.set_channel_enabled(gps_id, enabled)
+                return {"running": True, "fault": fault, "channel_id": gps_id, "enabled": enabled}
+            if fault == "no_fix":
+                changes = {"fix_quality": 0.0}
+            elif fault == "restore_fix":
+                changes = {"fix_quality": 1.0}
+            elif fault in _FAULT_BOUNDS:
+                if body.value is None:
+                    raise HTTPException(
+                        status_code=400, detail=f"fault {fault!r} requires a numeric 'value'"
+                    )
+                low, high = _FAULT_BOUNDS[fault]
+                if body.value < low or body.value > high:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"value={body.value} out of range [{low}, {high}]",
+                    )
+                field = "hdop" if fault == "hdop_spike" else "satellites"
+                changes = {field: float(body.value)}
+            else:
+                raise HTTPException(status_code=400, detail=f"unknown fault: {body.fault!r}")
+            state = manager.update_state(**changes)
+            return {"running": True, "fault": fault, "state": _state_to_dict(state)}
 
         raise HTTPException(status_code=400, detail=f"unknown action: {body.action!r}")
 
@@ -953,10 +1096,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
             merged["initial_state"] = initial_state
 
             if body.mode is not None:
-                if body.mode not in ("simulate", "auto"):
+                if body.mode not in ("simulate", "auto", "replay"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"mode must be simulate|auto, got {body.mode!r}",
+                        detail=f"mode must be simulate|auto|replay, got {body.mode!r}",
                     )
                 merged["mode"] = body.mode
 
@@ -967,6 +1110,46 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     if target is None:
                         raise HTTPException(status_code=400, detail=f"unknown channel: {ch.id!r}")
                     target["enabled"] = ch.enabled
+                    if ch.emit is not None:
+                        # F4: flip enabled/rate on EXISTING emit sentences only. An unknown sentence
+                        # is a 400 (never silently added); the over-budget re-enable/re-rate is
+                        # caught by validate_or_raise below (the baud-budget guard), not here.
+                        emit_by_sentence = {e["sentence"]: e for e in target.get("emit", [])}
+                        for em in ch.emit:
+                            emit_target = emit_by_sentence.get(em.sentence)
+                            if emit_target is None:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=(
+                                        f"unknown emit sentence {em.sentence!r} "
+                                        f"on channel {ch.id!r}"
+                                    ),
+                                )
+                            if em.enabled is not None:
+                                emit_target["enabled"] = em.enabled
+                            if em.rate_hz is not None:
+                                emit_target["rate_hz"] = em.rate_hz
+
+            if body.route is not None:
+                # F1: merge the route block in RouteSpec.from_dict shape ([lat, lon] lists). The
+                # R53/R54 preconditions (simulate + underway + >= 2 waypoints, not both route and
+                # replay) are enforced by validate_or_raise below, not duplicated here.
+                merged["route"] = {
+                    "enabled": body.route.enabled,
+                    "waypoints": [[lat, lon] for lat, lon in body.route.waypoints],
+                    "speed_kn": body.route.speed_kn,
+                    "loop": body.route.loop,
+                }
+
+            if body.replay is not None:
+                # F2: merge the replay block. The "mode replay needs an enabled block whose file
+                # exists" precondition (R54) is enforced by validate_or_raise below.
+                merged["replay"] = {
+                    "enabled": body.replay.enabled,
+                    "file": body.replay.file,
+                    "loop": body.replay.loop,
+                    "speed": body.replay.speed,
+                }
 
             if body.inputs is not None:
                 by_id = {i["id"]: i for i in merged["inputs"]}
@@ -1184,7 +1367,12 @@ async def _state_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
     while True:
         snapshot = manager.snapshot()
         if snapshot is not None:
-            broker.publish_state(_state_to_dict(snapshot))
+            frame = _state_to_dict(snapshot)
+            # F1: carry route progress on the stream too (additive; absent when no route is active).
+            route = manager.route_status()
+            if route is not None:
+                frame["route"] = route
+            broker.publish_state(frame)
         await asyncio.sleep(_STATE_INTERVAL_S)
 
 

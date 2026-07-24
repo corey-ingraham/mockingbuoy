@@ -56,14 +56,92 @@ class TimeSourceSpec:
 
 @dataclass(frozen=True)
 class EmitSpec:
-    """One emitted sentence type at a fixed rate."""
+    """One emitted sentence type at a fixed rate.
+
+    ``enabled`` is a per-sentence on/off switch applied when ``emitters_for`` expands the emit
+    list: a disabled entry is skipped (frees baud budget) but stays in config so it can be
+    flipped back on. Absent in JSON means ``True`` — configs written before this switch existed
+    keep emitting every listed sentence exactly as before.
+    """
 
     sentence: str
     rate_hz: float
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.rate_hz <= 0:
             raise ValueError(f"emit.rate_hz must be > 0 for {self.sentence!r}, got {self.rate_hz}")
+
+
+@dataclass(frozen=True)
+class RouteSpec:
+    """Optional waypoint-playback seam (simulate mode only).
+
+    When ``enabled`` is false (the default) nothing drives own-ship and behaviour is byte-identical
+    to a config with no route block. When enabled, the physics thread walks own-ship through
+    ``waypoints`` (ordered ``(lat, lon)`` pairs) at ``speed_kn``, steering ``cog_deg`` toward the
+    active waypoint; on reaching the last it stops, or wraps when ``loop``. Requires simulate mode
+    with dead-reckoning on (``movement.mode == 'underway'``) and at least two waypoints — enforced
+    in :mod:`nmea_sim.validate`, not here, so a partially-built config can still be constructed.
+    """
+
+    enabled: bool = False
+    waypoints: list[tuple[float, float]] = field(default_factory=list)
+    speed_kn: float = 0.0
+    loop: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RouteSpec:
+        # JSON has no tuples: waypoints arrive as [lat, lon] lists and are normalised to tuples.
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            waypoints=[(float(wp[0]), float(wp[1])) for wp in data.get("waypoints", [])],
+            speed_kn=float(data.get("speed_kn", 0.0)),
+            loop=bool(data.get("loop", False)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            # Emit as [lat, lon] lists so from_dict round-trips them back to identical tuples.
+            "waypoints": [[lat, lon] for lat, lon in self.waypoints],
+            "speed_kn": self.speed_kn,
+            "loop": self.loop,
+        }
+
+
+@dataclass(frozen=True)
+class ReplaySpec:
+    """Optional record-and-replay source (active only under ``mode == 'replay'``).
+
+    Inert unless the top-level mode is ``replay``. ``file`` names an NMEA capture the engine
+    re-injects line-by-line preserving inter-line timing (scaled by ``speed``); ``loop`` restarts
+    at EOF. In replay mode the generators are suppressed and the file is the source of truth. The
+    ``file``-exists precondition is enforced in :mod:`nmea_sim.validate` so a missing capture fails
+    at validate/start, not mid-run.
+    """
+
+    enabled: bool = False
+    file: str = ""
+    loop: bool = False
+    speed: float = 1.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReplaySpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            file=str(data.get("file", "")),
+            loop=bool(data.get("loop", False)),
+            speed=float(data.get("speed", 1.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "file": self.file,
+            "loop": self.loop,
+            "speed": self.speed,
+        }
 
 
 @dataclass(frozen=True)
@@ -342,7 +420,15 @@ class ChannelSpec:
             rx_accept=[str(x) for x in data.get("rx_accept", [])],
             # Absent key -> empty list, i.e. "always simulate".
             sources=[str(x) for x in data.get("sources", [])],
-            emit=[EmitSpec(str(e["sentence"]), float(e["rate_hz"])) for e in data.get("emit", [])],
+            emit=[
+                EmitSpec(
+                    str(e["sentence"]),
+                    float(e["rate_hz"]),
+                    # Absent -> True: pre-switch configs emit every listed sentence unchanged.
+                    enabled=bool(e.get("enabled", True)),
+                )
+                for e in data.get("emit", [])
+            ],
             ais=AisSpec.from_dict(ais_data) if ais_data else None,
             tcp_tap=TcpTapSpec.from_dict(tap_data) if tap_data else None,
         )
@@ -360,7 +446,10 @@ class ChannelSpec:
             "enabled": self.enabled,
             "rx_accept": list(self.rx_accept),
             "sources": list(self.sources),
-            "emit": [{"sentence": e.sentence, "rate_hz": e.rate_hz} for e in self.emit],
+            "emit": [
+                {"sentence": e.sentence, "rate_hz": e.rate_hz, "enabled": e.enabled}
+                for e in self.emit
+            ],
         }
         if self.ais is not None:
             out["ais"] = self.ais.to_dict()
@@ -386,10 +475,10 @@ class EngineConfig:
     tcp_tap_host: str = "127.0.0.1"
     # Operating mode. "simulate" (default, today's behaviour) emits synthetic sentences on
     # every channel; "auto" lets each channel pass through live NMEA from its ``sources`` and
-    # fall back to simulating when the source goes dead. The enum is extended in a later phase
-    # (a "replay" mode is planned) — do NOT accept a mode the engine cannot yet honour, since a
-    # silently-unhonoured mode is a trap. All new fields carry defaults so every positional or
-    # partial EngineConfig(...) construction keeps working unchanged.
+    # fall back to simulating when the source goes dead; "replay" re-injects a recorded NMEA
+    # capture (see ``replay``) as the source of truth, suppressing the generators. All new fields
+    # carry defaults so every positional or partial EngineConfig(...) construction keeps working
+    # unchanged.
     mode: str = "simulate"
     # Top-level INPUT-slot registry, referenced by ``ChannelSpec.sources``. Empty by default,
     # so simulate-only configs are unaffected. Inert until the router phase consumes it.
@@ -398,15 +487,21 @@ class EngineConfig:
     # "no sensing hardware", byte-identical to a config that never mentioned it. Excluded from
     # the persist allow-list — sensing wiring is a local hardware fact, not persisted state.
     voltage_sense: VoltageSenseSpec | None = None
+    # Optional waypoint-playback seam (simulate mode only). None (the default) means "no route",
+    # byte-identical to a config that never mentioned it. Cross-field rules live in ``validate``.
+    route: RouteSpec | None = None
+    # Optional record-and-replay source, active only under mode 'replay'. None (the default) means
+    # "no replay". Its file-exists precondition is enforced eagerly in ``validate``.
+    replay: ReplaySpec | None = None
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
 
     def __post_init__(self) -> None:
         # Belt-and-braces with validate._validate_globals; construction should fail loudly on a
-        # mode the engine cannot honour. "replay" is intentionally NOT accepted yet.
-        if self.mode not in ("simulate", "auto"):
-            raise ValueError(f"mode must be simulate|auto, got {self.mode!r}")
+        # mode the engine cannot honour.
+        if self.mode not in ("simulate", "auto", "replay"):
+            raise ValueError(f"mode must be simulate|auto|replay, got {self.mode!r}")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EngineConfig:
@@ -427,6 +522,9 @@ class EngineConfig:
                 if (vs := data.get("voltage_sense")) is not None
                 else None
             ),
+            # Absent -> None (disabled), so configs written before these seams are unchanged.
+            route=(RouteSpec.from_dict(rt) if (rt := data.get("route")) is not None else None),
+            replay=(ReplaySpec.from_dict(rp) if (rp := data.get("replay")) is not None else None),
         )
 
     @classmethod
@@ -493,6 +591,12 @@ class EngineConfig:
         # round-trip byte-identically.
         if self.voltage_sense is not None:
             out["voltage_sense"] = self.voltage_sense.to_dict()
+        # Likewise for the route/replay seams: absent unless opted into, so a config that never
+        # named them round-trips byte-identically.
+        if self.route is not None:
+            out["route"] = self.route.to_dict()
+        if self.replay is not None:
+            out["replay"] = self.replay.to_dict()
         return out
 
     def save(self, path: str | Path) -> None:

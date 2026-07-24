@@ -1007,3 +1007,276 @@ def test_capture_rejects_caller_supplied_path(auto_client: TestClient) -> None:
             json={"slot": "spare_in", "action": "start", extra: "/etc/passwd"},
         )
         assert resp.status_code == 422, f"{extra!r} should be rejected as a forbidden extra"
+
+
+# --- F3: GPS-fault injection (simulate-mode-only control actions) -------------------
+
+
+def test_fault_no_fix_then_restore(client: TestClient) -> None:
+    """``no_fix`` forces ``fix_quality`` to 0 (which flips RMC/GGA to no-fix); ``restore_fix``
+    puts it back. The change is visible on the very next state read."""
+    resp = client.post("/api/control", json={"action": "fault", "fault": "no_fix"})
+    assert resp.status_code == 200
+    assert resp.json()["fault"] == "no_fix"
+    assert client.get("/api/state").json()["fix_quality"] == 0
+
+    restore = client.post("/api/control", json={"action": "fault", "fault": "restore_fix"})
+    assert restore.status_code == 200
+    assert client.get("/api/state").json()["fix_quality"] == 1
+
+
+def test_fault_hdop_spike_applies_and_bounds(client: TestClient) -> None:
+    ok = client.post("/api/control", json={"action": "fault", "fault": "hdop_spike", "value": 50.0})
+    assert ok.status_code == 200
+    assert client.get("/api/state").json()["hdop"] == pytest.approx(50.0)
+
+    over = client.post(
+        "/api/control", json={"action": "fault", "fault": "hdop_spike", "value": 999.0}
+    )
+    assert over.status_code == 400  # above the bounded ceiling
+
+
+def test_fault_hdop_spike_requires_value(client: TestClient) -> None:
+    resp = client.post("/api/control", json={"action": "fault", "fault": "hdop_spike"})
+    assert resp.status_code == 400
+
+
+def test_fault_drop_sats_applies_and_bounds(client: TestClient) -> None:
+    ok = client.post("/api/control", json={"action": "fault", "fault": "drop_sats", "value": 3.0})
+    assert ok.status_code == 200
+    assert client.get("/api/state").json()["satellites"] == 3
+
+    over = client.post(
+        "/api/control", json={"action": "fault", "fault": "drop_sats", "value": 999.0}
+    )
+    assert over.status_code == 400
+
+
+def test_fault_gps_kill_disables_channel_then_restores(client: TestClient) -> None:
+    kill = client.post("/api/control", json={"action": "fault", "fault": "gps_kill"})
+    assert kill.status_code == 200
+    assert kill.json()["channel_id"] == "gps"
+    assert _channel_entry(client, "gps")["enabled"] is False
+
+    restore = client.post("/api/control", json={"action": "fault", "fault": "gps_restore"})
+    assert restore.status_code == 200
+    assert _channel_entry(client, "gps")["enabled"] is True
+
+
+def test_unknown_fault_is_bad_request(client: TestClient) -> None:
+    resp = client.post("/api/control", json={"action": "fault", "fault": "meltdown"})
+    assert resp.status_code == 400
+
+
+def test_fault_refused_outside_simulate_mode(auto_client: TestClient) -> None:
+    """Fault injection is a simulate-only bench tool: on an auto-mode engine every fault is
+    refused 409, never touching state or a channel."""
+    for body in (
+        {"action": "fault", "fault": "no_fix"},
+        {"action": "fault", "fault": "gps_kill"},
+        {"action": "fault", "fault": "hdop_spike", "value": 10.0},
+    ):
+        resp = auto_client.post("/api/control", json=body)
+        assert resp.status_code == 409, body
+
+
+# --- F1: route control action ------------------------------------------------------
+
+
+def test_route_control_without_active_route_conflicts(client: TestClient) -> None:
+    """The shipped simulate config has no route driver, so a route control op is a clean 409."""
+    resp = client.post("/api/control", json={"action": "route", "op": "start"})
+    assert resp.status_code == 409
+
+
+def test_route_control_bad_op_is_bad_request(client: TestClient) -> None:
+    resp = client.post("/api/control", json={"action": "route", "op": "wat"})
+    assert resp.status_code == 400
+
+
+@pytest.fixture
+def route_config(tmp_path: Path) -> Path:
+    """A tmp simulate+underway config with an enabled two-waypoint route (so a route driver exists
+    and ``/api/state`` carries route progress)."""
+    base = json.loads(CONFIG_PATH.read_text())
+    base["movement"] = {"mode": "underway", "physics_hz": 20.0}
+    base["route"] = {
+        "enabled": True,
+        "waypoints": [[0.5, 0.0], [1.0, 0.0]],
+        "speed_kn": 600.0,
+        "loop": False,
+    }
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(base))
+    return dest
+
+
+def test_route_control_pause_and_reset_on_active_route(route_config: Path) -> None:
+    with TestClient(create_app(str(route_config))) as c:
+        paused = c.post("/api/control", json={"action": "route", "op": "pause"})
+        assert paused.status_code == 200
+        assert paused.json()["op"] == "pause"
+        assert paused.json()["route"]["paused"] is True
+
+        reset = c.post("/api/control", json={"action": "route", "op": "reset"})
+        assert reset.status_code == 200
+        assert reset.json()["route"]["active_waypoint"] == 0
+
+        # The state endpoint carries the route progress block when a route is active.
+        state = c.get("/api/state").json()
+        assert "route" in state
+        assert state["route"]["waypoint_count"] == 2
+
+
+# --- Persist allow-list additions: route / replay / per-sentence emit (F1/F2/F4) ---
+
+
+def test_persist_route_block_is_allow_listed_and_written(tmp_config: Path) -> None:
+    """The ``route`` block is allow-listed and written to config. A DISABLED route persists under
+    any movement mode (its preconditions only bind when enabled)."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "route": {
+                    "enabled": False,
+                    "waypoints": [[0.5, 0.0], [1.0, 0.0]],
+                    "speed_kn": 8.0,
+                    "loop": True,
+                }
+            },
+        )
+        assert resp.status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert reloaded.route is not None
+    assert reloaded.route.enabled is False
+    assert reloaded.route.waypoints == [(0.5, 0.0), (1.0, 0.0)]
+    assert reloaded.route.loop is True
+
+
+def test_persist_enabled_route_under_static_movement_is_rejected(tmp_config: Path) -> None:
+    """An enabled route needs simulate+underway; the shipped config is ``static``, so the merged
+    config fails deep validation and the write is refused with the validator's message (400)."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "route": {
+                    "enabled": True,
+                    "waypoints": [[0.5, 0.0], [1.0, 0.0]],
+                    "speed_kn": 8.0,
+                }
+            },
+        )
+        assert resp.status_code == 400
+
+
+def test_persist_replay_mode_with_valid_block(tmp_config: Path, tmp_path: Path) -> None:
+    """``mode: "replay"`` persists once accompanied by an enabled replay block naming a file that
+    exists on this host (the R54 precondition, enforced by deep validation before the write)."""
+    from nmea_sim.config import EngineConfig
+
+    capture = tmp_path / "cap.nmea"
+    capture.write_text("$GPRMC,123519,A,4807.038,N,01131.000,E,,,230394,,*4B\n", encoding="utf-8")
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "mode": "replay",
+                "replay": {"enabled": True, "file": str(capture), "loop": True, "speed": 2.0},
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["mode"] == "replay"
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert reloaded.mode == "replay"
+    assert reloaded.replay is not None
+    assert reloaded.replay.enabled is True
+    assert reloaded.replay.file == str(capture)
+
+
+def test_persist_per_sentence_emit_override_is_written(tmp_config: Path) -> None:
+    """A per-channel ``emit`` override flips an EXISTING sentence's enabled flag; the merged config
+    is validated and written."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "channels": [
+                    {
+                        "id": "instrument",
+                        "enabled": True,
+                        "emit": [{"sentence": "ROT", "enabled": False}],
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    inst = next(ch for ch in reloaded.channels if ch.id == "instrument")
+    rot = next(e for e in inst.emit if e.sentence == "ROT")
+    assert rot.enabled is False
+
+
+def test_persist_emit_override_unknown_sentence_is_bad_request(tmp_config: Path) -> None:
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "channels": [
+                    {"id": "gps", "enabled": True, "emit": [{"sentence": "ZZZ", "enabled": False}]}
+                ]
+            },
+        )
+        assert resp.status_code == 400
+
+
+def test_persist_per_sentence_rate_busting_budget_is_bad_request(tmp_config: Path) -> None:
+    """Re-rating a sentence over the channel's baud budget is caught by deep validation (400),
+    never silently written."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "channels": [
+                    {"id": "gps", "enabled": True, "emit": [{"sentence": "RMC", "rate_hz": 60.0}]}
+                ]
+            },
+        )
+        assert resp.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "block,payload",
+    [
+        ("route", {"route": {"enabled": False, "bogus": 1}}),
+        ("replay", {"replay": {"enabled": False, "bogus": 1}}),
+        (
+            "emit",
+            {"channels": [{"id": "gps", "enabled": True, "emit": [{"sentence": "RMC", "x": 1}]}]},
+        ),
+    ],
+)
+def test_persist_rejects_unknown_key_in_sub_blocks(
+    tmp_config: Path, block: str, payload: dict[str, Any]
+) -> None:
+    """``extra="forbid"`` reaches into the route/replay/emit sub-models too: an unknown key inside
+    any of them is a 422, never a silent write."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post("/api/config/initial-state", json=payload)
+        assert resp.status_code == 422, block

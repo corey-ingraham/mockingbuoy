@@ -265,7 +265,7 @@
   }
   .field { display: flex; flex-direction: column; gap: 3px; }
   .field label { font-size: 11px; color: var(--muted); }
-  .field input, .field select {
+  .field input, .field select, .field textarea {
     width: 130px;
     font-family: var(--mono);
     font-size: 13px;
@@ -275,7 +275,8 @@
     border-radius: 6px;
     padding: 5px 8px;
   }
-  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .field textarea { resize: vertical; line-height: 1.4; }
+  .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
   .field input.invalid { border-color: var(--down); }
   .msg { font-size: 12px; min-height: 16px; align-self: center; }
   .msg.err { color: var(--down); }
@@ -636,6 +637,19 @@
       <label class="switch"><input type="radio" name="cfg-mode" value="auto"> <b>Auto</b></label>
       <span class="hint">Real input passes through; simulates on loss. Needs input COM hardware + serial backend. Applied on next Start.</span>
     </div>
+    <div class="ctl-row" style="align-items:flex-start;margin-top:6px;">
+      <label class="switch"><input type="radio" name="cfg-mode" value="replay"> <b>Replay</b></label>
+      <span class="hint">Re-injects a recorded capture as the source of truth; generators are suppressed. Applied on next Start.</span>
+    </div>
+    <div class="ctl-row" id="cfg-replay-fields" style="margin-top:8px;">
+      <div class="field" style="flex:1;min-width:220px;">
+        <label for="cfg-replay-file">Capture file</label>
+        <input id="cfg-replay-file" type="text" style="width:100%;" placeholder="capture filename in data dir">
+      </div>
+      <div class="field"><label for="cfg-replay-speed">Speed ×</label><input id="cfg-replay-speed" type="number" step="any" value="1"></div>
+      <label class="switch"><input type="checkbox" id="cfg-replay-loop"> Loop</label>
+    </div>
+    <p class="hint" style="margin:6px 0 0;">Replay file must exist when Replay is the mode (checked on Save / Start). Persisted via Save as defaults.</p>
   </div>
 
   <div class="card">
@@ -662,6 +676,59 @@
   <div class="card">
     <h2>Channels</h2>
     <div id="cfg-channels" class="ctl-row" style="gap:16px;"></div>
+  </div>
+
+  <div class="card" id="cfg-sentences-card">
+    <h2>Sentences <span class="hint">(per-channel emit · persisted)</span></h2>
+    <div id="cfg-sentences"></div>
+    <p class="hint" style="margin-top:8px;">
+      Turn a sentence off to free baud budget, or change its rate. Save as defaults applies on next
+      Start; an over-budget change is rejected with a message rather than saved.
+    </p>
+  </div>
+
+  <div class="card" id="cfg-route-card">
+    <h2>Route playback <span class="hint">(simulate mode)</span></h2>
+    <div class="ctl-row" style="align-items:flex-start;">
+      <div class="field" style="flex:1;min-width:240px;">
+        <label for="cfg-route-wpts">Waypoints — one "lat, lon" per line (≥ 2)</label>
+        <textarea id="cfg-route-wpts" rows="4" style="width:100%;" placeholder="0.000, 0.000&#10;0.000, 0.000"></textarea>
+      </div>
+      <div class="field"><label for="cfg-route-speed">Speed (kn)</label><input id="cfg-route-speed" type="number" step="any"></div>
+      <label class="switch"><input type="checkbox" id="cfg-route-enabled"> Enabled</label>
+      <label class="switch"><input type="checkbox" id="cfg-route-loop"> Loop</label>
+    </div>
+    <div class="ctl-row" style="margin-top:10px;">
+      <button id="route-start" class="primary small">Start</button>
+      <button id="route-pause" class="small">Pause</button>
+      <button id="route-reset" class="small">Reset</button>
+      <span id="route-progress" class="hint">No active route.</span>
+    </div>
+    <p class="hint mode-note" style="margin:6px 0 0;display:none;">Switch to Simulate mode to drive own-ship along a route.</p>
+    <p class="hint" style="margin:6px 0 0;">
+      Enabled + waypoints + speed persist via Save as defaults (needs Simulate mode, movement
+      underway, ≥ 2 waypoints). Start / Pause / Reset control the live cursor after the engine starts.
+    </p>
+  </div>
+
+  <div class="card" id="cfg-fault-card">
+    <h2>Fault injection <span class="hint">(simulate mode · testing tool)</span></h2>
+    <div class="warnbox" style="margin-bottom:10px;">
+      Simulate-only bench testing tool. Injects GPS faults into the running engine to exercise
+      no-fix / degraded-fix handling. Refused (409) outside Simulate mode.
+    </div>
+    <div class="ctl-row" style="align-items:flex-end;">
+      <button id="fault-no_fix" class="small">No fix</button>
+      <button id="fault-restore_fix" class="small">Restore fix</button>
+      <div class="field"><label for="fault-hdop-val">HDOP (0–99)</label><input id="fault-hdop-val" type="number" step="any" value="20"></div>
+      <button id="fault-hdop_spike" class="small">HDOP spike</button>
+      <div class="field"><label for="fault-sats-val">Satellites (0–64)</label><input id="fault-sats-val" type="number" step="any" value="2"></div>
+      <button id="fault-drop_sats" class="small">Drop sats</button>
+      <button id="fault-gps_kill" class="danger small">GPS kill</button>
+      <button id="fault-gps_restore" class="small">GPS restore</button>
+      <span id="fault-msg" class="msg"></span>
+    </div>
+    <p class="hint mode-note" style="margin:8px 0 0;display:none;">Switch to Simulate mode to inject GPS faults.</p>
   </div>
 
   <div class="card" id="cfg-inputs-card">
@@ -1232,6 +1299,7 @@
       let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       lastState = d; lastStateTs = Date.now();
       if (activeTab === "conning") requestConningPaint();
+      else if (activeTab === "config") renderRouteProgress(d.route || null);
     });
   }
 
@@ -1361,12 +1429,143 @@
     }
   }
 
+  // --- F4: per-channel sentence enable/rate table (built from cfg.channels[].emit) ---
+  function buildConfigSentences() {
+    const wrap = $("cfg-sentences"); wrap.textContent = "";
+    const channels = (cfg && Array.isArray(cfg.channels)) ? cfg.channels : [];
+    let any = false;
+    for (const ch of channels) {
+      const emit = Array.isArray(ch.emit) ? ch.emit : [];
+      if (!emit.length) continue;
+      any = true;
+      wrap.appendChild(el("h3", null, ch.id + " (" + (ch.role || "") + ")"));
+      const tbl = el("table", "kvtable"); tbl.style.maxWidth = "420px";
+      const hr = document.createElement("tr");
+      hr.appendChild(el("td", null, "sentence"));
+      hr.appendChild(el("td", null, "on"));
+      hr.appendChild(el("td", null, "rate (Hz)"));
+      tbl.appendChild(hr);
+      for (const e of emit) {
+        const tr = document.createElement("tr");
+        tr.appendChild(el("td", null, e.sentence));
+        const cbTd = document.createElement("td");
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = e.enabled !== false;
+        cb.dataset.sentRole = "enable"; cb.dataset.ch = ch.id; cb.dataset.sentence = e.sentence;
+        cbTd.appendChild(cb); tr.appendChild(cbTd);
+        const rtTd = document.createElement("td");
+        const rt = document.createElement("input");
+        rt.type = "number"; rt.step = "any"; rt.value = e.rate_hz;
+        rt.style.width = "80px";
+        rt.dataset.sentRole = "rate"; rt.dataset.ch = ch.id; rt.dataset.sentence = e.sentence;
+        rtTd.appendChild(rt); tr.appendChild(rtTd);
+        tbl.appendChild(tr);
+      }
+      wrap.appendChild(tbl);
+    }
+    if (!any) wrap.appendChild(el("span", "hint", "No channels with emit sentences."));
+  }
+  // Gather per-channel emit overrides -> {chId: [{sentence, enabled, rate_hz}]}
+  function collectEmitOverrides() {
+    const byCh = {};
+    const ensure = (ch, sent) => {
+      (byCh[ch] = byCh[ch] || {});
+      return (byCh[ch][sent] = byCh[ch][sent] || { sentence: sent });
+    };
+    for (const cb of document.querySelectorAll("input[data-sent-role='enable']")) {
+      ensure(cb.dataset.ch, cb.dataset.sentence).enabled = cb.checked;
+    }
+    for (const rt of document.querySelectorAll("input[data-sent-role='rate']")) {
+      const raw = String(rt.value).trim(); const v = Number(raw);
+      if (raw !== "" && Number.isFinite(v)) ensure(rt.dataset.ch, rt.dataset.sentence).rate_hz = v;
+    }
+    const out = {};
+    for (const ch of Object.keys(byCh)) out[ch] = Object.values(byCh[ch]);
+    return out;
+  }
+
+  // --- F1/F2: load route + replay blocks from cfg into the form ---
+  function loadRouteReplayIntoConfig() {
+    const r = (cfg && cfg.route) || null;
+    $("cfg-route-enabled").checked = !!(r && r.enabled);
+    $("cfg-route-loop").checked = !!(r && r.loop);
+    $("cfg-route-speed").value = (r && r.speed_kn != null) ? r.speed_kn : "";
+    $("cfg-route-wpts").value = (r && Array.isArray(r.waypoints))
+      ? r.waypoints.map((w) => w[0] + ", " + w[1]).join("\n") : "";
+    const rp = (cfg && cfg.replay) || null;
+    $("cfg-replay-file").value = rp ? (rp.file || "") : "";
+    $("cfg-replay-loop").checked = !!(rp && rp.loop);
+    $("cfg-replay-speed").value = (rp && rp.speed != null) ? rp.speed : "1";
+  }
+  function parseWaypoints() {
+    const wpts = [];
+    for (const line of String($("cfg-route-wpts").value).split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      const parts = t.split(/[,\s]+/).map(Number);
+      if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+        wpts.push([parts[0], parts[1]]);
+      }
+    }
+    return wpts;
+  }
+
+  // --- F1: runtime route control + progress readout ---
+  function renderRouteProgress(r) {
+    const node = $("route-progress");
+    if (!r) { node.textContent = "No active route."; return; }
+    const pct = (Number(r.fraction) * 100 || 0).toFixed(0);
+    const flag = r.finished ? "finished" : (r.paused ? "paused" : "running");
+    node.textContent = "Waypoint " + r.active_waypoint + " / " + r.waypoint_count +
+      " (" + pct + "%) · " + flag;
+  }
+  async function routeOp(op) {
+    try {
+      const r = await control({ action: "route", op });
+      renderRouteProgress(r && r.route);
+      toast("Route " + op);
+    } catch (e) { $("route-progress").textContent = "Route " + op + " failed: " + e.message; }
+  }
+  $("route-start").addEventListener("click", () => routeOp("start"));
+  $("route-pause").addEventListener("click", () => routeOp("pause"));
+  $("route-reset").addEventListener("click", () => routeOp("reset"));
+
+  // --- F3: GPS-fault injection (simulate-only testing tool) ---
+  function setFaultMsg(t, c) { const m = $("fault-msg"); m.textContent = t || ""; m.className = "msg" + (c ? " " + c : ""); }
+  async function faultAction(fault, valInputId) {
+    const body = { action: "fault", fault };
+    if (valInputId) {
+      const raw = String($(valInputId).value).trim(); const v = Number(raw);
+      if (raw === "" || !Number.isFinite(v)) { setFaultMsg(fault + " needs a numeric value", "err"); return; }
+      body.value = v;
+    }
+    try { await control(body); setFaultMsg(fault + " injected", "ok"); }
+    catch (e) { setFaultMsg(fault + " refused: " + e.message, "err"); }
+  }
+  $("fault-no_fix").addEventListener("click", () => faultAction("no_fix"));
+  $("fault-restore_fix").addEventListener("click", () => faultAction("restore_fix"));
+  $("fault-hdop_spike").addEventListener("click", () => faultAction("hdop_spike", "fault-hdop-val"));
+  $("fault-drop_sats").addEventListener("click", () => faultAction("drop_sats", "fault-sats-val"));
+  $("fault-gps_kill").addEventListener("click", () => faultAction("gps_kill"));
+  $("fault-gps_restore").addEventListener("click", () => faultAction("gps_restore"));
+
   function setMode(mode) {
     for (const r of document.querySelectorAll('input[name="cfg-mode"]')) r.checked = (r.value === mode);
     const auto = mode === "auto";
+    const sim = mode === "simulate";
+    const replay = mode === "replay";
     $("cfg-inputs-card").style.opacity = auto ? "1" : "0.55";
     $("cfg-inputs-note").style.display = auto ? "none" : "block";
     $("cfg-inputs").style.display = auto ? "flex" : "none";
+    // replay file/loop/speed knobs only apply in replay mode
+    $("cfg-replay-fields").style.display = replay ? "flex" : "none";
+    // route + fault injection are simulate-only tools
+    for (const cid of ["cfg-route-card", "cfg-fault-card"]) {
+      const card = $(cid);
+      card.style.opacity = sim ? "1" : "0.55";
+      const note = card.querySelector(".mode-note");
+      if (note) note.style.display = sim ? "none" : "block";
+    }
   }
   document.addEventListener("change", (ev) => {
     if (ev.target && ev.target.name === "cfg-mode") setMode(ev.target.value);
@@ -1446,11 +1645,40 @@
     // mode
     const modeR = document.querySelector('input[name="cfg-mode"]:checked');
     if (modeR) body.mode = modeR.value;
-    // channels
-    body.channels = channelOrder.map((id) => ({ id, enabled: $("cfg-ch-" + id).checked }));
+    // channels (+ F4 per-sentence emit overrides)
+    const emitMap = collectEmitOverrides();
+    body.channels = channelOrder.map((id) => {
+      const entry = { id, enabled: $("cfg-ch-" + id).checked };
+      const em = emitMap[id];
+      if (em && em.length) entry.emit = em;
+      return entry;
+    });
     // inputs (only if any selectors present)
     const inputSels = Array.from(document.querySelectorAll("[data-slot]"));
     if (inputSels.length) body.inputs = inputSels.map((s) => ({ id: s.dataset.slot, function: s.value }));
+    // F1 route block (persist when enabled or any waypoints supplied)
+    const routeEnabled = $("cfg-route-enabled").checked;
+    const wpts = parseWaypoints();
+    if (routeEnabled || wpts.length) {
+      const spRaw = String($("cfg-route-speed").value).trim();
+      body.route = {
+        enabled: routeEnabled,
+        waypoints: wpts,
+        speed_kn: spRaw === "" ? 0 : Number(spRaw),
+        loop: $("cfg-route-loop").checked,
+      };
+    }
+    // F2 replay block (persist when replay mode or a file is named)
+    const replayFile = $("cfg-replay-file").value.trim();
+    if (body.mode === "replay" || replayFile) {
+      const spRaw = String($("cfg-replay-speed").value).trim();
+      body.replay = {
+        enabled: body.mode === "replay",
+        file: replayFile,
+        loop: $("cfg-replay-loop").checked,
+        speed: spRaw === "" ? 1.0 : Number(spRaw),
+      };
+    }
     const r = await postJson("/api/config/initial-state", body);
     if (r.ok) setCfgMsg("Saved as defaults (applies on next Start).", "ok");
     else setCfgMsg("Save failed: " + ((r.data && r.data.detail) || ("HTTP " + r.status)), "err");
@@ -1466,6 +1694,8 @@
       setMode(cfg.mode || "simulate");
       // refresh channel checkboxes from config
       for (const ch of (cfg.channels || [])) { const cb = $("cfg-ch-" + ch.id); if (cb) cb.checked = ch.enabled !== false; }
+      buildConfigSentences();
+      loadRouteReplayIntoConfig();
       await refreshInputs();
       setCfgMsg((s && s.running !== false) ? "Loaded current state + config." : "Loaded config (engine stopped — no live state).", "ok");
     } catch (e) { setCfgMsg("Load failed: " + e.message, "err"); }
@@ -1674,6 +1904,8 @@
     }
     buildConfigForms();
     buildConfigChannels();
+    buildConfigSentences();
+    loadRouteReplayIntoConfig();
     setMode(cfg.mode || "simulate");
     connectStream();
   }

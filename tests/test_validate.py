@@ -13,6 +13,8 @@ from nmea_sim.config import (
     EngineConfig,
     InputSpec,
     MovementSpec,
+    ReplaySpec,
+    RouteSpec,
     TcpTapSpec,
     TimeSourceSpec,
 )
@@ -299,8 +301,8 @@ def test_bad_mode_rejected_by_validator() -> None:
     # The dataclass guard already refuses a bad mode at construction, so reach the validator's
     # belt-and-braces check by writing the frozen field directly (what a bypassing caller does).
     cfg = _config([_gps()])
-    object.__setattr__(cfg, "mode", "replay")
-    assert any("mode 'replay' invalid" in p and "simulate|auto" in p for p in validate(cfg))
+    object.__setattr__(cfg, "mode", "bogus")
+    assert any("mode 'bogus' invalid" in p and "simulate|auto|replay" in p for p in validate(cfg))
 
 
 def test_auto_mode_requires_serial_backend() -> None:
@@ -407,6 +409,115 @@ def test_shipped_config_still_validates_and_stays_simulate() -> None:
     cfg = EngineConfig.load(CONFIG_PATH)
     assert cfg.mode == "simulate"
     assert validate(cfg) == []
+
+
+# --- route playback preconditions (F1, R53/R54) -----------------------------------
+
+
+def _route_cfg(**over: object) -> EngineConfig:
+    """A simulate+underway config carrying an enabled two-waypoint route (the valid baseline)."""
+    base: dict[str, object] = {
+        "mode": "simulate",
+        "movement": MovementSpec(mode="underway"),
+        "route": RouteSpec(enabled=True, waypoints=[(0.0, 0.0), (1.0, 1.0)], speed_kn=10.0),
+    }
+    base.update(over)
+    return _config([_gps()], **base)
+
+
+def test_route_enabled_valid_simulate_underway_two_waypoints_passes() -> None:
+    assert validate(_route_cfg()) == []
+
+
+def test_route_enabled_requires_underway() -> None:
+    cfg = _route_cfg(movement=MovementSpec(mode="static"))
+    assert any("route.enabled requires movement.mode 'underway'" in p for p in validate(cfg))
+
+
+def test_route_enabled_requires_at_least_two_waypoints() -> None:
+    cfg = _route_cfg(route=RouteSpec(enabled=True, waypoints=[(0.0, 0.0)], speed_kn=10.0))
+    assert any("route.enabled requires at least 2 waypoints" in p for p in validate(cfg))
+
+
+def test_route_enabled_requires_simulate_mode() -> None:
+    # Auto mode carries its own extra errors (serial backend, static movement); we assert only
+    # that the route-mode precondition message is among the reported problems.
+    cfg = _route_cfg(mode="auto", writer_backend="serial", inputs=[_input()])
+    assert any("route.enabled requires mode 'simulate'" in p for p in validate(cfg))
+
+
+# --- replay mode preconditions (F2, R54) ------------------------------------------
+
+
+def test_replay_mode_requires_enabled_block() -> None:
+    cfg = _config([_gps()], mode="replay")
+    assert any("requires a 'replay' block with enabled=true" in p for p in validate(cfg))
+
+
+def test_replay_mode_requires_non_empty_file() -> None:
+    cfg = _config([_gps()], mode="replay", replay=ReplaySpec(enabled=True, file=""))
+    assert any("replay.file to name a capture" in p for p in validate(cfg))
+
+
+def test_replay_mode_requires_existing_file() -> None:
+    cfg = _config(
+        [_gps()],
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file="/no/such/capture-file.nmea"),
+    )
+    assert any("does not exist" in p for p in validate(cfg))
+
+
+def test_replay_mode_with_existing_file_passes(tmp_path: Path) -> None:
+    cap = tmp_path / "cap.nmea"
+    cap.write_text("$GPRMC,123519,A,4807.038,N,01131.000,E,,,230394,,*4B\n", encoding="utf-8")
+    cfg = _config([_gps()], mode="replay", replay=ReplaySpec(enabled=True, file=str(cap)))
+    assert validate(cfg) == []
+
+
+def test_route_and_replay_are_mutually_exclusive(tmp_path: Path) -> None:
+    cap = tmp_path / "cap.nmea"
+    cap.write_text("$GPRMC\n", encoding="utf-8")
+    cfg = _config(
+        [_gps()],
+        mode="simulate",
+        movement=MovementSpec(mode="underway"),
+        route=RouteSpec(enabled=True, waypoints=[(0.0, 0.0), (1.0, 1.0)], speed_kn=1.0),
+        replay=ReplaySpec(enabled=True, file=str(cap)),
+    )
+    assert any("incompatible with replay" in p for p in validate(cfg))
+
+
+# --- per-sentence enable/rate x baud budget (F4) ----------------------------------
+
+
+def _heading_hdt_hdg(*, hdg_enabled: bool) -> ChannelSpec:
+    # HDT + HDG both at 10 Hz on 4800 8N1 is over the 80% budget; disabling HDG frees its slot.
+    return ChannelSpec(
+        id="heading",
+        role="heading",
+        path="/dev/serial/by-id/hd",
+        baud=4800,
+        talker="HE",
+        emit=[EmitSpec("HDT", 10.0), EmitSpec("HDG", 10.0, enabled=hdg_enabled)],
+    )
+
+
+def test_disabled_emit_frees_baud_budget() -> None:
+    # Both sentences enabled busts the wire...
+    assert any(
+        "over baud budget" in p for p in validate(_config([_heading_hdt_hdg(hdg_enabled=True)]))
+    )
+    # ...disabling one frees its budget, so the same channel now validates cleanly.
+    assert validate(_config([_heading_hdt_hdg(hdg_enabled=False)])) == []
+
+
+def test_per_sentence_rate_change_busting_budget_fails_validate() -> None:
+    # A GPS channel that fits at 1 Hz busts budget once one sentence is re-rated far higher.
+    ok = _gps(baud=4800, emit=[EmitSpec("GGA", 1.0), EmitSpec("RMC", 1.0)])
+    assert validate(_config([ok])) == []
+    busted = _gps(baud=4800, emit=[EmitSpec("GGA", 1.0), EmitSpec("RMC", 50.0)])
+    assert any("over baud budget" in p for p in validate(_config([busted])))
 
 
 # --- validate_or_raise ------------------------------------------------------------

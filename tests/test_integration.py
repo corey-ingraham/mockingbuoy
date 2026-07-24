@@ -36,6 +36,7 @@ from nmea_sim.config import (
     EmitSpec,
     EngineConfig,
     MovementSpec,
+    RouteSpec,
     TcpTapSpec,
     TimeSourceSpec,
 )
@@ -372,6 +373,94 @@ def test_muted_channel_stays_alive_and_healthy() -> None:
         assert gps_health.enabled is False
         assert gps_health.alive is True
         assert report.ok is True
+    finally:
+        engine.stop()
+
+
+# --- 1d) route playback drives own-ship + runtime control (F1) --------------------
+
+
+def test_route_playback_drives_ownship_and_pause_reset_control() -> None:
+    """A running engine in simulate + underway mode with an enabled route walks own-ship toward
+    the waypoints (latitude climbs, COG swings due north), surfaces progress, and honours the
+    pause/reset runtime control — all on the live schedule, no restart."""
+    initial = dict(_INITIAL_STATE)
+    initial.update({"lat": 0.0, "lon": 0.0, "sog_kn": 0.0, "cog_deg": 90.0})
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("RMC", 5.0)],
+    )
+    cfg = EngineConfig(
+        writer_backend="null",
+        movement=MovementSpec(mode="underway", physics_hz=20.0),
+        time_source=TimeSourceSpec(mode="system_utc"),
+        initial_state_raw=initial,
+        channels=[gps],
+        mode="simulate",
+        # Both waypoints lie due north of the origin, far enough that the route never completes
+        # inside the test window (so the cursor stays on waypoint 0 and never finishes).
+        route=RouteSpec(
+            enabled=True,
+            waypoints=[(0.5, 0.0), (1.0, 0.0)],
+            speed_kn=3000.0,
+            loop=False,
+        ),
+    )
+    engine = Engine(cfg)
+    start_lat = engine.snapshot().lat
+    engine.start()
+    try:
+        assert _wait_until(
+            lambda: engine.snapshot().lat > start_lat + 1e-4
+        ), "expected own-ship latitude to climb toward the northern waypoints"
+        moved = engine.snapshot()
+        assert moved.lat > start_lat
+        assert moved.cog_deg < 5.0 or moved.cog_deg > 355.0  # steered due north
+
+        status = engine.route_status()
+        assert status is not None
+        assert status["waypoint_count"] == 2
+        assert status["active_waypoint"] == 0  # still en route to the first waypoint
+        assert status["finished"] is False
+
+        # Pause freezes the track: latitude stops advancing on the live schedule.
+        assert engine.route_control("pause") is True
+        time.sleep(0.15)  # let any in-flight tick settle past the flag flip
+        paused_lat = engine.snapshot().lat
+        time.sleep(0.2)
+        assert engine.snapshot().lat == pytest.approx(paused_lat, abs=1e-6)
+        assert engine.route_status()["paused"] is True
+
+        # Reset rewinds the cursor and clears the pause.
+        assert engine.route_control("reset") is True
+        after_reset = engine.route_status()
+        assert after_reset["active_waypoint"] == 0
+        assert after_reset["paused"] is False
+        assert after_reset["finished"] is False
+    finally:
+        engine.stop()
+
+
+def test_route_control_returns_false_without_active_route() -> None:
+    """A config with no route has no cursor to drive, so the runtime control reports no-op
+    (False) rather than raising — the web seam maps that to a clean 4xx."""
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("RMC", 5.0)],
+    )
+    engine = Engine(_base_config([gps]))
+    engine.start()
+    try:
+        assert engine.route_status() is None
+        assert engine.route_control("pause") is False
     finally:
         engine.stop()
 

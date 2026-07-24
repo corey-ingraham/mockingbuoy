@@ -25,20 +25,22 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
 import pynmea2
+from geographiclib.geodesic import Geodesic
 
 from . import budget, rx
 from .ais_generator import AisGenerator
-from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
+from .classify import CLASS_TO_ROLE, sentence_class
+from .config import AisSpec, ChannelSpec, EngineConfig, RouteSpec, TimeSourceSpec
 from .diagnostics import CaptureSession, PortDiagnostics
 from .gps_generator import GpsGenerator, zda_from_datetime
 from .heading_generator import HeadingGenerator
 from .instrument_generator import InstrumentGenerator
-from .navigation import dead_reckon
+from .navigation import dead_reckon, knots_to_mps
 from .ntpsync import NtpSync
 from .realism import RealismProfile, TargetSpawner
 from .router import Router
@@ -64,6 +66,18 @@ _MAX_CAPTURE_RESIDUAL = 4096
 # so identity (``is``) comparison is unambiguous: a worker blocked in ``inbox.get`` wakes at once
 # and breaks, rather than depending on a ``stop_event.wait`` a queue put can never interrupt (R40).
 _STOP = object()
+
+# WGS-84 geodesic, shared for the route driver's bearing/distance to the active waypoint (the same
+# model ``navigation.dead_reckon`` uses to step along that bearing, so steer and step stay in sync).
+_GEOD = Geodesic.WGS84
+
+
+def _bearing_and_distance(
+    lat1: float, lon1: float, lat2: float, lon2: float
+) -> tuple[float, float]:
+    """Initial great-circle bearing (degrees, 0..360) and distance (metres) from p1 to p2."""
+    g = _GEOD.Inverse(lat1, lon1, lat2, lon2)
+    return g["azi1"] % 360.0, g["s12"]
 
 
 class BudgetExceeded(RuntimeError):
@@ -202,14 +216,25 @@ def build_source(spec: ChannelSpec) -> SentenceSource:
 
 
 def emitters_for(spec: ChannelSpec) -> list[_Emitter]:
-    """Expand a channel's config into scheduled emitters (periods in seconds)."""
+    """Expand a channel's config into scheduled emitters (periods in seconds).
+
+    A per-sentence ``EmitSpec.enabled == False`` frees its slot: the emitter is not scheduled (F4),
+    so a disabled sentence stops emitting and returns its baud budget. Absent/``True`` keeps every
+    listed sentence exactly as before, so pre-switch configs are unchanged.
+    """
     if spec.role == "ais":
-        pos_rate = spec.emit[0].rate_hz if spec.emit else 0.2
+        # AIS models its position rate via the first emit entry. If every configured emit is
+        # explicitly disabled the channel goes silent (no position, no static); with none configured
+        # the historical 0.2 Hz position default stands.
+        active = [e for e in spec.emit if e.enabled]
+        if spec.emit and not active:
+            return []
+        pos_rate = active[0].rate_hz if active else 0.2
         out = [_Emitter(AIS_POSITION, 1.0 / pos_rate)]
         if spec.ais is not None and spec.ais.include_type5:
             out.append(_Emitter(AIS_STATIC, spec.ais.type5_period_s))
         return out
-    return [_Emitter(e.sentence, 1.0 / e.rate_hz) for e in spec.emit]
+    return [_Emitter(e.sentence, 1.0 / e.rate_hz) for e in spec.emit if e.enabled]
 
 
 def advance_next_fire(next_fire: float, period: float, now: float) -> float:
@@ -244,6 +269,18 @@ class _Emitter:
     sentence: str
     period: float
     next_fire: float = 0.0
+
+
+@dataclass(frozen=True)
+class _ReplayLine:
+    """Inbox marker for a replayed capture line (replay mode).
+
+    Distinct from a passthrough tuple so the worker loop can tell the two apart: a passthrough tuple
+    is arbitrated against the router (winner check), a ``_ReplayLine`` is injected unconditionally
+    (the capture is the winner by construction) subject only to the channel OFF gate.
+    """
+
+    line: str
 
 
 @dataclass
@@ -356,15 +393,104 @@ class PhysicsEngine:
         return changes
 
 
+class _RouteDriver:
+    """Stateful waypoint-playback cursor (simulate mode only), owned by the physics thread.
+
+    Holds the mutable route progress that :meth:`PhysicsEngine.advance` must stay free of — the
+    active waypoint index and the paused/finished flags — so ``advance`` remains a pure function of
+    its inputs. Each physics tick calls :meth:`step`, which returns the ``(cog_deg, sog_kn)`` that
+    steer own-ship toward the active waypoint; ``advance`` then does the actual dead-reckoning along
+    that heading. The cursor is advanced to the next waypoint once own-ship comes within a single
+    tick's travel of the active one, which stops dead-reckoning from overshooting and oscillating.
+    A small lock guards the cursor so the control seam (start/pause/reset) and the progress readout
+    can be served straight from a request handler without racing the physics thread.
+    """
+
+    def __init__(self, route: RouteSpec) -> None:
+        self._waypoints = list(route.waypoints)
+        self._speed_kn = route.speed_kn
+        self._loop = route.loop
+        self._lock = threading.Lock()
+        self._index = 0
+        self._paused = False
+        self._finished = False
+
+    def control(self, op: str) -> bool:
+        """Apply a ``start``/``pause``/``reset`` op (a flag write); ``False`` on an unknown op."""
+        with self._lock:
+            if op == "start":
+                self._paused = False
+            elif op == "pause":
+                self._paused = True
+            elif op == "reset":
+                self._index = 0
+                self._paused = False
+                self._finished = False
+            else:
+                return False
+        return True
+
+    def progress(self) -> dict[str, object]:
+        """A thread-safe snapshot of route progress for the state/health surface."""
+        with self._lock:
+            n = len(self._waypoints)
+            return {
+                "active_waypoint": self._index,
+                "waypoint_count": n,
+                "fraction": (self._index / n) if n else 0.0,
+                "paused": self._paused,
+                "finished": self._finished,
+            }
+
+    def step(self, lat: float, lon: float, dt_s: float) -> tuple[float, float] | None:
+        """Return the ``(cog_deg, sog_kn)`` to steer toward the active waypoint this tick.
+
+        Returns ``None`` when the route is not driving own-ship — paused, finished, or fewer than
+        two waypoints — so the caller holds position. Advances the cursor (then wraps when ``loop``,
+        else finishes) once own-ship is within one tick's travel of the active waypoint.
+        """
+        with self._lock:
+            if self._paused or self._finished or len(self._waypoints) < 2:
+                return None
+            if self._index >= len(self._waypoints):  # defensive: out-of-range cursor -> done
+                self._finished = True
+                return None
+            target = self._waypoints[self._index]
+            bearing, distance_m = _bearing_and_distance(lat, lon, target[0], target[1])
+            step_m = knots_to_mps(self._speed_kn) * dt_s
+            if distance_m <= step_m:
+                # Arrived (within a tick's travel): advance the cursor, then steer to the next.
+                self._index += 1
+                if self._index >= len(self._waypoints):
+                    if self._loop:
+                        self._index = 0
+                    else:
+                        self._finished = True
+                        return None
+                target = self._waypoints[self._index]
+                bearing, _distance = _bearing_and_distance(lat, lon, target[0], target[1])
+            return bearing, self._speed_kn
+
+
 class _PhysicsThread(threading.Thread):
     def __init__(
-        self, shared: SharedState, physics: PhysicsEngine, hz: float, stop: threading.Event
+        self,
+        shared: SharedState,
+        physics: PhysicsEngine,
+        hz: float,
+        stop: threading.Event,
+        route: _RouteDriver | None = None,
+        replay_mode: bool = False,
     ) -> None:
         super().__init__(name="physics", daemon=True)
         self._shared = shared
         self._physics = physics
         self._period = 1.0 / hz
         self._stop_event = stop
+        # Route driver (simulate route playback) and replay flag are both None/False in the common
+        # case, in which case ``run`` is byte-identical to the pre-feature tick (see guards below).
+        self._route = route
+        self._replay_mode = replay_mode
 
     def run(self) -> None:
         prev = time.monotonic()
@@ -376,7 +502,28 @@ class _PhysicsThread(threading.Thread):
             now = time.monotonic()
             dt = now - prev
             prev = now
-            changes = self._physics.advance(self._shared.snapshot(), dt)
+            snap = self._shared.snapshot()
+            state = snap
+            route_changes: dict[str, object] = {}
+            if self._route is not None:
+                # Route playback steers cog/sog toward the active waypoint; advance dead-reckons
+                # with those values. Kept OUT of advance so it stays pure (no cursor, no globals).
+                steer = self._route.step(snap.lat, snap.lon, dt)
+                if steer is not None:
+                    cog, sog = steer
+                    route_changes = {"cog_deg": cog, "sog_kn": sog}
+                    state = replace(snap, cog_deg=cog, sog_kn=sog)
+                else:  # paused/finished/too-few-waypoints -> hold position (sog 0, no dead-reckon)
+                    route_changes = {"sog_kn": 0.0}
+                    state = replace(snap, sog_kn=0.0)
+            changes = self._physics.advance(state, dt)
+            if self._replay_mode:
+                # Replay owns own-ship position and the clock (from the capture); physics adds
+                # only cosmetic sea-state motion, so a replayed track is never double-integrated.
+                for owned in ("utc", "lat", "lon"):
+                    changes.pop(owned, None)
+            if route_changes:
+                changes = {**route_changes, **changes}
             self._shared.update(**changes)
             next_tick = advance_next_fire(next_tick, self._period, now)
 
@@ -450,10 +597,14 @@ class _ChannelWorker(threading.Thread):
         monitor: Callable[[str, str], None] | None,
         router: Router | None = None,
         zda_carveout: ZdaCarveout | None = None,
+        suppress_generation: bool = False,
     ) -> None:
         super().__init__(name=f"channel-{spec.id}", daemon=True)
         self._spec = spec
         self._source = source
+        # Replay mode: the capture file is the source of truth, so no channel generates — it only
+        # injects replayed lines handed to its inbox. False in simulate/auto, so those are intact.
+        self._suppress_generation = suppress_generation
         self._sinks = sinks
         self._shared = shared
         self._status = status_q
@@ -543,6 +694,8 @@ class _ChannelWorker(threading.Thread):
                     if em.next_fire <= now:
                         self._fire(em)
                         em.next_fire = advance_next_fire(em.next_fire, em.period, now)
+            elif isinstance(msg, _ReplayLine):  # replay mode: inject a captured line verbatim
+                self._on_replay(msg.line)
             else:  # a classified passthrough tuple (input_id, cls, line)
                 self._on_passthrough(cast("tuple[str, str, str]", msg))
 
@@ -551,6 +704,10 @@ class _ChannelWorker(threading.Thread):
         # Checked before generation so a muted channel costs nothing and suppresses every
         # consumer at once — serial, TCP tap and the web monitor all hang off _fan_out.
         if not self._enabled.is_set():
+            return
+        # Replay mode suppresses ALL generation: the capture file is the source of truth, so this
+        # channel only injects replayed lines (via _on_replay). Inert (False) in simulate/auto.
+        if self._suppress_generation:
             return
         # Suppress generation while a live source is winning this channel's class: passthrough owns
         # the bus this tick, so the generator must not also fire (they would double up on the wire).
@@ -602,6 +759,19 @@ class _ChannelWorker(threading.Thread):
                 for synth in self._zda_carveout.on_forward(input_id, line):
                     self._inject(synth)
         # else: a higher-priority source is currently live -> drop this line.
+
+    def _on_replay(self, line: str) -> None:
+        """Inject a replayed capture line VERBATIM (replay mode).
+
+        The capture file is the winner by construction, so there is NO router/winner check — but the
+        channel OFF gate still wins (R55): a disabled channel stays silent. Runs on the WORKER
+        thread, the sole writer for this channel, so replay preserves the per-channel single-writer
+        invariant exactly as passthrough does. Own-ship state and the clock are seeded by the replay
+        reader (see :class:`_ReplayThread`); here the worker only emits.
+        """
+        if not self._enabled.is_set():
+            return
+        self._inject(line)
 
     def _inject(self, line: str) -> None:
         """Forward a winning source's line VERBATIM to every sink (and the monitor)."""
@@ -664,6 +834,107 @@ class _ChannelWorker(threading.Thread):
             enabled=self._enabled.is_set(),
             source=source,
         )
+
+
+# --- replay source (mode == "replay") ---------------------------------------------
+
+
+class _ReplayThread(threading.Thread):
+    """Reads an NMEA capture and re-injects each line with its original inter-line timing.
+
+    Replay mode only. It NEVER touches a sink: each line is classified and handed to the owning
+    channel worker's inbox (the same single-writer path auto-mode passthrough uses), so the worker
+    thread stays the ONLY writer per channel. Inter-line timing is derived from the capture's own
+    time-bearing sentences (RMC/ZDA) and scaled by ``speed``; the bursts of non-time sentences
+    between two timestamps are injected back-to-back, reproducing a receiver's per-second cadence.
+    Own-ship position/heading (via ``rx.parse_line``) and the clock (via ``rx.parse_time``) are
+    seeded from the replayed lines; replayed time is applied to ``state.utc`` directly and is EXEMPT
+    from the monotonic clamp the live GNSS path uses. Every sleep is interruptible via the shared
+    ``stop_event``; at EOF it restarts when ``loop`` else exits.
+    """
+
+    def __init__(
+        self,
+        file: str,
+        loop: bool,
+        speed: float,
+        worker_by_class: dict[str, _ChannelWorker],
+        shared: SharedState,
+        stop: threading.Event,
+    ) -> None:
+        super().__init__(name="replay", daemon=True)
+        self._file = file
+        self._loop = loop
+        # A non-positive speed would divide-by-zero / stall the pacing; clamp to real-time.
+        self._speed = speed if speed > 0.0 else 1.0
+        self._worker_by_class = worker_by_class
+        self._shared = shared
+        self._stop_event = stop
+
+    def run(self) -> None:
+        # A vanished/again-unreadable file just ends the thread quietly (validate proved it existed
+        # at start; nothing else the reader can do mid-run). Emission on other paths is unaffected.
+        with contextlib.suppress(OSError):
+            while not self._stop_event.is_set():
+                self._play_once()
+                if not self._loop:
+                    return
+
+    def _play_once(self) -> None:
+        prev_ts: datetime | None = None
+        with open(self._file, encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                if self._stop_event.is_set():
+                    return
+                line = raw.strip()
+                if not line:
+                    continue
+                prev_ts = self._pace(line, prev_ts)
+                if self._stop_event.is_set():
+                    return
+                self._dispatch(line)
+
+    def _pace(self, line: str, prev_ts: datetime | None) -> datetime | None:
+        """Sleep the inter-line gap derived from time-bearing sentences; return the new ``prev_ts``.
+
+        Only RMC/ZDA carry a full wall-clock. Between two such sentences we wait their timestamp
+        delta (scaled by speed); a backwards or zero delta waits not at all. A line with no
+        parseable time leaves ``prev_ts`` unchanged (its burst rides with the preceding timestamp).
+        """
+        ts: datetime | None = None
+        with contextlib.suppress(pynmea2.ParseError):
+            ts = rx.parse_time(line)
+        if ts is None:
+            return prev_ts
+        if prev_ts is not None:
+            delay = (ts - prev_ts).total_seconds() / self._speed
+            if delay > 0.0:
+                self._stop_event.wait(delay)  # interruptible: a stop wakes the reader at once
+        return ts
+
+    def _dispatch(self, line: str) -> None:
+        """Route one replayed line to its class-matched worker + seed own-ship state.
+
+        Lines that do not classify, or whose class has no configured channel, are DROPPED. A routed
+        line seeds the shared snapshot (position/heading via ``rx.parse_line``; clock via
+        ``rx.parse_time``, NO monotonic clamp) and is then enqueued to the owning worker, which
+        injects it on its own thread — the reader never writes a sink, so single-writer holds.
+        """
+        cls = sentence_class(line)
+        if cls is None:
+            return
+        worker = self._worker_by_class.get(cls)
+        if worker is None:
+            return
+        with contextlib.suppress(pynmea2.ParseError):
+            changes = rx.parse_line(line)
+            if changes:
+                self._shared.update(**changes)
+        with contextlib.suppress(pynmea2.ParseError):
+            utc = rx.parse_time(line)
+            if utc is not None:
+                self._shared.update(utc=utc)  # replayed clock: exempt from monotonic clamp (R51)
+        worker.enqueue(_ReplayLine(line))
 
 
 # --- active-diagnostics port gating (R17) -----------------------------------------
@@ -750,9 +1021,21 @@ class Engine:
             )
             clock = self._time_authority
 
+        # Route playback (F1): simulate-mode only, opt-in. Cross-field preconditions (simulate +
+        # underway + >= 2 waypoints) are enforced in ``validate``; we build the driver only when it
+        # is actually enabled, so a disabled/absent route leaves the physics tick byte-identical.
+        self._route_driver: _RouteDriver | None = None
+        if config.mode == "simulate" and config.route is not None and config.route.enabled:
+            self._route_driver = _RouteDriver(config.route)
+
         self._physics_engine = PhysicsEngine(config.movement.mode, clock)
         self._physics = _PhysicsThread(
-            self._shared, self._physics_engine, config.movement.physics_hz, self._stop_event
+            self._shared,
+            self._physics_engine,
+            config.movement.physics_hz,
+            self._stop_event,
+            route=self._route_driver,
+            replay_mode=config.mode == "replay",
         )
 
         # Sinks that own I/O resources (serial ports, TCP taps) and must be started before
@@ -782,9 +1065,32 @@ class Engine:
                     monitor,
                     self._router,
                     carveout,
+                    # Replay mode suppresses generation on every channel — the capture is the source
+                    # of truth and channels only inject replayed lines. False in simulate/auto.
+                    suppress_generation=config.mode == "replay",
                 )
             )
         self._worker_by_id = {w.channel_id: w for w in self._workers}
+
+        # Replay source (F2): mode=='replay' only. One reader thread paces the capture and hands
+        # each line to the worker whose role matches the line's class (gnss->gps, heading->heading,
+        # ais->ais); classes with no configured channel are dropped. None outside replay mode.
+        self._replay_thread: _ReplayThread | None = None
+        if config.mode == "replay" and config.replay is not None and config.replay.enabled:
+            channel_by_role = {ch.role: ch.id for ch in config.channels}
+            worker_by_class: dict[str, _ChannelWorker] = {}
+            for cls, role in CLASS_TO_ROLE.items():
+                cid = channel_by_role.get(role)
+                if cid is not None and cid in self._worker_by_id:
+                    worker_by_class[cls] = self._worker_by_id[cid]
+            self._replay_thread = _ReplayThread(
+                config.replay.file,
+                config.replay.loop,
+                config.replay.speed,
+                worker_by_class,
+                self._shared,
+                self._stop_event,
+            )
 
         # AUTO mode: one input reader per InputSpec. Each is a receive-only serial port whose
         # verified lines are dispatched to the router, which decides the target channel. Kept
@@ -981,6 +1287,10 @@ class Engine:
             worker.start()
         for reader in self._input_readers:
             reader.start()
+        # Replay reader starts LAST, after every worker is draining, so no replayed line is enqueued
+        # before its target worker can inject it (mirrors the input-reader ordering rule, R50).
+        if self._replay_thread is not None:
+            self._replay_thread.start()
 
     def stop(self, timeout: float = 15.0) -> None:
         self._stop_event.set()
@@ -1004,7 +1314,10 @@ class Engine:
             with contextlib.suppress(Exception):
                 session.stop()
         deadline = time.monotonic() + timeout
-        for thread in (self._physics, *self._workers):
+        # The replay reader (if any) is joined first so it stops enqueuing before the workers wind
+        # down; its sleeps are on ``stop_event.wait`` which the ``set`` above has already released.
+        replay_threads = [self._replay_thread] if self._replay_thread is not None else []
+        for thread in (*replay_threads, self._physics, *self._workers):
             remaining = max(0.0, deadline - time.monotonic())
             thread.join(remaining)
         for worker in self._workers:
@@ -1136,6 +1449,22 @@ class Engine:
                 worker.set_enabled(enabled)
                 return True
         return False
+
+    def route_control(self, op: str) -> bool:
+        """Runtime route-playback control (``start``/``pause``/``reset``).
+
+        A cheap flag write on the route cursor — no worker or thread is touched, so it is served
+        straight from a request handler. Returns ``False`` when no route is active (not replay/
+        simulate route mode) or the op is unknown, so the web layer can 4xx a no-op cleanly.
+        """
+        if self._route_driver is None:
+            return False
+        return self._route_driver.control(op)
+
+    def route_status(self) -> dict[str, object] | None:
+        """Current route-playback progress (active waypoint / count / fraction / flags), or ``None``
+        when no route is active — the read side of the F1 progress surface for the state dict."""
+        return None if self._route_driver is None else self._route_driver.progress()
 
     def health(self) -> HealthReport:
         channels = [w.health() for w in self._workers]
