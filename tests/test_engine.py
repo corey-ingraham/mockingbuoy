@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from datetime import UTC, datetime
 
 import pytest
 from geographiclib.geodesic import Geodesic
@@ -122,6 +123,38 @@ def test_physics_static_holds_position() -> None:
     state = VesselState(**_INITIAL, utc=ts.initial())
     changes = physics.advance(state, dt_s=3600.0)
     assert "lat" not in changes and "lon" not in changes
+
+
+def test_physics_advance_emits_pitch_and_roll() -> None:
+    ts = TimeSource(TimeSourceSpec(mode="hold"), None)
+    physics = PhysicsEngine("static", ts)
+    state = VesselState(**_INITIAL, sea_state=4, utc=datetime(2024, 1, 1, tzinfo=UTC))
+    changes = physics.advance(state, dt_s=0.1)
+    assert "pitch_deg" in changes
+    assert "roll_deg" in changes
+
+
+def test_physics_pitch_roll_vary_over_time_and_stay_pure() -> None:
+    ts = TimeSource(TimeSourceSpec(mode="hold"), None)
+    physics = PhysicsEngine("static", ts)
+
+    # Purity: with a held clock, advancing the same state twice yields identical output.
+    base = VesselState(**_INITIAL, sea_state=5, utc=datetime(2024, 1, 1, tzinfo=UTC))
+    first = physics.advance(base, dt_s=0.1)
+    second = physics.advance(base, dt_s=0.1)
+    assert first["pitch_deg"] == second["pitch_deg"]
+    assert first["roll_deg"] == second["roll_deg"]
+
+    # Non-constant: at sea_state > 0 the motion model varies across distinct clock values.
+    pitches = set()
+    rolls = set()
+    for sec in range(12):
+        s = VesselState(**_INITIAL, sea_state=5, utc=datetime(2024, 1, 1, 0, 0, sec, tzinfo=UTC))
+        ch = physics.advance(s, dt_s=0.1)
+        pitches.add(ch["pitch_deg"])
+        rolls.add(ch["roll_deg"])
+    assert len(pitches) > 1
+    assert len(rolls) > 1
 
 
 def test_advance_next_fire_accumulates_period_with_no_drift() -> None:

@@ -29,4 +29,8 @@ def sample_state() -> VesselState:
         satellites=9,
         hdop=0.8,
         utc=datetime(2024, 6, 21, 12, 35, 19, 420000, tzinfo=UTC),
+        sea_state=3,
+        depth_m=25.0,
+        wind_speed_kn=10.0,
+        wind_dir_deg=200.0,
     )

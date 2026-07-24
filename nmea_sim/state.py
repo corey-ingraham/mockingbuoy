@@ -43,6 +43,19 @@ class VesselState:
     satellites: int
     hdop: float
     utc: datetime
+    # New fields MUST stay after ``utc`` (which has no default): a frozen dataclass cannot
+    # place a non-default field after a defaulted one. Each carries its own default.
+    stw_kn: float = 0.0  # speed through water, knots
+    depth_m: float = 0.0  # depth below transducer, metres
+    rot_dpm: float = 0.0  # rate of turn, deg/min, + = starboard
+    wind_speed_kn: float = 0.0  # TRUE wind speed, knots
+    wind_dir_deg: float = 0.0  # TRUE wind direction, deg true, FROM
+    sea_state: int = 1  # WMO sea state 0-9, drives pitch/roll motion
+    pitch_deg: float = 0.0  # + = bow up (derived by physics)
+    roll_deg: float = 0.0  # + = starboard down (derived by physics)
+    rudder_angle_deg: float = 0.0  # + = starboard (for RSA, later phase)
+    set_deg: float = 0.0  # current set, deg true (for VDR, later phase)
+    drift_kn: float = 0.0  # current drift, knots (for VDR, later phase)
 
 
 @dataclass(frozen=True)

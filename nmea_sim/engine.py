@@ -36,6 +36,7 @@ from .gps_generator import GpsGenerator
 from .heading_generator import HeadingGenerator
 from .navigation import dead_reckon
 from .realism import RealismProfile, TargetSpawner
+from .seastate import sea_state_motion
 from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
 from .tcp_tap import TcpTap
@@ -290,11 +291,18 @@ class PhysicsEngine:
 
     def advance(self, state: VesselState, dt_s: float) -> dict[str, object]:
         """Return the field changes for advancing ``state`` by ``dt_s`` seconds."""
-        changes: dict[str, object] = {"utc": self._time.advance(state.utc, dt_s)}
+        new_utc = self._time.advance(state.utc, dt_s)
+        changes: dict[str, object] = {"utc": new_utc}
         if self._mode == "underway" and state.sog_kn != 0.0:
             lat, lon = dead_reckon(state.lat, state.lon, state.sog_kn, state.cog_deg, dt_s)
             changes["lat"] = lat
             changes["lon"] = lon
+        # Pitch/roll are derived each tick from a deterministic sea-state motion model keyed
+        # on the (absolute) clock — a hull rolls at anchor too, so this runs in both modes.
+        # advance stays pure: identical inputs (same state, same clock) give identical output.
+        pitch, roll = sea_state_motion(state.sea_state, new_utc.timestamp())
+        changes["pitch_deg"] = pitch
+        changes["roll_deg"] = roll
         return changes
 
 

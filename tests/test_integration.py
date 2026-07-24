@@ -62,6 +62,11 @@ _INITIAL_STATE = {
     "fix_quality": 1,
     "satellites": 9,
     "hdop": 0.8,
+    "stw_kn": 12.0,
+    "depth_m": 40.0,
+    "wind_speed_kn": 14.0,
+    "wind_dir_deg": 210.0,
+    "sea_state": 3,
 }
 
 # A tight, area-neutral bounding box sitting in open water (no real locale).

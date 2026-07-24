@@ -45,6 +45,12 @@ def _initial_state() -> dict[str, Any]:
         "fix_quality": 1,
         "satellites": 10,
         "hdop": 0.8,
+        "stw_kn": 0.0,
+        "depth_m": 10.0,
+        "rot_dpm": 0.0,
+        "wind_speed_kn": 8.0,
+        "wind_dir_deg": 45.0,
+        "sea_state": 2,
     }
 
 

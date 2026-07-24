@@ -32,6 +32,29 @@ def test_build_initial_state_fills_utc() -> None:
     assert isinstance(state.satellites, int)
 
 
+def test_build_initial_state_populates_new_fields() -> None:
+    cfg = EngineConfig.load(CONFIG_PATH)
+    utc = datetime(2024, 1, 1, tzinfo=UTC)
+    state = cfg.build_initial_state(utc)
+    # Example config sets these explicitly.
+    assert state.depth_m == pytest.approx(10.0)
+    assert state.sea_state == 1
+    assert isinstance(state.sea_state, int)
+    assert state.wind_speed_kn == pytest.approx(8.0)
+    assert state.wind_dir_deg == pytest.approx(45.0)
+
+
+def test_build_initial_state_new_field_defaults() -> None:
+    # A raw config carrying only the required lat/lon must fall back to documented defaults:
+    # stw defaults to sog (0.0 here), depth to 10.0, sea_state to 1.
+    cfg = EngineConfig(initial_state_raw={"lat": 1.0, "lon": 2.0, "sog_kn": 7.5})
+    state = cfg.build_initial_state(datetime(2024, 1, 1, tzinfo=UTC))
+    assert state.stw_kn == pytest.approx(7.5)  # defaults to SOG
+    assert state.depth_m == pytest.approx(10.0)
+    assert state.sea_state == 1
+    assert state.rot_dpm == pytest.approx(0.0)
+
+
 def test_movement_rejects_bad_hz() -> None:
     with pytest.raises(ValueError):
         MovementSpec(physics_hz=0)

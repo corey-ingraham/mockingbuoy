@@ -189,6 +189,37 @@ def test_negative_speed_rejected() -> None:
     assert any("initial_state.sog_kn" in p for p in problems)
 
 
+def test_out_of_range_sea_state_rejected() -> None:
+    bad = dict(_STATE, sea_state=12)
+    problems = validate(_config([_gps()], initial_state_raw=bad))
+    assert any("initial_state.sea_state" in p and "above maximum 9" in p for p in problems)
+
+
+def test_negative_depth_rejected() -> None:
+    bad = dict(_STATE, depth_m=-1.0)
+    problems = validate(_config([_gps()], initial_state_raw=bad))
+    assert any("initial_state.depth_m" in p and "below minimum" in p for p in problems)
+
+
+def test_out_of_range_wind_dir_rejected() -> None:
+    bad = dict(_STATE, wind_dir_deg=400.0)
+    problems = validate(_config([_gps()], initial_state_raw=bad))
+    assert any("initial_state.wind_dir_deg" in p and "above maximum 360" in p for p in problems)
+
+
+def test_in_range_new_fields_pass() -> None:
+    good = dict(
+        _STATE,
+        sea_state=4,
+        depth_m=120.0,
+        stw_kn=9.5,
+        wind_speed_kn=22.0,
+        wind_dir_deg=200.0,
+        rot_dpm=-15.0,
+    )
+    assert validate(_config([_gps()], initial_state_raw=good)) == []
+
+
 # --- global checks ----------------------------------------------------------------
 
 

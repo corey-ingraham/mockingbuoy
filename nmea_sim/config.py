@@ -307,6 +307,18 @@ class EngineConfig:
             satellites=int(r.get("satellites", 0)),
             hdop=float(r.get("hdop", 1.0)),
             utc=utc,
+            # stw defaults to SOG; depth to 10 m; pitch/roll are overwritten by physics each tick.
+            stw_kn=float(r.get("stw_kn", r.get("sog_kn", 0.0))),
+            depth_m=float(r.get("depth_m", 10.0)),
+            rot_dpm=float(r.get("rot_dpm", 0.0)),
+            wind_speed_kn=float(r.get("wind_speed_kn", 0.0)),
+            wind_dir_deg=float(r.get("wind_dir_deg", 0.0)),
+            sea_state=int(r.get("sea_state", 1)),
+            pitch_deg=float(r.get("pitch_deg", 0.0)),
+            roll_deg=float(r.get("roll_deg", 0.0)),
+            rudder_angle_deg=float(r.get("rudder_angle_deg", 0.0)),
+            set_deg=float(r.get("set_deg", 0.0)),
+            drift_kn=float(r.get("drift_kn", 0.0)),
         )
 
     def epoch_datetime(self) -> datetime | None:

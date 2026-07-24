@@ -47,6 +47,17 @@ _STATE_FIELDS = frozenset(
         "fix_quality",
         "satellites",
         "hdop",
+        "stw_kn",
+        "depth_m",
+        "rot_dpm",
+        "wind_speed_kn",
+        "wind_dir_deg",
+        "sea_state",
+        "pitch_deg",
+        "roll_deg",
+        "rudder_angle_deg",
+        "set_deg",
+        "drift_kn",
     }
 )
 
@@ -66,6 +77,17 @@ _STATE_RANGES: dict[str, tuple[float | None, float | None]] = {
     "fix_quality": (0.0, None),
     "satellites": (0.0, None),
     "hdop": (0.0, None),
+    "stw_kn": (0.0, 100.0),
+    "depth_m": (0.0, 12000.0),
+    "rot_dpm": (-720.0, 720.0),
+    "wind_speed_kn": (0.0, 200.0),
+    "wind_dir_deg": (0.0, 360.0),
+    "sea_state": (0.0, 9.0),
+    "pitch_deg": (-90.0, 90.0),
+    "roll_deg": (-90.0, 90.0),
+    "rudder_angle_deg": (-90.0, 90.0),
+    "set_deg": (0.0, 360.0),
+    "drift_kn": (0.0, 100.0),
 }
 
 _MIN_PORT = 1
@@ -106,6 +128,8 @@ def _budget_samples(spec: ChannelSpec) -> list[tuple[float, list[str]]]:
         satellites=10,
         hdop=1.0,
         utc=datetime(2024, 1, 1, tzinfo=UTC),
+        sea_state=2,
+        depth_m=10.0,
     )
     try:
         source = build_source(spec)
