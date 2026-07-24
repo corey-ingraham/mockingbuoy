@@ -1,0 +1,12 @@
+# Runtime dependencies (top-level). The pinned + hash-locked requirements.txt is
+# regenerated from this file at build time with:
+#   pip-compile --generate-hashes --output-file=requirements.txt requirements.in
+# and installed in the image with:  pip install --require-hashes -r requirements.txt
+pyserial>=3.5
+pynmea2>=1.19.0
+pyais>=2.6
+geographiclib>=2.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+janus>=1.0
+passlib[argon2]>=1.7.4

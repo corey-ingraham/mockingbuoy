@@ -1,0 +1,16 @@
+# Normalize all text to LF in the repo (this project deploys to Linux).
+* text=auto eol=lf
+
+# Files that MUST be LF to run on the target host
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+Dockerfile text eol=lf
+Caddyfile  text eol=lf
+
+# Binary / non-normalized
+*.tar binary
+*.png binary
+*.ico binary

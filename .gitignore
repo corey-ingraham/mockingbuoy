@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Secrets — NEVER commit (generated on-device at setup)
+secrets/*
+!secrets/.gitkeep
+*.key
+*.pem
+setup.env
+
+# Build / deploy artifacts (portable image exports, local config overrides)
+images/
+*.tar
+config.local.json
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local local scratch files — NOT part of the project (kept out of the repo
+# so the project stays tool-agnostic). Contributors use CONTRIBUTING.md + docs/ref/.
+local-notes.md
+.local-notes/
+.cursor/
+.github/local-notes.md

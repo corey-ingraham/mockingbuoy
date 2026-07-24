@@ -1,0 +1,11 @@
+# NOTE: this is an un-hashed convenience lock. At build time it is regenerated from
+# requirements.in with `pip-compile --generate-hashes` and installed with
+# `pip install --require-hashes`. Do not hand-edit; edit requirements.in instead.
+pyserial>=3.5
+pynmea2>=1.19.0
+pyais>=2.6
+geographiclib>=2.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+janus>=1.0
+passlib[argon2]>=1.7.4

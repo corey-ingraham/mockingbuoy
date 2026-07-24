@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mockingbuoy"
+version = "0.1.0"
+description = "Multi-port NMEA 0183 simulator/generator with a web UI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pyserial>=3.5",
+    "pynmea2>=1.19.0",
+    "pyais>=2.6",
+    "geographiclib>=2.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "janus>=1.0",
+    "passlib[argon2]>=1.7.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "black>=24.3",
+    "mypy>=1.9",
+    "pytest>=8.0",
+    "pip-tools>=7.4",
+]
+
+[project.scripts]
+mockingbuoy = "main:main"
+
+[tool.setuptools]
+packages = ["nmea_sim", "web"]
+py-modules = ["main"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+files = ["nmea_sim", "web", "main.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,73 @@
+{
+  "$schema_note": "Example config. Copy to config.local.json (git-ignored) and edit. Device paths are placeholders — set them to your own /dev/serial/by-id/... values (see docs/ref/serial-hardware.md).",
+  "writer_backend": "log",
+  "movement": { "mode": "static", "physics_hz": 10.0 },
+  "time_source": { "mode": "system_utc", "epoch": null, "rate": 1.0 },
+  "initial_state": {
+    "lat": 0.0,
+    "lon": 0.0,
+    "sog_kn": 0.0,
+    "cog_deg": 90.0,
+    "heading_true_deg": 90.0,
+    "heading_mag_deg": 74.0,
+    "mag_variation_deg": -16.0,
+    "altitude_m": 5.0,
+    "fix_quality": 1,
+    "satellites": 10,
+    "hdop": 0.8
+  },
+  "channels": [
+    {
+      "id": "gps",
+      "role": "gps",
+      "path": "/dev/serial/by-id/CHANGE-ME-gps",
+      "baud": 4800,
+      "framing": "8N1",
+      "direction": "tx",
+      "talker": "GP",
+      "rx_feeds_state": false,
+      "rx_accept": [],
+      "emit": [
+        { "sentence": "GGA", "rate_hz": 1.0 },
+        { "sentence": "RMC", "rate_hz": 1.0 },
+        { "sentence": "VTG", "rate_hz": 1.0 },
+        { "sentence": "ZDA", "rate_hz": 1.0 }
+      ]
+    },
+    {
+      "id": "heading",
+      "role": "heading",
+      "path": "/dev/serial/by-id/CHANGE-ME-heading",
+      "baud": 4800,
+      "framing": "8N1",
+      "direction": "tx",
+      "talker": "HE",
+      "rx_feeds_state": false,
+      "rx_accept": [],
+      "emit": [
+        { "sentence": "HDT", "rate_hz": 10.0 }
+      ]
+    },
+    {
+      "id": "ais",
+      "role": "ais",
+      "path": "/dev/serial/by-id/CHANGE-ME-ais",
+      "baud": 38400,
+      "framing": "8N1",
+      "direction": "tx",
+      "rx_feeds_state": false,
+      "rx_accept": ["VDM"],
+      "ais": {
+        "mode": "ownship",
+        "own_ship": { "mmsi": 366000001, "class": "A", "name": "MOCKINGBUOY", "call_sign": "MB1", "ship_type": 37 },
+        "channel_alternation": true,
+        "include_type5": true,
+        "type5_period_s": 360.0
+      },
+      "emit": [
+        { "sentence": "AIVDM", "rate_hz": 0.2 }
+      ]
+    }
+  ],
+  "ais_targets": []
+}
