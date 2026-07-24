@@ -31,10 +31,3 @@ config.local.json
 .vscode/
 .DS_Store
 Thumbs.db
-
-# Local local scratch files — NOT part of the project (kept out of the repo
-# so the project stays tool-agnostic). Contributors use CONTRIBUTING.md + docs/ref/.
-local-notes.md
-.local-notes/
-.cursor/
-.github/local-notes.md

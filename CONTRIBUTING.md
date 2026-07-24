@@ -60,5 +60,5 @@ self-exit. Details in [docs/ref/serial-hardware.md](docs/ref/serial-hardware.md)
 
 ## Commits
 
-Keep the project tool-agnostic: no editor/tool-specific config files in the repo (they are
-git-ignored). Conventional-commit style is appreciated (`feat:`, `fix:`, `chore:`, `docs:`).
+Conventional-commit style is appreciated (`feat:`, `fix:`, `chore:`, `docs:`). Keep local editor and
+tooling configuration out of the repo — it's git-ignored.
