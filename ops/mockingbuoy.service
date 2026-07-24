@@ -5,8 +5,10 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now mockingbuoy.service
 #
-# The app binds LOOPBACK ONLY; Caddy terminates TLS + Basic auth and reverse-proxies
-# to it over localhost. No host port is published by this service.
+# The app binds a UNIX-DOMAIN SOCKET at /run/mockingbuoy/app.sock (shipped default);
+# Caddy terminates TLS + Basic auth and reverse-proxies to it over that socket. No host
+# port is published by this service. A loopback-TCP bind is preserved as a commented
+# fallback (see the ExecStart block) for operators who prefer TCP.
 
 [Unit]
 Description=mockingbuoy NMEA/AIS simulator (loopback ASGI app)
@@ -30,14 +32,57 @@ Environment=MOCKINGBUOY_APP_PORT=8000
 # Optional runtime env (in-app Basic user/hash, app port, etc). Leading '-' => not an error if absent.
 EnvironmentFile=-/opt/mockingbuoy/secrets/service.env
 
-# Serve the ASGI app from the venv. Loopback only, single worker, no access log.
+# ---------------------------------------------------------------------------
+# APP BIND — UNIX-DOMAIN SOCKET (shipped default)
+# ---------------------------------------------------------------------------
+# WHY a socket instead of loopback TCP:
+#   A 127.0.0.1:PORT bind is reachable by ANY local user/process on the host —
+#   the loopback listener has no owner-based access control. The unix socket
+#   below closes that local surface: it is filesystem-permissioned, so it is
+#   reachable only by root, the mockingbuoy user, and members of the mockingbuoy
+#   group. Caddy is granted access by joining that group (SupplementaryGroups=
+#   mockingbuoy in ops/caddy.service.d/override.conf) — nothing else on the box
+#   can reach the app.
+#
+# The socket lives in a tmpfs runtime dir that systemd creates/tears down:
+#   RuntimeDirectory=mockingbuoy      -> /run/mockingbuoy, owned mockingbuoy:mockingbuoy
+#   RuntimeDirectoryMode=0750         -> group may traverse into it (Caddy needs this)
+#   UMask=0007                        -> the socket uvicorn creates is group-rw (0660-ish),
+#                                        NOT 0600, so the mockingbuoy group can connect.
+RuntimeDirectory=mockingbuoy
+RuntimeDirectoryMode=0750
+UMask=0007
+#
+# Tell the app how it is bound so /api/security reports the truth (optional hint;
+# defaults to 127.0.0.1 when unset, keeping dev/TCP output unchanged).
+Environment=MOCKINGBUOY_APP_BIND=/run/mockingbuoy/app.sock
+#
+# VERIFY ON TARGET: this socket wiring has NOT been run on the target host.
+# Before trusting it, validate on the box that:
+#   - /run/mockingbuoy/app.sock exists after start (ls -l /run/mockingbuoy/)
+#   - its perms are group-accessible (srw-rw---- mockingbuoy mockingbuoy)
+#   - Caddy can actually connect (curl through the proxy returns the UI, and
+#     `journalctl -u caddy` shows no "connection refused"/"permission denied")
+# If any of that fails, fall back to the commented TCP ExecStart below.
+#
+# Serve the ASGI app from the venv. Single worker, no access log.
 # NEVER add --reload (dev-only; spawns a reloader subprocess and watches the tree).
 ExecStart=/opt/mockingbuoy/.venv/bin/uvicorn web.app:app \
-    --host 127.0.0.1 \
-    --port ${MOCKINGBUOY_APP_PORT} \
+    --uds /run/mockingbuoy/app.sock \
     --workers 1 \
     --no-access-log \
     --timeout-graceful-shutdown 25
+#
+# --- TCP LOOPBACK FALLBACK (commented) -------------------------------------
+# Operators who prefer a loopback-TCP bind can swap the ExecStart above for the
+# form below (and also flip the RuntimeDirectory/UMask/socket bits back out, set
+# MOCKINGBUOY_APP_BIND=127.0.0.1, and point Caddy's reverse_proxy at 127.0.0.1:PORT).
+# ExecStart=/opt/mockingbuoy/.venv/bin/uvicorn web.app:app \
+#     --host 127.0.0.1 \
+#     --port ${MOCKINGBUOY_APP_PORT} \
+#     --workers 1 \
+#     --no-access-log \
+#     --timeout-graceful-shutdown 25
 
 Restart=on-failure
 RestartSec=3
@@ -78,9 +123,27 @@ ReadWritePaths=/opt/mockingbuoy/data
 # and will crash under this. Enable ONLY after verifying the venv starts with it on.
 # MemoryDenyWriteExecute=true
 
-# Optional resource caps (uncomment/tune for the target host):
-# MemoryMax=256M
-# TasksMax=64
+# Resource caps (active). WHY: a single-worker uvicorn serving a handful of serial
+# channels + SSE clients has a small, predictable footprint; these ceilings contain a
+# runaway (leak, fork storm, hot loop) so it degrades this service instead of the whole
+# appliance. MemoryHigh throttles (reclaim pressure) before MemoryMax hard-kills; the
+# gap gives headroom to shed load rather than OOM outright. Tune up if the target host
+# is larger or runs more channels.
+MemoryHigh=256M
+MemoryMax=384M
+TasksMax=64
+CPUWeight=50
+CPUQuota=150%
+IOWeight=50
+#
+# ALSO RECOMMENDED (not set here — these belong elsewhere, not in this unit):
+#   - Cap the journal so logs can't fill the disk: a journald drop-in with
+#     Storage=volatile (RAM-only) OR SystemMaxUse=50M in
+#     /etc/systemd/journald.conf.d/mockingbuoy.conf. Journald caps live in
+#     journald.conf.d, NOT in a service unit, so we do not inline them here.
+#   - Prefer NVMe (or an external SSD) over a microSD card for /var and the data
+#     dir: microSD wears out and corrupts under sustained write load, which is the
+#     usual durability failure mode for this class of appliance.
 
 # ---------------------------------------------------------------------------
 # SERIAL GOTCHA (critical): do NOT set PrivateDevices=yes — it hides /dev/tty* and
@@ -94,7 +157,20 @@ ReadWritePaths=/opt/mockingbuoy/data
 DeviceAllow=/dev/nmea-gps rw
 DeviceAllow=/dev/nmea-heading rw
 DeviceAllow=/dev/nmea-ais rw
-# Broader fallback if you prefer class-based grants for all USB TTYs:
+#
+# INPUT / diagnostic slots (from the same udev rules): the six LISTEN-ONLY RX
+# adapters that feed Auto-mode inputs and the Maintenance multi-port view. Granted
+# 'rw' (not 'r') because a Maintenance diagnostic — auto-baud probe, loopback, or
+# test-send — may reconfigure/write a NON-operational slot; day-to-day read-only
+# behaviour is enforced in SOFTWARE (the app opens them read-only), not by this line.
+DeviceAllow=/dev/nmea-in-1 rw
+DeviceAllow=/dev/nmea-in-2 rw
+DeviceAllow=/dev/nmea-in-3 rw
+DeviceAllow=/dev/nmea-in-4 rw
+DeviceAllow=/dev/nmea-in-5 rw
+DeviceAllow=/dev/nmea-in-6 rw
+# Broader fallback if you prefer class-based grants for all USB TTYs (kept tight by
+# default — the per-symlink grants above are narrower than a whole char-major class):
 # DeviceAllow=char-ttyUSB rw
 # DeviceAllow=char-ttyACM rw
 

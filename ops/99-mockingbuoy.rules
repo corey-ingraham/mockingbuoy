@@ -27,6 +27,38 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{ser
 SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<AIS_SERIAL>", \
     SYMLINK+="nmea-ais", GROUP="dialout", MODE="0660", TAG+="systemd"
 
+# --- INPUT / diagnostic slots (LISTEN-ONLY, RX) ------------------------------
+# The three symlinks above are TX OUTPUT adapters — the app writes generated
+# NMEA/AIS sentences OUT to them. The six slots below are the RX INPUT side:
+# LISTEN-ONLY adapters the app reads FROM. They feed both:
+#   - Auto-mode inputs (an upstream sensor drives the sim), and
+#   - the Maintenance multi-port view (up to 6 concurrent inbound ports).
+# These are a DISTINCT role from the TX outputs above — same udev pattern, but
+# separate stable names so a slot never collides with an output symlink.
+#
+# The operator maps a physical adapter to a slot by its serial: pick which
+# inbound port becomes nmea-in-1 .. nmea-in-6 by filling in the ATTRS{serial}
+# placeholder on the matching line. Unused slots simply stay unmatched (the
+# symlink is never created) — that is fine; provision only what you plug in.
+#
+# Same ownership/mode as the outputs: GROUP="dialout" + MODE="0660" so the
+# service user (in dialout) can open them, TAG+="systemd" so the unit can name
+# them in DeviceAllow=. Listen-only is enforced in SOFTWARE (the app opens these
+# read-only unless a Maintenance diagnostic explicitly reconfigures a NON-
+# operational slot); udev only fixes the name/owner, not the read/write intent.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN1_SERIAL>", \
+    SYMLINK+="nmea-in-1", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN2_SERIAL>", \
+    SYMLINK+="nmea-in-2", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN3_SERIAL>", \
+    SYMLINK+="nmea-in-3", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN4_SERIAL>", \
+    SYMLINK+="nmea-in-4", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN5_SERIAL>", \
+    SYMLINK+="nmea-in-5", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN6_SERIAL>", \
+    SYMLINK+="nmea-in-6", GROUP="dialout", MODE="0660", TAG+="systemd"
+
 # --- FTDI latency tuning -----------------------------------------------------
 # FTDI defaults to a 16 ms read latency timer; drop it to 1 ms so per-sentence writes
 # aren't coalesced/delayed. Applies to the FTDI USB device node backing the tty.

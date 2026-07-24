@@ -813,6 +813,7 @@ def test_security_endpoint_shape_no_secret_leak(monkeypatch: pytest.MonkeyPatch)
         pytest.skip(f"argon2 backend unavailable: {exc!r}")
 
     monkeypatch.delenv("MOCKINGBUOY_BASIC_USER", raising=False)  # keep caddy_basic deterministic
+    monkeypatch.delenv("MOCKINGBUOY_APP_BIND", raising=False)  # keep app_bind at default
     monkeypatch.setenv("MOCKINGBUOY_APP_BASIC_USER", "operator")
     monkeypatch.setenv("MOCKINGBUOY_APP_BASIC_HASH", password_hash)
 

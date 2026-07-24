@@ -840,7 +840,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
             "tls": "internal",
             "caddy_basic": bool(os.environ.get("MOCKINGBUOY_BASIC_USER")),
             "app_basic": bool(os.environ.get("MOCKINGBUOY_APP_BASIC_USER")),
-            "app_bind": "127.0.0.1",
+            # Report the actual bind so the posture is honest for the shipped unix-socket
+            # bind. The systemd unit sets MOCKINGBUOY_APP_BIND to the socket path; default
+            # stays "127.0.0.1" so dev / loopback-TCP output is unchanged.
+            "app_bind": os.environ.get("MOCKINGBUOY_APP_BIND", "127.0.0.1"),
             "taps": taps,
             "tap_host": cfg.tcp_tap_host,
             "subscribers": broker.subscriber_count,

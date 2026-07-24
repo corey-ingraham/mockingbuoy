@@ -15,6 +15,20 @@
 # Secrets: the Basic password HASH is produced on-device with `caddy hash-password`
 # and injected via MOCKINGBUOY_BASIC_HASH (kept in git-ignored secrets/, never here).
 
+# --- Global options ----------------------------------------------------------
+# Disable Caddy's admin API. By default Caddy exposes an UNAUTHENTICATED admin
+# endpoint on 127.0.0.1:2019 that can rewrite the entire running config (and load
+# arbitrary reverse-proxy targets). That is the one loopback path by which the
+# proxied app — or any other local process — could reconfigure the front door.
+# WHY it's safe to turn off here: this is a STATIC-config deployment. The config
+# lives in this file and is changed by editing it and RESTARTING caddy
+# (systemctl restart caddy), never by pushing config to the admin API at runtime.
+# With admin off there is nothing to reload against, which is why the caddy
+# override ships a RESTART flow instead of `caddy reload` (see ops/caddy.service.d).
+{
+	admin off
+}
+
 {$MOCKINGBUOY_SITE:<LAN_IP>}:443 {
 	# Local-only TLS: Caddy's internal issuer signs from a custom local root CA.
 	# Never public ACME — this host is LAN-only and may have no public DNS.
@@ -38,8 +52,17 @@
 		-Server
 	}
 
-	# Loopback app. flush_interval -1 => stream SSE unbuffered.
-	reverse_proxy 127.0.0.1:{$MOCKINGBUOY_APP_PORT:8000} {
+	# Unix-socket app bind (shipped default). Caddy reaches the socket by being a
+	# member of the mockingbuoy group (SupplementaryGroups=mockingbuoy in the caddy
+	# override); the socket is created by the app's RuntimeDirectory. flush_interval
+	# -1 => stream SSE unbuffered.
+	reverse_proxy unix//run/mockingbuoy/app.sock {
 		flush_interval -1
 	}
+	# --- TCP LOOPBACK FALLBACK (commented) ---------------------------------------
+	# If the service is switched back to a loopback-TCP bind (see the commented
+	# ExecStart in ops/mockingbuoy.service), use this target instead:
+	# reverse_proxy 127.0.0.1:{$MOCKINGBUOY_APP_PORT:8000} {
+	# 	flush_interval -1
+	# }
 }

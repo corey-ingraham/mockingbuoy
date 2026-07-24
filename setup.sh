@@ -186,11 +186,17 @@ chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
 # 5. Host config: udev, brltty, time sync, optional firewall                  #
 # --------------------------------------------------------------------------- #
 log "installing udev rules for stable /dev/nmea-* symlinks ..."
+# One rules file provisions BOTH roles: the TX output symlinks (nmea-gps/heading/ais)
+# and the six LISTEN-ONLY RX input/diagnostic slots (nmea-in-1 .. nmea-in-6) that feed
+# Auto-mode inputs and the Maintenance multi-port view. Installing the file installs all
+# of them; the same --reload/--trigger applies to every slot.
 install -m 0644 "${APP_DIR}/ops/99-mockingbuoy.rules" /etc/udev/rules.d/99-mockingbuoy.rules
 udevadm control --reload >/dev/null 2>&1 || warn "udevadm control --reload failed (no udev running?)"
 udevadm trigger >/dev/null 2>&1 || warn "udevadm trigger failed"
 log "NOTE: edit /etc/udev/rules.d/99-mockingbuoy.rules and replace the ATTRS{serial}"
-log "      placeholders with YOUR adapters' serials, then: udevadm control --reload && udevadm trigger"
+log "      placeholders with YOUR adapters' serials — for the TX outputs"
+log "      (nmea-gps/heading/ais) AND for whichever RX input slots you use"
+log "      (nmea-in-1 .. nmea-in-6); then: udevadm control --reload && udevadm trigger"
 
 # brltty grabs FTDI ttys out from under the service — mask + purge idempotently.
 log "neutralizing brltty (it steals FTDI serial adapters) ..."
@@ -290,6 +296,18 @@ install -m 0644 "${APP_DIR}/ops/caddy.service.d/override.conf" \
     /etc/systemd/system/caddy.service.d/override.conf
 install -m 0644 "${APP_DIR}/ops/mockingbuoy-backup.service" /etc/systemd/system/mockingbuoy-backup.service
 install -m 0644 "${APP_DIR}/ops/mockingbuoy-backup.timer"   /etc/systemd/system/mockingbuoy-backup.timer
+
+# The app binds a unix socket at /run/mockingbuoy/app.sock (created by the unit's
+# RuntimeDirectory=mockingbuoy, group-accessible via UMask=0007). Caddy reverse-proxies
+# to that socket, so the caddy process must be in the mockingbuoy group. The caddy
+# override already sets SupplementaryGroups=mockingbuoy; we ALSO add the caddy OS user to
+# the group here (idempotent) so the membership holds regardless of how caddy is started.
+if id -u caddy >/dev/null 2>&1; then
+    log "adding caddy user to '${APP_GROUP}' group (unix-socket app bind access) ..."
+    usermod -aG "${APP_GROUP}" caddy
+else
+    warn "caddy user not found — skipping group add; SupplementaryGroups in the override still applies"
+fi
 
 systemctl daemon-reload
 
