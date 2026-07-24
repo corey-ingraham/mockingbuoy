@@ -108,6 +108,21 @@ class AisSpec:
 
 
 @dataclass(frozen=True)
+class TcpTapSpec:
+    """Per-channel raw NMEA-over-TCP tap. Port collision checks land in the config phase."""
+
+    enabled: bool = False
+    port: int = 10110
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TcpTapSpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            port=int(data.get("port", 10110)),
+        )
+
+
+@dataclass(frozen=True)
 class ChannelSpec:
     """One output channel — a generic serial-capable stream, defined by capability only."""
 
@@ -122,10 +137,12 @@ class ChannelSpec:
     rx_accept: list[str] = field(default_factory=list)
     emit: list[EmitSpec] = field(default_factory=list)
     ais: AisSpec | None = None
+    tcp_tap: TcpTapSpec | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChannelSpec:
         ais_data = data.get("ais")
+        tap_data = data.get("tcp_tap")
         return cls(
             id=str(data["id"]),
             role=str(data["role"]),
@@ -138,6 +155,7 @@ class ChannelSpec:
             rx_accept=[str(x) for x in data.get("rx_accept", [])],
             emit=[EmitSpec(str(e["sentence"]), float(e["rate_hz"])) for e in data.get("emit", [])],
             ais=AisSpec.from_dict(ais_data) if ais_data else None,
+            tcp_tap=TcpTapSpec.from_dict(tap_data) if tap_data else None,
         )
 
 
@@ -154,6 +172,8 @@ class EngineConfig:
     initial_state_raw: dict[str, Any] = field(default_factory=dict)
     channels: list[ChannelSpec] = field(default_factory=list)
     ais_targets: list[dict[str, Any]] = field(default_factory=list)
+    # Host that TCP taps bind to — a LAN IP in production, never the 0.0.0.0 wildcard.
+    tcp_tap_host: str = "127.0.0.1"
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
@@ -167,6 +187,7 @@ class EngineConfig:
             initial_state_raw=dict(data.get("initial_state", {})),
             channels=[ChannelSpec.from_dict(c) for c in data.get("channels", [])],
             ais_targets=[dict(t) for t in data.get("ais_targets", [])],
+            tcp_tap_host=str(data.get("tcp_tap_host", "127.0.0.1")),
         )
 
     @classmethod

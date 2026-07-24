@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 
@@ -26,6 +27,7 @@ from nmea_sim.engine import (
     emission_offsets,
 )
 from nmea_sim.state import VesselState
+from nmea_sim.tcp_tap import TcpTap
 
 _INITIAL = {
     "lat": 10.0,
@@ -246,3 +248,26 @@ def test_ais_channel_emits_decodable_ownship() -> None:
     assert all(line.startswith("!AIVDO") for line in lines)  # own-ship uses VDO
     decoded = decode(lines[0])
     assert decoded.mmsi == 366000123
+
+
+# --- TCP tap fan-out through the engine ------------------------------------------
+
+
+def test_engine_fans_out_to_tcp_tap() -> None:
+    """A TCP-tap sink is started by the engine and mirrors emitted lines to subscribers."""
+    tap = TcpTap("127.0.0.1", 0)
+    cfg = _config([_gps_channel(rate=10.0)])
+    engine = Engine(cfg, sink_hook=lambda spec: [tap])
+    engine.start()  # engine must start() I/O sinks before emission
+    try:
+        client = socket.create_connection(("127.0.0.1", tap.bound_port), timeout=2.0)
+        client.settimeout(2.0)
+        buf = b""
+        deadline = time.monotonic() + 2.0
+        while b"\r\n" not in buf and time.monotonic() < deadline:
+            buf += client.recv(4096)
+        client.close()
+        assert b"\r\n" in buf  # the tap delivered a CRLF-terminated sentence
+        assert buf.lstrip().startswith(b"$GP")
+    finally:
+        engine.stop()

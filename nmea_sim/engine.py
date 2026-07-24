@@ -35,8 +35,10 @@ from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
 from .gps_generator import GpsGenerator
 from .heading_generator import HeadingGenerator
 from .navigation import dead_reckon
+from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
-from .writers import LogWriter, NullWriter, Writer
+from .tcp_tap import TcpTap
+from .writers import LogWriter, NullWriter, PtyWriter, Writer
 
 # Internal AIS emission kinds (config models AIS as one emit entry; the engine expands it
 # into a position report and an optional periodic static/voyage report).
@@ -379,6 +381,7 @@ class Engine:
         strict_budget: bool = True,
     ) -> None:
         self._config = config
+        self._monitor = monitor
         self._stop_event = threading.Event()
         self._status: queue.Queue[StatusMsg] = queue.Queue(maxsize=10000)
 
@@ -388,6 +391,10 @@ class Engine:
         self._physics = _PhysicsThread(
             self._shared, self._physics_engine, config.movement.physics_hz, self._stop_event
         )
+
+        # Sinks that own I/O resources (serial ports, TCP taps) and must be started before
+        # emission begins. Duck-typed on a ``start()`` method.
+        self._startables: list[object] = []
 
         self._workers: list[_ChannelWorker] = []
         for spec in config.channels:
@@ -407,15 +414,53 @@ class Engine:
             return LogWriter()
         if backend == "null":
             return NullWriter()
-        # serial and pty backends arrive with the serial layer.
+        if backend == "pty":
+            return PtyWriter()
+        if backend == "serial":
+            return SerialPort(
+                spec.path,
+                spec.baud,
+                framing=spec.framing,
+                direction=spec.direction,
+                on_rx=self._rx_monitor(spec),
+                state_feed=self._feed_state,
+                rx_feeds_state=spec.rx_feeds_state,
+                rx_accept=spec.rx_accept,
+            )
         raise NotImplementedError(f"writer backend {backend!r} is not available yet")
 
+    def _feed_state(self, changes: dict[str, float]) -> None:
+        """RX state seam: apply whitelisted, checksum-verified fields to shared state."""
+        self._shared.update(**changes)
+
+    def _rx_monitor(self, spec: ChannelSpec) -> Callable[[str], None] | None:
+        """Forward a received line to the web monitor seam, tagged with the channel id."""
+        if self._monitor is None:
+            return None
+        monitor = self._monitor
+
+        def forward(line: str) -> None:
+            monitor(spec.id, line)
+
+        return forward
+
     def _build_sinks(self, spec: ChannelSpec, sink_hook: SinkHook | None) -> list[_Sink]:
-        sinks = [_Sink(self._config.writer_backend, self._make_backend_writer(spec))]
+        backend_writer = self._make_backend_writer(spec)
+        self._register_startable(backend_writer)
+        sinks = [_Sink(self._config.writer_backend, backend_writer)]
+        if spec.tcp_tap is not None and spec.tcp_tap.enabled:
+            tap = TcpTap(self._config.tcp_tap_host, spec.tcp_tap.port)
+            self._register_startable(tap)
+            sinks.append(_Sink(f"tcp_tap:{spec.tcp_tap.port}", tap))
         if sink_hook is not None:
             for i, writer in enumerate(sink_hook(spec)):
+                self._register_startable(writer)
                 sinks.append(_Sink(f"extra{i}:{type(writer).__name__}", writer))
         return sinks
+
+    def _register_startable(self, writer: object) -> None:
+        if callable(getattr(writer, "start", None)):
+            self._startables.append(writer)
 
     def _check_budget(self, spec: ChannelSpec, source: SentenceSource, strict: bool) -> None:
         state = self._shared.snapshot()
@@ -438,6 +483,12 @@ class Engine:
 
     # -- lifecycle ----------------------------------------------------------
     def start(self) -> None:
+        # Open I/O sinks (serial ports, TCP taps) before any emission so the first
+        # sentence has somewhere to go and taps are already accepting subscribers.
+        for startable in self._startables:
+            start = getattr(startable, "start", None)
+            if callable(start):
+                start()
         self._physics.start()
         for worker in self._workers:
             worker.start()
