@@ -374,6 +374,35 @@ def test_auto_sources_and_rx_feeds_state_conflict_rejected() -> None:
     )
 
 
+def test_auto_mode_requires_static_movement() -> None:
+    # Physics must not dead-reckon position while a live GNSS source may own it, or LIVE and DR'd
+    # position fight; auto mode therefore requires movement.mode 'static'.
+    cfg = _config(
+        [_gps(sources=["gps_in"])],
+        mode="auto",
+        writer_backend="serial",
+        inputs=[_input()],
+        movement=MovementSpec(mode="underway"),
+    )
+    assert any(
+        "auto mode requires movement.mode 'static' so simulated dead-reckoning cannot "
+        "clobber live passthrough position" in p
+        for p in validate(cfg)
+    )
+
+
+def test_auto_mode_with_static_movement_passes_the_movement_rule() -> None:
+    # The same config with static movement raises no movement-mode complaint (control case).
+    cfg = _config(
+        [_gps(sources=["gps_in"])],
+        mode="auto",
+        writer_backend="serial",
+        inputs=[_input()],
+        movement=MovementSpec(mode="static"),
+    )
+    assert not any("auto mode requires movement.mode 'static'" in p for p in validate(cfg))
+
+
 def test_shipped_config_still_validates_and_stays_simulate() -> None:
     cfg = EngineConfig.load(CONFIG_PATH)
     assert cfg.mode == "simulate"

@@ -27,9 +27,11 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
-from . import budget
+import pynmea2
+
+from . import budget, rx
 from .ais_generator import AisGenerator
 from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
 from .gps_generator import GpsGenerator
@@ -37,6 +39,7 @@ from .heading_generator import HeadingGenerator
 from .instrument_generator import InstrumentGenerator
 from .navigation import dead_reckon
 from .realism import RealismProfile, TargetSpawner
+from .router import Router
 from .seastate import sea_state_motion
 from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
@@ -47,6 +50,11 @@ from .writers import LogWriter, NullWriter, PtyWriter, Writer
 # into a position report and an optional periodic static/voyage report).
 AIS_POSITION = "AIS_POSITION"
 AIS_STATIC = "AIS_STATIC"
+
+# Shutdown sentinel pushed onto every worker inbox by ``Engine.stop``. A module-level singleton
+# so identity (``is``) comparison is unambiguous: a worker blocked in ``inbox.get`` wakes at once
+# and breaks, rather than depending on a ``stop_event.wait`` a queue put can never interrupt (R40).
+_STOP = object()
 
 
 class BudgetExceeded(RuntimeError):
@@ -263,6 +271,10 @@ class ChannelHealth:
     # A muted channel is still a live, scheduled thread: ``alive`` reports the thread,
     # ``enabled`` reports whether it is currently allowed to emit. They are independent.
     enabled: bool
+    # Where this channel's output is coming from right now: ``"OFF"`` when disabled, else
+    # ``"LIVE:<input_id>"`` when a physical source is winning (auto mode) or ``"SIM"`` when it
+    # is generating. Always ``"OFF"``/``"SIM"`` in simulate mode (no router, no live source).
+    source: str
 
 
 @dataclass(frozen=True)
@@ -358,6 +370,7 @@ class _ChannelWorker(threading.Thread):
         status_q: queue.Queue[StatusMsg],
         stop: threading.Event,
         monitor: Callable[[str, str], None] | None,
+        router: Router | None = None,
     ) -> None:
         super().__init__(name=f"channel-{spec.id}", daemon=True)
         self._spec = spec
@@ -368,6 +381,16 @@ class _ChannelWorker(threading.Thread):
         self._stop_event = stop
         self._monitor = monitor
         self._emitters = emitters_for(spec)
+        # AUTO-mode wiring. ``router`` is None in simulate mode, in which case the inbox is never
+        # fed and every branch below that consults the router is dead — the worker runs its
+        # generation schedule exactly as before. ``_channel_class`` is the sentence class this
+        # channel's role consumes (None for roles that consume none, e.g. instrument -> never
+        # suppressed). ``_inbox`` carries classified passthrough tuples (or ``_STOP``); bounded to
+        # match ``status_q`` so a stalled worker cannot grow it without limit (a full inbox drops
+        # the line with an ``inbox_full`` status — R50).
+        self._router = router
+        self._channel_class = router.channel_class(spec.id) if router is not None else None
+        self._inbox: queue.Queue[object] = queue.Queue(maxsize=10000)
         # Mute switch. An Event is used rather than a plain bool because it is read by the
         # sender thread and written by the control seam; set == the channel may emit.
         self._enabled = threading.Event()
@@ -407,6 +430,15 @@ class _ChannelWorker(threading.Thread):
         # Invariant: the drift-free schedule keeps advancing while the channel is muted —
         # ``_fire`` returns early but ``next_fire`` is still advanced below, so re-enabling
         # resumes on the original cadence with no catch-up burst and no thread rebuild.
+        #
+        # ONE path for both modes (R40). The worker sleeps by *blocking on its inbox* until the
+        # soonest emitter is due; a timeout (``queue.Empty``) means "nothing arrived, run the due
+        # schedule" — byte-identical to the old sleep-then-fire loop when the inbox is never fed
+        # (simulate mode). A real message is a classified passthrough tuple handled out-of-band; it
+        # does NOT touch the emit schedule, so ``next_fire`` stays pure absolute-monotonic and
+        # generation timing is unaffected by passthrough arrivals. ``_STOP`` breaks immediately even
+        # when the inbox is otherwise quiet — a plain ``stop_event.wait`` could not be interrupted
+        # by a queue put, which is the bug this redesign fixes.
         start = time.monotonic()
         offsets = emission_offsets([em.period for em in self._emitters])
         for em, off in zip(self._emitters, offsets, strict=True):
@@ -414,16 +446,21 @@ class _ChannelWorker(threading.Thread):
         while not self._stop_event.is_set():
             now = time.monotonic()
             soonest = min(em.next_fire for em in self._emitters)
-            wait = soonest - now
-            if wait > 0:
-                if self._stop_event.wait(wait):
-                    break
-                continue
-            now = time.monotonic()
-            for em in self._emitters:
-                if em.next_fire <= now:
-                    self._fire(em)
-                    em.next_fire = advance_next_fire(em.next_fire, em.period, now)
+            wait = max(0.0, soonest - now)
+            try:
+                msg: object | None = self._inbox.get(timeout=wait)
+            except queue.Empty:
+                msg = None
+            if msg is _STOP:
+                break
+            if msg is None:  # timeout -> run the due-emitter schedule exactly as before
+                now = time.monotonic()
+                for em in self._emitters:
+                    if em.next_fire <= now:
+                        self._fire(em)
+                        em.next_fire = advance_next_fire(em.next_fire, em.period, now)
+            else:  # a classified passthrough tuple (input_id, cls, line)
+                self._on_passthrough(cast("tuple[str, str, str]", msg))
 
     # -- emission -----------------------------------------------------------
     def _fire(self, em: _Emitter) -> None:
@@ -431,6 +468,13 @@ class _ChannelWorker(threading.Thread):
         # consumer at once — serial, TCP tap and the web monitor all hang off _fan_out.
         if not self._enabled.is_set():
             return
+        # Suppress generation while a live source is winning this channel's class: passthrough owns
+        # the bus this tick, so the generator must not also fire (they would double up on the wire).
+        # Instrument channels have channel_class None -> never suppressed; simulate has router None.
+        if self._router is not None and self._channel_class is not None:
+            now = time.monotonic()
+            if self._router.any_live(self._spec.id, self._channel_class, now):
+                return
         state = self._shared.snapshot()
         try:
             lines = self._source.build(em.sentence, state)
@@ -442,6 +486,48 @@ class _ChannelWorker(threading.Thread):
             self._fan_out(line)
         self._emitted += len(lines)
         self._last_emit = time.monotonic()
+
+    # -- passthrough (auto mode) -------------------------------------------
+    def enqueue(self, msg: object) -> None:
+        """Hand a classified passthrough tuple (or ``_STOP``) to this worker's inbox.
+
+        Called from the engine's RX-dispatch thread (single producer per message kind). On a full
+        inbox the line is DROPPED with a best-effort ``inbox_full`` status — a logged gap, never a
+        block, so a wedged worker cannot back-pressure the input reader (R50).
+        """
+        try:
+            self._inbox.put_nowait(msg)
+        except queue.Full:
+            self._emit_status("inbox_full", self._spec.id)
+
+    def _on_passthrough(self, msg: tuple[str, str, str]) -> None:
+        # Single-writer per channel: only this worker thread ever calls ``_fan_out`` for this
+        # channel, so the winner check + forward is atomic with respect to generation.
+        input_id, cls, line = msg
+        # OFF beats everything, including live passthrough (R9/R55): a disabled channel is silent.
+        if not self._enabled.is_set():
+            return
+        now = time.monotonic()
+        if self._router is not None and input_id == self._router.winner(self._spec.id, cls, now):
+            self._inject(line)
+            self._feed_passthrough_state(line)
+        # else: a higher-priority source is currently live -> drop this line.
+
+    def _inject(self, line: str) -> None:
+        """Forward a winning source's line VERBATIM to every sink (and the monitor)."""
+        self._fan_out(line)
+        self._emitted += 1
+        self._last_emit = time.monotonic()
+
+    def _feed_passthrough_state(self, line: str) -> None:
+        # Seed shared state from the live line so that when the source dies the generator resumes
+        # from the last real values (seamless failover). NO rx_accept whitelist here: in auto the
+        # router is the trust boundary and the line is already checksum-verified. Unparseable lines
+        # are simply not seeded (they still went out verbatim above).
+        with contextlib.suppress(pynmea2.ParseError):
+            changes = rx.parse_line(line)
+            if changes:
+                self._shared.update(**changes)
 
     def _fan_out(self, line: str) -> None:
         for sink in self._sinks:
@@ -470,7 +556,14 @@ class _ChannelWorker(threading.Thread):
                 sink.writer.close()
 
     def health(self) -> ChannelHealth:
-        age = None if self._last_emit is None else time.monotonic() - self._last_emit
+        now = time.monotonic()
+        age = None if self._last_emit is None else now - self._last_emit
+        if not self._enabled.is_set():
+            source = "OFF"
+        elif self._router is not None and self._channel_class is not None:
+            source = self._router.source_label(self._spec.id, self._channel_class, now)
+        else:
+            source = "SIM"
         return ChannelHealth(
             channel_id=self._spec.id,
             alive=self._alive,
@@ -479,6 +572,7 @@ class _ChannelWorker(threading.Thread):
             sinks=[SinkHealth(s.name, s.down, s.errors) for s in self._sinks],
             last_emit_age_s=age,
             enabled=self._enabled.is_set(),
+            source=source,
         )
 
 
@@ -514,6 +608,10 @@ class Engine:
         # emission begins. Duck-typed on a ``start()`` method.
         self._startables: list[object] = []
 
+        # AUTO mode gets an arbiter that classifies input lines and picks winners; simulate mode
+        # has none, so every worker's router-consulting branch is inert and the inbox is never fed.
+        self._router = Router(config) if config.mode == "auto" else None
+
         self._workers: list[_ChannelWorker] = []
         for spec in config.channels:
             source = build_source(spec)
@@ -521,9 +619,35 @@ class Engine:
             self._check_budget(spec, source, strict_budget)
             self._workers.append(
                 _ChannelWorker(
-                    spec, source, sinks, self._shared, self._status, self._stop_event, monitor
+                    spec,
+                    source,
+                    sinks,
+                    self._shared,
+                    self._status,
+                    self._stop_event,
+                    monitor,
+                    self._router,
                 )
             )
+        self._worker_by_id = {w.channel_id: w for w in self._workers}
+
+        # AUTO mode: one input reader per InputSpec. Each is a receive-only serial port whose
+        # verified lines are dispatched to the router, which decides the target channel. Kept
+        # separate from ``_startables`` (the sinks) because start ORDER matters: readers must come
+        # up only after their target workers are draining (R50), see ``start``.
+        self._input_readers: list[SerialPort] = []
+        if config.mode == "auto":
+            for inp in config.inputs:
+                self._input_readers.append(
+                    SerialPort(
+                        inp.path,
+                        inp.baud,
+                        framing=inp.framing,
+                        direction="rx",
+                        read_timeout=inp.read_timeout_s,
+                        on_rx=self._make_dispatch(inp.id),
+                    )
+                )
 
     # -- construction helpers ----------------------------------------------
     def _make_backend_writer(self, spec: ChannelSpec) -> Writer:
@@ -550,6 +674,32 @@ class Engine:
     def _feed_state(self, changes: dict[str, float]) -> None:
         """RX state seam: apply whitelisted, checksum-verified fields to shared state."""
         self._shared.update(**changes)
+
+    def _make_dispatch(self, input_id: str) -> Callable[[str], None]:
+        """Bind an input id to the RX dispatcher so a reader's lines route to the right channel."""
+
+        def dispatch(line: str) -> None:
+            self._dispatch_rx(input_id, line)
+
+        return dispatch
+
+    def _dispatch_rx(self, input_id: str, line: str) -> None:
+        """Route one verified input line to its target channel's inbox.
+
+        The cross-platform test seam: ``test_auto_mode`` drives this directly with fabricated lines,
+        no serial/pty needed (R35). The router classifies + records liveness + names the target
+        channel; the engine only enqueues. All arbitration (winner selection, suppression) is the
+        router's and the owning worker's job — this method never touches a sink.
+        """
+        if self._router is None:
+            return
+        routed = self._router.note_rx(input_id, line, time.monotonic())
+        if routed is None:
+            return
+        target_id, cls, line = routed
+        worker = self._worker_by_id.get(target_id)
+        if worker is not None:
+            worker.enqueue((input_id, cls, line))
 
     def _rx_monitor(self, spec: ChannelSpec) -> Callable[[str], None] | None:
         """Forward a received line to the web monitor seam, tagged with the channel id."""
@@ -601,8 +751,10 @@ class Engine:
 
     # -- lifecycle ----------------------------------------------------------
     def start(self) -> None:
-        # Open I/O sinks (serial ports, TCP taps) before any emission so the first
-        # sentence has somewhere to go and taps are already accepting subscribers.
+        # START ORDER (R50): sinks -> workers -> input readers. Open the I/O sinks (serial ports,
+        # TCP taps) first so the first sentence has somewhere to go and taps accept subscribers;
+        # start the channel workers (the inbox drainers) next; only THEN start the input readers,
+        # so no reader can enqueue a passthrough line before its target worker is draining.
         for startable in self._startables:
             start = getattr(startable, "start", None)
             if callable(start):
@@ -610,9 +762,21 @@ class Engine:
         self._physics.start()
         for worker in self._workers:
             worker.start()
+        for reader in self._input_readers:
+            reader.start()
 
     def stop(self, timeout: float = 15.0) -> None:
         self._stop_event.set()
+        # Wake any worker blocked in ``inbox.get`` at once — a queue put interrupts the block a
+        # bare ``stop_event`` could not (R40). Best-effort: a full inbox still drains on the
+        # ``stop_event`` guard at the top of the loop.
+        for worker in self._workers:
+            worker.enqueue(_STOP)
+        # Close input readers first so no further lines are dispatched into workers that are winding
+        # down; then join physics + workers; then tear down the sinks.
+        for reader in self._input_readers:
+            with contextlib.suppress(Exception):
+                reader.close()
         deadline = time.monotonic() + timeout
         for thread in (self._physics, *self._workers):
             remaining = max(0.0, deadline - time.monotonic())

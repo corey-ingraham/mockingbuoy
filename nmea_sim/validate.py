@@ -423,6 +423,13 @@ def _validate_globals(config: EngineConfig, errors: list[str]) -> None:
                 "mode 'auto' requires at least one entry in 'inputs' — auto passes through live "
                 "input, so define the input slots your channels draw from (or set mode 'simulate')"
             )
+        if config.movement.mode != "static":
+            errors.append(
+                "auto mode requires movement.mode 'static' so simulated dead-reckoning cannot "
+                "clobber live passthrough position — with a live GNSS source owning position, a "
+                f"dead-reckoning physics engine would fight it (got movement.mode "
+                f"{config.movement.mode!r})"
+            )
 
 
 def validate(config: EngineConfig) -> list[str]:

@@ -175,6 +175,43 @@ def test_rx_rejects_bad_checksum(sample_state: VesselState) -> None:
     assert fed == []
 
 
+# --- liveness primitive (deterministic, no hardware) -----------------------------
+
+
+def test_last_valid_rx_set_only_after_checksum_passes(sample_state: VesselState) -> None:
+    """A checksum-valid line stamps ``_last_valid_rx``; a bad-checksum line must NOT refresh it,
+    so noise on the wire can never make a dead source look live."""
+    port = SerialPort("unused", 4800, direction="both")
+    assert port._last_valid_rx is None  # nothing seen yet
+
+    good = HeadingGenerator("HE").hdt(sample_state)
+    port._handle_rx_line(good)
+    stamped = port._last_valid_rx
+    assert stamped is not None
+
+    # A corrupt checksum is dropped before the liveness stamp -> the timestamp stays put.
+    corrupt = good[:-2] + "00"
+    port._handle_rx_line(corrupt)
+    assert port._last_valid_rx == stamped
+    port.close()
+
+
+def test_is_live_true_within_window_false_once_expired(sample_state: VesselState) -> None:
+    """``is_live`` compares against an injectable ``now`` so arbitration is deterministic without
+    touching real hardware: fresh within the window, dead once the window elapses."""
+    port = SerialPort("unused", 4800, direction="both")
+    assert port.is_live(1.0, now=0.0) is False  # no valid line ever -> never live
+
+    port._handle_rx_line(GpsGenerator("GP").rmc(sample_state))
+    last = port._last_valid_rx
+    assert last is not None
+    assert port.is_live(1.0, now=last) is True  # exactly now
+    assert port.is_live(1.0, now=last + 0.5) is True  # inside the window
+    assert port.is_live(1.0, now=last + 1.0) is True  # boundary is inclusive
+    assert port.is_live(1.0, now=last + 1.5) is False  # window elapsed -> not live
+    port.close()
+
+
 # --- pty loopback (POSIX) --------------------------------------------------------
 
 

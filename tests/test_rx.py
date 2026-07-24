@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pynmea2
 import pytest
 
@@ -20,6 +22,23 @@ def test_rmc_round_trips_cog_not_heading(sample_state: VesselState) -> None:
     # RMC carries course-over-ground, never heading — the codebase's #1 invariant.
     assert changes["cog_deg"] == pytest.approx(sample_state.cog_deg, abs=0.05)
     assert "heading_true_deg" not in changes
+
+
+def test_rmc_mag_variation_east_is_positive(sample_state: VesselState) -> None:
+    """RMC magnetic variation round-trips East-positive (the codebase's East-positive convention),
+    so a LIVE->SIM handover seeds variation without a sign flip."""
+    east = replace(sample_state, mag_variation_deg=6.5)  # East variation
+    line = GpsGenerator("GP").rmc(east)
+    changes = rx.parse_line(line)
+    assert changes["mag_variation_deg"] == pytest.approx(6.5, abs=0.05)
+
+
+def test_rmc_mag_variation_west_is_negative(sample_state: VesselState) -> None:
+    # sample_state carries a West (-3.0) variation; the parsed sign must stay negative.
+    line = GpsGenerator("GP").rmc(sample_state)
+    changes = rx.parse_line(line)
+    assert changes["mag_variation_deg"] == pytest.approx(sample_state.mag_variation_deg, abs=0.05)
+    assert changes["mag_variation_deg"] < 0
 
 
 def test_gga_round_trips_fix_fields(sample_state: VesselState) -> None:

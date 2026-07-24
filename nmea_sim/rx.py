@@ -46,6 +46,12 @@ def parse_line(line: str) -> dict[str, float]:
             out["sog_kn"] = float(msg.spd_over_grnd)
         if _has(msg.true_course):
             out["cog_deg"] = float(msg.true_course)
+        if _has(msg.mag_variation) and _has(msg.mag_var_dir):
+            # East-positive to match _magnetic(): pynmea2 gives an unsigned magnitude plus
+            # an E/W hemisphere, so West flips the sign. Seeding this lets a LIVE->SIM
+            # handover resume magnetic-derived values without a jump.
+            var = float(msg.mag_variation)
+            out["mag_variation_deg"] = var if msg.mag_var_dir == "E" else -var
     elif st == "GGA":
         if _has(msg.lat) and _has(msg.lon):
             out["lat"] = float(msg.latitude)

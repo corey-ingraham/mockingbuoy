@@ -114,6 +114,11 @@ class SerialPort:
 
         self.stats = PortStats()
         self.present = False
+        # Monotonic timestamp of the last checksum-valid line, or None if none yet. This is the
+        # liveness primitive the AUTO-mode router reads to decide whether a physical source still
+        # owns an output channel; it is set only after checksum.verify passes so noise/garbage on
+        # the wire cannot masquerade as a live source.
+        self._last_valid_rx: float | None = None
         self._serial: serial.Serial | None = None
         self._backoff = _REOPEN_MIN
         self._next_retry = 0.0  # time.monotonic() after which reopen is allowed
@@ -204,7 +209,11 @@ class SerialPort:
                     break
                 continue
             try:
-                chunk = ser.read(256)
+                # read_until returns the moment a newline lands (or a partial chunk at timeout),
+                # so a passthrough line is forwarded with minimal latency instead of waiting for a
+                # 256-byte fill or the full read timeout. The buffer/partition logic below still
+                # handles partial reads and multiple lines per chunk identically.
+                chunk = ser.read_until(b"\n")
             except (serial.SerialException, OSError):
                 self._mark_down()
                 continue
@@ -222,6 +231,9 @@ class SerialPort:
         if not checksum.verify(line):
             self.stats.rx_bad_checksum += 1
             return
+        # Stamp liveness only after the checksum passes and before on_rx, so the router sees a
+        # source as live exactly when a valid line arrives, regardless of downstream callbacks.
+        self._last_valid_rx = time.monotonic()
         if self._on_rx is not None:
             with contextlib.suppress(Exception):
                 self._on_rx(line)  # monitor forwarding must never break the reader
@@ -236,6 +248,21 @@ class SerialPort:
             with contextlib.suppress(Exception):
                 self._state_feed(accepted)
                 self.stats.rx_state_updates += 1
+
+    def is_live(self, timeout_s: float, now: float | None = None) -> bool:
+        """Report whether a checksum-valid line arrived within ``timeout_s``.
+
+        The router polls this to arbitrate LIVE-vs-SIM ownership of an output channel: a source is
+        live only while fresh valid traffic keeps flowing, so a dead or unplugged input silently
+        stops winning and generation resumes. ``now`` is injectable so the arbitration is
+        deterministic under test without touching real serial hardware.
+        """
+        last = self._last_valid_rx
+        if last is None:
+            return False
+        if now is None:
+            now = time.monotonic()
+        return (now - last) <= timeout_s
 
     # -- teardown -----------------------------------------------------------
     def close(self) -> None:

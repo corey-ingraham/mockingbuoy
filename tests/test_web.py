@@ -234,6 +234,7 @@ def test_health_to_dict_includes_enabled() -> None:
                 sinks=[],
                 last_emit_age_s=0.25,
                 enabled=False,
+                source="OFF",
             )
         ],
     )
