@@ -96,7 +96,7 @@ _STATE_RANGES: dict[str, tuple[float | None, float | None]] = {
     "sea_state": (0.0, 9.0),
     "pitch_deg": (-90.0, 90.0),
     "roll_deg": (-90.0, 90.0),
-    "rudder_angle_deg": (-90.0, 90.0),
+    "rudder_angle_deg": (-45.0, 45.0),
     "set_deg": (0.0, 360.0),
     "drift_kn": (0.0, 100.0),
 }

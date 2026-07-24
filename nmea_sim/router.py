@@ -114,6 +114,26 @@ class Router:
         winner = self.winner(channel_id, cls, now)
         return f"LIVE:{winner}" if winner is not None else "SIM"
 
+    def live_class_for_input(self, input_id: str, now: float) -> str | None:
+        """The sentence class currently live on ``input_id``, or ``None`` if the input is dead.
+
+        A pure read of the liveness store for a *single* input, used by the web layer to report
+        per-slot detection without exposing the device path. Walks that input's known (input, class)
+        pairings and returns the first whose last valid line arrived within the input's
+        ``liveness_timeout_s``. Classes are visited in sorted order so a slot carrying two live
+        classes at once (a satellite compass feeding both gnss and heading) reports a stable,
+        deterministic one rather than a dict-insertion-order accident. Reads the whole map under the
+        one lock so the scan never observes a torn entry against a concurrent reader-thread stamp.
+        """
+        timeout = self._timeout_by_input.get(input_id, 0.0)
+        with self._lock:
+            live = [
+                cls
+                for (inp, cls), ts in self._liveness.items()
+                if inp == input_id and (now - ts) <= timeout
+            ]
+        return min(live) if live else None
+
     def channel_class(self, channel_id: str) -> str | None:
         """The sentence class this channel's role consumes, or ``None`` if it consumes none.
 

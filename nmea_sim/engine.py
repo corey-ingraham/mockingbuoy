@@ -927,6 +927,32 @@ class Engine:
         mode = self._config.time_source.mode
         return "system" if mode == "system_utc" else mode
 
+    def input_status(self) -> list[dict[str, object]]:
+        """One read-only entry per configured input slot for the web ``/api/inputs`` view.
+
+        Each entry is ``{"id", "function", "detected_class", "live"}``. In auto mode the detection
+        pair comes from the router's per-input liveness: if any sentence class is currently live on
+        the slot, ``detected_class`` is that class and ``live`` is True; else ``None``/False. In
+        simulate mode there is no router, so every slot reports ``detected_class=None, live=False``.
+        The device path is deliberately withheld here — the web layer owns the info-leak decision
+        about what of a slot is safe to reveal (R19), and it never gets the path from this surface.
+        """
+        now = time.monotonic()
+        entries: list[dict[str, object]] = []
+        for inp in self._config.inputs:
+            detected = (
+                self._router.live_class_for_input(inp.id, now) if self._router is not None else None
+            )
+            entries.append(
+                {
+                    "id": inp.id,
+                    "function": inp.function,
+                    "detected_class": detected,
+                    "live": detected is not None,
+                }
+            )
+        return entries
+
     def update_state(self, **changes: object) -> VesselState:
         """Apply an external state edit (the web control seam)."""
         return self._shared.update(**changes)

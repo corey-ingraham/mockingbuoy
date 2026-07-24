@@ -447,3 +447,30 @@ def test_edit_then_save_persists(tmp_path: Path) -> None:
     reloaded = EngineConfig.load(out)
     assert reloaded.movement.mode == "underway"
     assert reloaded.movement.physics_hz == 5.0
+
+
+# --- R22/R52 range consistency: web edit bounds must agree with the state validator -----
+
+
+def test_update_ranges_agree_with_state_ranges_for_manual_fields() -> None:
+    """The web edit/persist bounds (``_UPDATE_RANGES``) and the state validator bounds
+    (``_STATE_RANGES``) must AGREE for every manual own-ship field both define, so a value the
+    UI accepts can never be one the config validator would later reject (or vice versa).
+
+    This is a SUBSET check on the manual allow-list: derived ``pitch_deg``/``roll_deg`` (state-only)
+    and web-only ``altitude_m`` legitimately live in just one table and are out of scope here — we
+    assert equality only across the operator-editable manual fields, which both tables define."""
+    from nmea_sim.validate import _STATE_RANGES
+    from web.app import _INITIAL_STATE_MANUAL_FIELDS, _UPDATE_RANGES
+
+    mismatches: dict[str, tuple[object, object]] = {}
+    for field_name in _INITIAL_STATE_MANUAL_FIELDS:
+        assert field_name in _UPDATE_RANGES, f"{field_name} missing from _UPDATE_RANGES"
+        assert field_name in _STATE_RANGES, f"{field_name} missing from _STATE_RANGES"
+        if _UPDATE_RANGES[field_name] != _STATE_RANGES[field_name]:
+            mismatches[field_name] = (_UPDATE_RANGES[field_name], _STATE_RANGES[field_name])
+
+    assert not mismatches, (
+        "web _UPDATE_RANGES and validate._STATE_RANGES disagree on manual-field bounds "
+        f"(field -> (update, state)): {mismatches}"
+    )

@@ -26,6 +26,11 @@ setup.env
 images/
 *.tar
 config.local.json
+
+# Operator data — NEVER commit. The persist target (data/config.local.json) and any other
+# runtime-written operator state live here; only the tracked .gitkeep keeps the dir in a clone.
+data/*
+!data/.gitkeep
 # Offline redeploy wheel cache — third-party binaries, never commit
 wheelhouse/
 *.whl
