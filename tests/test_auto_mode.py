@@ -111,6 +111,11 @@ def _hdt(heading_deg: float) -> str:
     return HeadingGenerator("HE").hdt(replace(_BASE, heading_true_deg=heading_deg))
 
 
+def _zda(*, hour: int = 6) -> str:
+    """A checksum-valid ZDA line carrying a distinctive hour off the fixed base clock."""
+    return GpsGenerator("GP").zda(replace(_BASE, utc=datetime(2024, 1, 1, hour, tzinfo=UTC)))
+
+
 def _gps_channel(sources: list[str], *, rate: float = 20.0, enabled: bool = True) -> ChannelSpec:
     return ChannelSpec(
         id="gps",
@@ -191,11 +196,20 @@ def test_live_source_suppresses_the_generator() -> None:
     engine._dispatch_rx("gps_in", line)
     engine.start()
     try:
-        assert _wait_until(lambda: line in collectors["gps"].snapshot())
-        # Over a further window (many 20 Hz ticks) nothing but the verbatim line is ever emitted —
-        # a generated RMC/GGA would be a second, distinct string.
+        from nmea_sim import rx
+        from nmea_sim.gps_generator import zda_from_datetime
+
+        # The winning source sends RMC but no ZDA, so B3c's single-source carve-out synthesizes
+        # exactly one ZDA carrying that RMC's EXACT time (not the live sim clock).
+        parsed = rx.parse_time(line)
+        assert parsed is not None
+        synth_zda = zda_from_datetime("GP", parsed)
+        assert _wait_until(lambda: synth_zda in collectors["gps"].snapshot())
+        # Over a further window (many 20 Hz ticks) the generator stays suppressed: nothing but the
+        # verbatim forwarded line and its single synthesized ZDA ever appears — a *generated*
+        # RMC/GGA (built off the live clock) would be a third, distinct string.
         assert not _wait_until(
-            lambda: bool(set(collectors["gps"].snapshot()) - {line}), timeout=0.4
+            lambda: bool(set(collectors["gps"].snapshot()) - {line, synth_zda}), timeout=0.4
         )
     finally:
         engine.stop()
@@ -298,5 +312,139 @@ def test_disabled_channel_silences_live_passthrough() -> None:
         engine.set_channel_enabled("gps", True)
         engine._dispatch_rx("gps_in", line)
         assert _wait_until(lambda: line in collectors["gps"].snapshot())
+    finally:
+        engine.stop()
+
+
+# --- single-source ZDA carve-out (B3c, R2/R55) ------------------------------------
+
+
+def test_synthesized_zda_carries_the_rmcs_exact_time() -> None:
+    """A winning GPS source sending RMC but NO ZDA gets exactly one synthesized ZDA whose time
+    field EQUALS the RMC's — time and position stay single-source, never divergent on the wire."""
+    engine, collectors = _auto_engine(
+        [_gps_channel(["gps_in"], rate=20.0)],
+        [InputSpec(id="gps_in", path="none", liveness_timeout_s=30.0)],
+    )
+    # Dispatch before start so generation is suppressed from tick zero (no generated ZDA can leak).
+    rmc = _rmc(lat=8.9)
+    engine._dispatch_rx("gps_in", rmc)
+    engine.start()
+    try:
+        from nmea_sim import rx
+        from nmea_sim.gps_generator import zda_from_datetime
+
+        parsed = rx.parse_time(rmc)
+        assert parsed is not None
+        synth = zda_from_datetime("GP", parsed)  # what the carve-out must emit
+        assert _wait_until(lambda: synth in collectors["gps"].snapshot())
+        # The synthesized ZDA's time field equals the RMC's time field, byte-for-byte.
+        import pynmea2
+
+        assert pynmea2.parse(synth).timestamp == pynmea2.parse(rmc).timestamp
+        # Nothing but the forwarded RMC and its single synthesized ZDA ever appears — no generated
+        # or NTP-clock ZDA (which would carry a different, live-clock time) is emitted.
+        assert not _wait_until(
+            lambda: bool(set(collectors["gps"].snapshot()) - {rmc, synth}), timeout=0.4
+        )
+    finally:
+        engine.stop()
+
+
+def test_source_own_zda_forwards_and_none_is_synthesized() -> None:
+    """When the source itself sends a ZDA, it forwards verbatim and the carve-out synthesizes
+    nothing — even for a following RMC — so the wire never carries a duplicate ZDA."""
+    engine, collectors = _auto_engine(
+        [_gps_channel(["gps_in"], rate=20.0)],
+        [InputSpec(id="gps_in", path="none", liveness_timeout_s=30.0)],
+    )
+    zda = _zda(hour=6)
+    rmc = _rmc(lat=11.2)
+    # ZDA first (so the carve-out records the source sends its own), then an RMC. Both before start.
+    engine._dispatch_rx("gps_in", zda)
+    engine._dispatch_rx("gps_in", rmc)
+    engine.start()
+    try:
+        assert _wait_until(lambda: zda in collectors["gps"].snapshot())
+        assert _wait_until(lambda: rmc in collectors["gps"].snapshot())
+        # Only the two forwarded lines ever appear: the source's own ZDA suppressed synthesis.
+        assert not _wait_until(
+            lambda: bool(set(collectors["gps"].snapshot()) - {zda, rmc}), timeout=0.4
+        )
+    finally:
+        engine.stop()
+
+
+def test_no_synthesized_zda_when_gps_channel_is_off() -> None:
+    """The carve-out is exempt from passthrough SUPPRESSION, never from the OFF gate (R55): a
+    disabled GPS channel emits neither the forwarded RMC nor any synthesized ZDA."""
+    engine, collectors = _auto_engine(
+        [_gps_channel(["gps_in"], enabled=False)],
+        [InputSpec(id="gps_in", path="none", liveness_timeout_s=30.0)],
+    )
+    engine.start()
+    try:
+        from nmea_sim import rx
+        from nmea_sim.gps_generator import zda_from_datetime
+
+        rmc = _rmc(lat=13.5)
+        parsed = rx.parse_time(rmc)
+        assert parsed is not None
+        synth = zda_from_datetime("GP", parsed)
+        engine._dispatch_rx("gps_in", rmc)
+        # OFF silences everything on the channel — the forwarded RMC and its synthesized ZDA alike.
+        assert not _wait_until(lambda: bool(collectors["gps"].snapshot()), timeout=0.3)
+        assert synth not in collectors["gps"].snapshot()
+    finally:
+        engine.stop()
+
+
+def test_zda_and_rmc_resume_from_one_clock_after_source_dies() -> None:
+    """When the winning GPS source dies, the channel falls back to generation and BOTH ZDA and RMC
+    resume — from the single engine clock, not a stale source — proving time and position stay
+    unified across the LIVE->SIM handover."""
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=115200,
+        talker="GP",
+        emit=[EmitSpec("RMC", 20.0), EmitSpec("ZDA", 20.0)],
+        sources=["gps_in"],
+    )
+    engine, collectors = _auto_engine(
+        [gps],
+        [InputSpec(id="gps_in", path="none", liveness_timeout_s=0.15)],
+    )
+    engine.start()
+    router = engine._router
+    assert router is not None
+    try:
+        import pynmea2
+
+        from nmea_sim import rx
+
+        live = _rmc(lat=17.0)
+        engine._dispatch_rx("gps_in", live)
+        assert _wait_until(lambda: live in collectors["gps"].snapshot())
+
+        # Source dies -> no winner -> generation resumes on the channel's own clock.
+        assert _wait_until(lambda: router.winner("gps", "gnss", time.monotonic()) is None)
+
+        def generated_pair_seen() -> bool:
+            # The generated (non-forwarded) sentence types present since the source died.
+            types = {
+                getattr(pynmea2.parse(line), "sentence_type", "")
+                for line in collectors["gps"].snapshot()
+                if line != live
+            }
+            return {"ZDA", "RMC"} <= types
+
+        # Both a generated ZDA and a generated RMC appear post-death — the pair resumed together.
+        assert _wait_until(generated_pair_seen)
+        # And parse_time agrees they carry a real clock instant (not a blank/failed synthesis).
+        assert any(
+            rx.parse_time(line) is not None for line in collectors["gps"].snapshot() if line != live
+        )
     finally:
         engine.stop()

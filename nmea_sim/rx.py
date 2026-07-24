@@ -14,6 +14,8 @@ line reaches here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pynmea2
 
 # Which sentence types contribute which VesselState fields. The extraction below mirrors
@@ -76,6 +78,34 @@ def parse_line(line: str) -> dict[str, float]:
         if _has(msg.heading):
             out["heading_mag_deg"] = float(msg.heading)
     return out
+
+
+def parse_time(line: str) -> datetime | None:
+    """Extract a tz-aware UTC ``datetime`` from a time-bearing GNSS sentence, else ``None``.
+
+    The Time Authority unifies clock and position on a single GNSS source, and the ZDA
+    carve-out synthesizes a ZDA from an RMC's *exact* time — both need the wall-clock instant
+    a sentence carries, which ``parse_line`` (a state-field mapper) deliberately does not
+    surface. Only RMC (datestamp + timestamp) and ZDA (day/month/year + timestamp) carry a
+    full date; every other sentence, or a blank/missing date or time field, yields ``None`` so
+    the caller never fabricates a time. A genuine ``pynmea2.ParseError`` propagates; callers on
+    the RX path already suppress it.
+    """
+    msg = pynmea2.parse(line)
+    st = getattr(msg, "sentence_type", "")
+    if st == "RMC":
+        datestamp = getattr(msg, "datestamp", None)
+        timestamp = getattr(msg, "timestamp", None)
+        if datestamp is None or timestamp is None:
+            return None
+        return datetime.combine(datestamp, timestamp, tzinfo=UTC)
+    if st == "ZDA":
+        timestamp = getattr(msg, "timestamp", None)
+        if timestamp is None or not (_has(msg.day) and _has(msg.month) and _has(msg.year)):
+            return None
+        date = datetime(int(msg.year), int(msg.month), int(msg.day), tzinfo=UTC).date()
+        return datetime.combine(date, timestamp, tzinfo=UTC)
+    return None
 
 
 def accepted_changes(line: str, rx_accept: list[str]) -> dict[str, float]:

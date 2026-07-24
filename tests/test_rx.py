@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pynmea2
 import pytest
@@ -79,6 +80,37 @@ def test_unrecognised_sentence_yields_nothing(sample_state: VesselState) -> None
 def test_garbage_raises_parse_error() -> None:
     with pytest.raises(pynmea2.ParseError):
         rx.parse_line("not a sentence at all")
+
+
+# --- parse_time: the Time Authority / ZDA-synthesis feed --------------------------
+
+
+def test_parse_time_rmc_recovers_tz_aware_utc_with_subsecond(sample_state: VesselState) -> None:
+    """RMC's datestamp + sub-second timestamp round-trip to the exact tz-aware UTC — this is the
+    instant the single-source ZDA carve-out re-emits, so it must survive to centisecond precision.
+    """
+    line = GpsGenerator("GP").rmc(sample_state)
+    parsed = rx.parse_time(line)
+    # sample_state.utc carries 420000 microseconds; the generator writes centiseconds (.42).
+    assert parsed == datetime(2024, 6, 21, 12, 35, 19, 420000, tzinfo=UTC)
+
+
+def test_parse_time_zda_recovers_tz_aware_utc(sample_state: VesselState) -> None:
+    line = GpsGenerator("GP").zda(sample_state)
+    parsed = rx.parse_time(line)
+    assert parsed == datetime(2024, 6, 21, 12, 35, 19, 420000, tzinfo=UTC)
+
+
+def test_parse_time_non_time_sentence_is_none(sample_state: VesselState) -> None:
+    # GLL carries a time but no date, and HDT carries neither: neither is a full-date source.
+    assert rx.parse_time(GpsGenerator("GP").gll(sample_state)) is None
+    assert rx.parse_time(HeadingGenerator("HE").hdt(sample_state)) is None
+
+
+def test_parse_time_blank_date_time_fields_is_none() -> None:
+    """An RMC with empty timestamp/datestamp fields must never fabricate a time -> None."""
+    blank = str(pynmea2.RMC("GP", "RMC", ("", "V", "", "", "", "", "", "", "", "", "", "N")))
+    assert rx.parse_time(blank) is None
 
 
 # --- whitelist gate --------------------------------------------------------------

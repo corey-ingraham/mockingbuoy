@@ -34,16 +34,18 @@ import pynmea2
 from . import budget, rx
 from .ais_generator import AisGenerator
 from .config import AisSpec, ChannelSpec, EngineConfig, TimeSourceSpec
-from .gps_generator import GpsGenerator
+from .gps_generator import GpsGenerator, zda_from_datetime
 from .heading_generator import HeadingGenerator
 from .instrument_generator import InstrumentGenerator
 from .navigation import dead_reckon
+from .ntpsync import NtpSync
 from .realism import RealismProfile, TargetSpawner
 from .router import Router
 from .seastate import sea_state_motion
 from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
 from .tcp_tap import TcpTap
+from .timeauthority import TimeAuthority
 from .writers import LogWriter, NullWriter, PtyWriter, Writer
 
 # Internal AIS emission kinds (config models AIS as one emit entry; the engine expands it
@@ -291,27 +293,42 @@ class TimeSource:
     """Produces successive UTC values per the configured clock model."""
 
     def __init__(self, spec: TimeSourceSpec, epoch: datetime | None) -> None:
-        self._mode = spec.mode
+        # ``mode`` is a public, effectively-read-only attribute (never reassigned post-construction)
+        # so the TimeAuthority can honour the base clock's mode (system_utc/simulated/hold) when no
+        # GNSS source is live, and so TimeSource structurally satisfies the clock surface the
+        # authority wraps (its Protocol expects a settable ``mode: str``, which a property is not).
+        self.mode = spec.mode
         self._rate = spec.rate
         self._epoch = epoch
 
     def initial(self) -> datetime:
-        if self._mode in ("simulated", "hold") and self._epoch is not None:
+        if self.mode in ("simulated", "hold") and self._epoch is not None:
             return self._epoch
         return datetime.now(UTC)
 
     def advance(self, current: datetime, dt_s: float) -> datetime:
-        if self._mode == "system_utc":
+        if self.mode == "system_utc":
             return datetime.now(UTC)
-        if self._mode == "hold":
+        if self.mode == "hold":
             return current
         return current + timedelta(seconds=dt_s * self._rate)
+
+
+class _Clock(Protocol):
+    """The narrow clock surface ``PhysicsEngine`` drives — just ``advance``.
+
+    Typed as a Protocol so the engine can be handed either the bare ``TimeSource`` (simulate mode)
+    or the ``TimeAuthority`` drop-in (auto mode) without either being a subclass of the other; both
+    satisfy this structurally, which is exactly what lets the authority be a transparent stand-in.
+    """
+
+    def advance(self, current: datetime, dt_s: float) -> datetime: ...
 
 
 class PhysicsEngine:
     """Pure position/clock integrator — no threading, so it is deterministically testable."""
 
-    def __init__(self, movement_mode: str, time_source: TimeSource) -> None:
+    def __init__(self, movement_mode: str, time_source: _Clock) -> None:
         self._mode = movement_mode
         self._time = time_source
 
@@ -357,6 +374,60 @@ class _PhysicsThread(threading.Thread):
             next_tick = advance_next_fire(next_tick, self._period, now)
 
 
+# --- single-source ZDA carve-out (auto mode, GPS channel only) --------------------
+
+
+def _formatter_of(line: str) -> str:
+    """The 3-char NMEA formatter of a ``$``-sentence address (``$GPRMC`` -> ``RMC``), else ``""``.
+
+    A cheap slice (no full parse) mirroring ``classify.sentence_class`` — enough for the ZDA
+    carve-out to tell an RMC from a ZDA on a winning line without paying for a pynmea2 parse.
+    """
+    if not line or line[0] != "$":
+        return ""
+    address = line[1:].partition(",")[0]
+    return address[2:5] if len(address) >= 5 else ""
+
+
+class ZdaCarveout:
+    """Synthesize a ZDA for the GPS channel when the winning GNSS source sends RMC but no ZDA.
+
+    On a real bus a receiver may emit RMC (which carries a full date+time) yet no standalone ZDA.
+    Building a ZDA from the projected sim clock would risk a ZDA whose time diverges from the
+    winning source's RMC — the single-source invariant (R2) forbids that split. So this watches the
+    WINNING gnss line and, only while the source itself has sent no ZDA, emits a ZDA built from that
+    RMC's EXACT parsed time, so time and position can never come apart on the wire.
+
+    It is an exemption from passthrough SUPPRESSION only, never from the channel-OFF gate (R55): the
+    worker invokes it *after* forwarding a winning line, and ``_on_passthrough`` already returns
+    early when the channel is disabled, so a synthesized ZDA is naturally silent on an OFF channel.
+    """
+
+    def __init__(self, talker: str) -> None:
+        self._talker = talker
+        self._seen_zda = False
+        self._winner: str | None = None
+
+    def on_forward(self, input_id: str, line: str) -> list[str]:
+        """Return synthesized ZDA line(s) to inject after ``line`` (a winning gnss line)."""
+        # A change of winning source resets the "has this source sent a ZDA?" memory, so a new
+        # source that does send its own ZDA is never shadowed by the previous source's history.
+        if input_id != self._winner:
+            self._winner = input_id
+            self._seen_zda = False
+        formatter = _formatter_of(line)
+        if formatter == "ZDA":
+            # The source sends its own ZDA -> the caller already forwarded it; add nothing so we
+            # never double up on the wire, and remember not to synthesize for this source.
+            self._seen_zda = True
+            return []
+        if formatter == "RMC" and not self._seen_zda:
+            utc = rx.parse_time(line)
+            if utc is not None:
+                return [zda_from_datetime(self._talker, utc)]
+        return []
+
+
 # --- per-channel sender -----------------------------------------------------------
 
 
@@ -371,6 +442,7 @@ class _ChannelWorker(threading.Thread):
         stop: threading.Event,
         monitor: Callable[[str, str], None] | None,
         router: Router | None = None,
+        zda_carveout: ZdaCarveout | None = None,
     ) -> None:
         super().__init__(name=f"channel-{spec.id}", daemon=True)
         self._spec = spec
@@ -381,6 +453,11 @@ class _ChannelWorker(threading.Thread):
         self._stop_event = stop
         self._monitor = monitor
         self._emitters = emitters_for(spec)
+        # Single-source ZDA synthesis, GPS channel only (None on every other worker and in simulate
+        # mode). When set, it runs on the WORKER thread after a winning gnss line is forwarded, so
+        # the synthesized ZDA is injected by the same single writer — preserving the per-channel
+        # single-writer invariant — and inherits this channel's OFF gate for free.
+        self._zda_carveout = zda_carveout
         # AUTO-mode wiring. ``router`` is None in simulate mode, in which case the inbox is never
         # fed and every branch below that consults the router is dead — the worker runs its
         # generation schedule exactly as before. ``_channel_class`` is the sentence class this
@@ -511,6 +588,12 @@ class _ChannelWorker(threading.Thread):
         if self._router is not None and input_id == self._router.winner(self._spec.id, cls, now):
             self._inject(line)
             self._feed_passthrough_state(line)
+            # Single-source ZDA carve-out (GPS channel only): if the winning source sent an RMC but
+            # no ZDA, synthesize one from the RMC's exact time and inject it here on the WORKER
+            # thread, so time and position never split and the single-writer invariant holds.
+            if self._zda_carveout is not None:
+                for synth in self._zda_carveout.on_forward(input_id, line):
+                    self._inject(synth)
         # else: a higher-priority source is currently live -> drop this line.
 
     def _inject(self, line: str) -> None:
@@ -599,7 +682,33 @@ class Engine:
 
         self._time_source = TimeSource(config.time_source, config.epoch_datetime())
         self._shared = SharedState(config.build_initial_state(self._time_source.initial()))
-        self._physics_engine = PhysicsEngine(config.movement.mode, self._time_source)
+
+        # AUTO mode gets an arbiter that classifies input lines and picks winners; simulate mode
+        # has none, so every worker's router-consulting branch is inert and the inbox is never fed.
+        self._router = Router(config) if config.mode == "auto" else None
+
+        # Single-source Time Authority (auto only): wraps the base TimeSource + the SAME router that
+        # feeds the GPS output, so the GNSS winner supplies BOTH position and time and they can
+        # never split across sources. In simulate mode it stays None and PhysicsEngine keeps driving
+        # the bare TimeSource, byte-for-byte as before — no NtpSync/authority is even built.
+        self._time_authority: TimeAuthority | None = None
+        clock: _Clock = self._time_source
+        if config.mode == "auto" and self._router is not None:
+            # The GPS output channel id whose GNSS winner also owns the clock ("" if none defined).
+            gps_channel_id = next((c.id for c in config.channels if c.role == "gps"), "")
+            # GNSS-capable inputs tagged by function: gps->"gps", sat->"sat"; others omitted so
+            # note_time ignores them and only a real GNSS wire can ever become the time source.
+            input_tag = {
+                i.id: ("gps" if i.function == "gps" else "sat")
+                for i in config.inputs
+                if i.function in ("gps", "sat")
+            }
+            self._time_authority = TimeAuthority(
+                self._time_source, self._router, gps_channel_id, input_tag, NtpSync()
+            )
+            clock = self._time_authority
+
+        self._physics_engine = PhysicsEngine(config.movement.mode, clock)
         self._physics = _PhysicsThread(
             self._shared, self._physics_engine, config.movement.physics_hz, self._stop_event
         )
@@ -608,15 +717,18 @@ class Engine:
         # emission begins. Duck-typed on a ``start()`` method.
         self._startables: list[object] = []
 
-        # AUTO mode gets an arbiter that classifies input lines and picks winners; simulate mode
-        # has none, so every worker's router-consulting branch is inert and the inbox is never fed.
-        self._router = Router(config) if config.mode == "auto" else None
-
         self._workers: list[_ChannelWorker] = []
         for spec in config.channels:
             source = build_source(spec)
             sinks = self._build_sinks(spec, sink_hook)
             self._check_budget(spec, source, strict_budget)
+            # Only the GPS channel in auto mode carries a ZDA carve-out; every other worker (and all
+            # of simulate mode) gets None, so the carve-out branch in _on_passthrough stays inert.
+            carveout = (
+                ZdaCarveout(spec.talker or "GP")
+                if config.mode == "auto" and spec.role == "gps"
+                else None
+            )
             self._workers.append(
                 _ChannelWorker(
                     spec,
@@ -627,6 +739,7 @@ class Engine:
                     self._stop_event,
                     monitor,
                     self._router,
+                    carveout,
                 )
             )
         self._worker_by_id = {w.channel_id: w for w in self._workers}
@@ -693,13 +806,23 @@ class Engine:
         """
         if self._router is None:
             return
-        routed = self._router.note_rx(input_id, line, time.monotonic())
-        if routed is None:
-            return
-        target_id, cls, line = routed
-        worker = self._worker_by_id.get(target_id)
-        if worker is not None:
-            worker.enqueue((input_id, cls, line))
+        now = time.monotonic()
+        routed = self._router.note_rx(input_id, line, now)
+        if routed is not None:
+            target_id, cls, routed_line = routed
+            worker = self._worker_by_id.get(target_id)
+            if worker is not None:
+                worker.enqueue((input_id, cls, routed_line))
+        # ALSO feed the single-source Time Authority: parse the wall-clock instant off a
+        # time-bearing GNSS sentence (RMC/ZDA) and stamp a fix. note_time ignores non-GNSS inputs,
+        # and parse_time returns None for sentences without a full date+time, so this is safe to run
+        # on every line. A genuine ParseError is suppressed exactly as the RX path already does.
+        if self._time_authority is not None:
+            utc: datetime | None = None
+            with contextlib.suppress(pynmea2.ParseError):
+                utc = rx.parse_time(line)
+            if utc is not None:
+                self._time_authority.note_time(input_id, utc, now)
 
     def _rx_monitor(self, spec: ChannelSpec) -> Callable[[str], None] | None:
         """Forward a received line to the web monitor seam, tagged with the channel id."""
@@ -791,6 +914,18 @@ class Engine:
 
     def snapshot(self) -> VesselState:
         return self._shared.snapshot()
+
+    def time_source(self) -> str:
+        """The tier currently supplying the clock: gps/sat/ntp/system/simulated/hold.
+
+        In auto mode this is the Time Authority's last resolved tag (thread-safe str read); in
+        simulate mode there is no authority, so it is a static label off the configured clock
+        (``system_utc`` -> ``"system"``, else the mode verbatim). Web surfacing lands in Phase C.
+        """
+        if self._time_authority is not None:
+            return self._time_authority.source_tag()
+        mode = self._config.time_source.mode
+        return "system" if mode == "system_utc" else mode
 
     def update_state(self, **changes: object) -> VesselState:
         """Apply an external state edit (the web control seam)."""

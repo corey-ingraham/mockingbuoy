@@ -37,6 +37,30 @@ def _magnetic(true_deg: float, variation_deg: float) -> float:
     return (true_deg - variation_deg) % 360.0
 
 
+def zda_from_datetime(talker: str, utc: datetime) -> str:
+    """Build a ZDA from an explicit UTC datetime, not from a projected clock.
+
+    The single-source Time Authority synthesizes a ZDA to accompany a winning GNSS
+    source's RMC when that source sends no ZDA of its own. The synthesized ZDA must
+    carry the RMC's *exact* time so time and position can never diverge on the bus,
+    hence the caller passes the datetime parsed straight off the RMC rather than the
+    generator's own ``VesselState``. Uses the same field layout as ``GpsGenerator.zda``.
+    """
+    msg = pynmea2.ZDA(
+        talker,
+        "ZDA",
+        (
+            _timestamp(utc),
+            f"{utc.day:02d}",
+            f"{utc.month:02d}",
+            f"{utc.year:04d}",
+            "00",
+            "00",
+        ),
+    )
+    return str(msg)
+
+
 class GpsGenerator:
     """Builds GPS sentences for one talker (default ``GP``) from a ``VesselState``."""
 
