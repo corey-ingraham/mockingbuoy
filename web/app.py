@@ -59,6 +59,9 @@ _INDEX_HTML = _STATIC_DIR / "index.html"
 #: no ``'unsafe-inline'`` for scripts still loads them — they are same-origin ``'self'``).
 _APP_CSS = _STATIC_DIR / "app.css"
 _APP_JS = _STATIC_DIR / "app.js"
+#: Throwaway conning-redesign proof-of-concept page (static, self-contained). Served by its
+#: own explicit route like the other static files; remove with the POC once the redesign lands.
+_CONNING_POC = _STATIC_DIR / "conning-poc.html"
 
 #: Per-subscriber SSE queue depth. On overflow the oldest frame is dropped so a slow
 #: browser can never apply back-pressure to the engine threads.
@@ -1081,6 +1084,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.get("/static/app.js")
     async def static_app_js(_: None = Depends(auth)) -> Response:
         return Response(_APP_JS.read_text(encoding="utf-8"), media_type="application/javascript")
+
+    # Throwaway proof-of-concept page for the conning redesign; same auth gate as the rest.
+    @app.get("/static/conning-poc.html", response_class=HTMLResponse)
+    async def static_conning_poc(_: None = Depends(auth)) -> HTMLResponse:
+        return HTMLResponse(_CONNING_POC.read_text(encoding="utf-8"))
 
     @app.get("/healthz")
     async def healthz(_: None = Depends(auth)) -> Response:
