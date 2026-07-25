@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=15">
+<link rel="stylesheet" href="/static/app.css?v=16">
 </head>
 <body>
 
@@ -60,41 +60,15 @@
     <!-- COORDINATES (re-homed from #readouts) -->
     <div class="ins-panel p-coords">
       <div class="ins-hdr"><span>Coordinates</span></div>
-      <div class="ro-item">
-        <div class="ins-label">Latitude</div>
-        <div class="ins-val-row"><span id="ro-lat" class="ins-bignum v-live">---</span></div>
-      </div>
-      <div class="ro-item">
-        <div class="ins-label">Longitude</div>
-        <div class="ins-val-row"><span id="ro-lon" class="ins-bignum v-live">---</span></div>
-      </div>
-      <div class="ro-item">
-        <div class="ins-label">UTC</div>
-        <div class="ins-val-row"><span id="ro-utc" class="ins-bignum">--:--:--</span></div>
-      </div>
-      <div class="ro-item">
-        <div class="ins-label">Local</div>
-        <div class="ins-val-row"><span id="ro-local" class="ins-bignum">--:--:--</span></div>
-      </div>
+      <div class="coord-row"><span class="coord-label">LAT</span><span id="ro-lat" class="coord-val v-live">---</span></div>
+      <div class="coord-row"><span class="coord-label">LONG</span><span id="ro-lon" class="coord-val v-live">---</span></div>
+      <div class="coord-row"><span class="coord-label">UTC</span><span id="ro-utc" class="coord-val">--:--:--</span></div>
+      <div class="coord-row"><span class="coord-label">LOCAL</span><span id="ro-local" class="coord-val">--:--:--</span></div>
     </div>
 
-    <!-- PRIMARY: SOG / STW / COG bignums + Rate of Turn (moved) -->
+    <!-- PRIMARY: HDG tape + Rate of Turn on top, then SOG / COG / STW bignums -->
     <div class="ins-panel p-primary">
       <div class="ins-hdr"><span>Primary</span></div>
-      <div class="pri-row">
-        <div class="ro-item">
-          <div class="ins-label">SOG</div>
-          <div class="ins-val-row"><span id="pri-sog" class="ins-bignum v-live">---</span><span class="ins-unit">kt</span></div>
-        </div>
-        <div class="ro-item">
-          <div class="ins-label">STW</div>
-          <div class="ins-val-row"><span id="pri-stw" class="ins-bignum v-live">---</span><span class="ins-unit">kt</span></div>
-        </div>
-        <div class="ro-item">
-          <div class="ins-label">COG</div>
-          <div class="ins-val-row"><span id="pri-cog" class="ins-bignum v-live">---</span><span class="ins-unit">°</span></div>
-        </div>
-      </div>
       <!-- heading tape: POC-style linear scale, big centred heading, scrolls as she turns -->
       <svg id="heading-tape" viewBox="0 0 460 140" aria-label="heading">
         <rect x="0.5" y="0.5" width="459" height="139" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
@@ -106,6 +80,20 @@
         <line x1="230" y1="76" x2="230" y2="136" stroke="#00e07a" stroke-width="1.6" stroke-opacity="0.4"/>
       </svg>
       <div class="g-read" style="text-align:center;">Rate of turn <span id="rot-val" class="v-live">--</span> <span class="g-sub">°/min</span></div>
+      <div class="pri-row">
+        <div class="ro-item">
+          <div class="ins-label">SOG</div>
+          <div class="ins-val-row"><span id="pri-sog" class="ins-bignum v-live">---</span><span class="ins-unit">kt</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">COG</div>
+          <div class="ins-val-row"><span id="pri-cog" class="ins-bignum v-live">---</span><span class="ins-unit">°</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">STW</div>
+          <div class="ins-val-row"><span id="pri-stw" class="ins-bignum v-live">---</span><span class="ins-unit">kt</span></div>
+        </div>
+      </div>
     </div>
 
     <!-- PROPULSION: twin vertical engine bars (RPM + LOAD), amber = display-only (s.sim) -->
@@ -619,6 +607,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=15"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>

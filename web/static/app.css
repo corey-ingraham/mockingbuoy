@@ -359,8 +359,12 @@
       "env ship autopilot"
       "depth helm alerts";
   }
-  .p-coords { grid-area: coords; }
   .p-primary { grid-area: primary; }
+  /* coordinates read as inline label→value rows (JPG style); never show a scrollbar */
+  .p-coords { grid-area: coords; overflow: hidden; justify-content: center; gap: 8px; }
+  .coord-row { display: flex; align-items: baseline; gap: 10px; }
+  .coord-label { flex: none; min-width: 46px; font-size: 11px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .coord-val { font-family: var(--sans); font-weight: 700; font-size: clamp(19px, 2.7vh, 32px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; }
   .p-propulsion { grid-area: propulsion; }
   .p-env { grid-area: env; }
   .p-ship { grid-area: ship; }
@@ -449,8 +453,10 @@
   }
   .ins-unit { font-size: 12px; color: var(--muted); }
   .pri-row { display: flex; flex-wrap: wrap; gap: 8px 18px; }
-  /* SOG/STW/COG sized + weighted to read identical to the enlarged HDG readout */
-  .p-primary .ins-bignum { font-size: clamp(34px, 5.4vh, 62px); font-weight: 800; letter-spacing: 0.5px; }
+  /* SOG/COG/STW values keep the standard bignum weight/size; only the small
+     titles are tuned to match the in-SVG "HDG" caption format (11px/700/muted) */
+  .p-primary .ins-bignum { font-size: clamp(32px, 5vh, 60px); }
+  .p-primary .ins-label { font-size: 11px; font-weight: 700; }
   /* value encoding (JPG-style): live values render bold white; sim/display-only values
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
