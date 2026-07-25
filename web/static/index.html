@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=19">
+<link rel="stylesheet" href="/static/app.css?v=20">
 </head>
 <body>
 
@@ -95,12 +95,20 @@
       <div class="ins-hdr"><span>Propulsion</span></div>
       <div class="prop-gauges">
         <div class="prop-col">
+          <div class="prop-title">Port Engine</div>
+          <div class="prop-stats">
+            <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-port-rpm" class="v-sim">----</span></div></div>
+            <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-port-load" class="v-sim">--</span>%</div></div>
+          </div>
           <svg id="prop-port" viewBox="0 0 110 230" aria-label="port engine"></svg>
-          <div class="g-sub">PORT <span id="prop-port-rpm" class="v-sim">----</span> rpm · <span id="prop-port-load" class="v-sim">--</span>%</div>
         </div>
         <div class="prop-col">
+          <div class="prop-title">Stbd Engine</div>
+          <div class="prop-stats">
+            <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-stbd-rpm" class="v-sim">----</span></div></div>
+            <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-stbd-load" class="v-sim">--</span>%</div></div>
+          </div>
           <svg id="prop-stbd" viewBox="0 0 110 230" aria-label="starboard engine"></svg>
-          <div class="g-sub">STBD <span id="prop-stbd-rpm" class="v-sim">----</span> rpm · <span id="prop-stbd-load" class="v-sim">--</span>%</div>
         </div>
       </div>
     </div>
@@ -119,9 +127,13 @@
       <div class="coord-row"><span class="coord-label">UTC</span><span id="ro-utc" class="coord-val">--:--:--</span></div>
       <div class="coord-row"><span class="coord-label">LOCAL</span><span id="ro-local" class="coord-val">--:--:--</span></div>
     </div>
-    <!-- ENVIRONMENT: wind TRUE + wind RELATIVE dials + weather -->
+    <!-- ENVIRONMENT: sea state + wind TRUE + wind RELATIVE dials + weather -->
     <div class="ins-panel p-env">
       <div class="ins-hdr"><span>Environment</span></div>
+      <div class="env-sea">
+        <div class="ins-label">Sea State</div>
+        <div class="ins-val-row"><span id="ro-sea" class="ins-bignum v-live">---</span><span class="ins-unit">WMO</span></div>
+      </div>
       <div class="env-dials">
         <!-- wind TRUE: north-up arrow dial -->
         <div class="env-dial">
@@ -194,9 +206,9 @@
         </div>
       </div>
     </div>
-    <!-- DEPTH: value + alert constant + taller 1 Hz history graph -->
+    <!-- WATER DEPTH: value + alert constant + taller 1 Hz history graph -->
     <div class="ins-panel p-depth">
-      <div class="ins-hdr"><span>Depth</span></div>
+      <div class="ins-hdr"><span>Water Depth</span></div>
       <div class="depth-vals">
         <div class="ro-item">
           <div class="ins-label">Depth</div>
@@ -205,10 +217,6 @@
         <div class="ro-item">
           <div class="ins-label">Alert depth</div>
           <div class="ins-val-row"><span id="depth-alert" class="ins-bignum v-sim">--</span><span class="ins-unit">m</span></div>
-        </div>
-        <div class="ro-item">
-          <div class="ins-label">Sea State</div>
-          <div class="ins-val-row"><span id="ro-sea" class="ins-bignum v-live">---</span><span class="ins-unit">WMO</span></div>
         </div>
       </div>
       <svg id="depth-graph" viewBox="0 0 320 180" aria-label="depth history">
@@ -309,11 +317,11 @@
               <!-- level sea (static); the ship glyph pitches over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-pitch-glyph">
-                <!-- USS destroyer side profile: long low sleek hull, fine raked bow (right), boxy bridge + mast + funnel -->
-                <path d="M28,63 L120,63 L134,59 L131,68 Q129,70 121,70 L38,70 Q30,70 28,66 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M52,63 L52,55 L64,55 L64,50 L80,50 L80,55 L90,55 L90,63 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <rect x="96" y="57" width="7" height="6" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.8"/>
-                <line x1="70" y1="50" x2="70" y2="38" stroke="#c3ccd4" stroke-width="1.3"/>
+                <!-- USS destroyer side profile (compact): long low hull, fine raked bow right, bridge + funnel + mast -->
+                <path d="M42,64 L112,64 L124,61 L122,69 Q120,70 114,70 L48,70 Q43,70 42,67 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M58,64 L58,57 L67,57 L67,52 L79,52 L79,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M84,64 L84,58 L91,58 L91,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="72" y1="52" x2="72" y2="43" stroke="#c3ccd4" stroke-width="1.2"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -334,10 +342,10 @@
               <!-- level sea (static); the ship glyph heels over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-roll-glyph">
-                <!-- USS destroyer head-on: narrow flared hull, stepped pyramidal bridge + mast -->
-                <path d="M68,62 L92,62 L88,72 Q80,77 72,72 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M73,62 L73,56 L76,56 L76,51 L84,51 L84,56 L87,56 L87,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <line x1="80" y1="51" x2="80" y2="38" stroke="#c3ccd4" stroke-width="1.3"/>
+                <!-- USS destroyer head-on (large, fills gauge): wide flared hull, stepped bridge + tall mast -->
+                <path d="M50,62 L110,62 L102,76 Q80,84 58,76 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M62,62 L62,54 L70,54 L72,46 L88,46 L90,54 L98,54 L98,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="80" y1="46" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.5"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -622,6 +630,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=19"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>

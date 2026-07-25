@@ -370,7 +370,7 @@
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
   .coord-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; }
   .coord-label { flex: none; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
-  .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
+  .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(23px, 3.3vh, 40px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.15; white-space: nowrap; }
   .p-propulsion { grid-area: propulsion; }
   .p-ship { grid-area: ship; }
   .p-autopilot { grid-area: autopilot; }
@@ -417,10 +417,11 @@
     background: rgba(0,0,0,0.28);
     border-bottom: 1px solid var(--seam);
     border-radius: 4px 4px 0 0;
-    font-size: 10px;
+    font-size: 13px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 1px;
-    color: var(--muted);
+    color: var(--text);
     flex: none;
   }
   /* Gauges grow to their column width but are bounded by a viewport-relative height
@@ -472,7 +473,9 @@
   .ins-legend .lg-live .dotc { color: var(--ok); }
   .ins-legend .lg-sim .dotc { color: var(--warn); }
 
-  /* env panel — twin wind dials + weather readings */
+  /* env panel — sea state + twin wind dials + weather readings */
+  .env-sea { text-align: center; margin-bottom: 4px; }
+  .env-sea .ins-val-row { justify-content: center; }
   .env-dials { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; }
   .env-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 18vh; margin: 2px auto; }
@@ -519,11 +522,15 @@
   .incl-dial { max-width: 240px; min-width: 150px; }
   .incl-dial .g-sub { text-align: center; margin-top: 2px; }
 
-  /* propulsion panel — twin vertical engine bars (amber = display-only) */
-  .prop-gauges { display: flex; gap: 10px; justify-content: center; align-items: flex-end; flex-wrap: wrap; }
-  .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 90px; min-width: 84px; max-width: 120px; }
-  .prop-col svg { width: 100%; height: auto; max-width: 104px; max-height: 24vh; margin: 2px auto; display: block; }
-  .prop-col .g-sub { text-align: center; margin-top: 2px; }
+  /* propulsion panel — twin vertical engine bars, per-engine header (Port/Stbd + RPM/Load) */
+  .prop-gauges { display: flex; gap: 16px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
+  .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 150px; min-width: 130px; max-width: 200px; }
+  .prop-col svg { width: 100%; height: auto; max-width: 180px; max-height: 38vh; margin: 4px auto 0; display: block; }
+  .prop-title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text); text-align: center; margin-bottom: 2px; }
+  .prop-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 14px; width: 100%; }
+  .prop-stat { display: flex; flex-direction: column; align-items: center; }
+  .prop-stat-t { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  .prop-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* autopilot panel — mode pill + track point + metrics + linear indicators */
   /* NAV mode pill — solid green engaged indicator (JPG style) */
@@ -540,10 +547,11 @@
   }
   .ap-pill.v-sim { color: #04120a; }
   .ap-track { display: flex; flex-direction: column; gap: 1px; }
-  .ap-coord { font-family: var(--mono); font-size: 15px; font-variant-numeric: tabular-nums; }
-  .ap-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; }
+  .ap-coord { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }
+  .p-autopilot .ins-label { font-size: 11px; }
+  .ap-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
   .ap-cell { display: flex; flex-direction: column; gap: 1px; }
-  .ap-num { font-family: var(--mono); font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .ap-num { font-family: var(--mono); font-size: clamp(18px, 2.4vh, 28px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .ap-ind { display: flex; flex-direction: column; gap: 2px; }
   .ap-ind svg { width: 100%; height: auto; max-width: 100%; margin: 0; display: block; }
 
