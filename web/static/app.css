@@ -1,26 +1,26 @@
   :root {
-    /* marine-INS palette: dark blue-charcoal page, near-black instrument faces,
-       signal-green live / amber sim / red alarm, cyan-blue for course & track */
-    --bg: #0b0f14;
-    --panel: #11161d;
-    --panel-hdr: #161d26;
-    --border: #263140;
-    --text: #dde4ea;
-    --muted: #7d8895;
-    --accent: #3fa7ff;
-    --ok: #22dd77;
-    --down: #ff4d4d;
-    --warn: #ffb02e;
-    /* instrument-face tokens (also drive the conning SVG literals) */
-    --face: #060a0f;    /* dial/track face — "behind glass" near-black */
-    --hull: #0e141c;    /* ship / rudder body fill */
-    --bezel: #263140;   /* gauge bezel ring / outline (== border) */
+    /* marine-INS palette (POC chroma): near-black page, glossy near-black instrument
+       faces, bold-white hero values, saturated signal green / red / orange accents */
+    --bg: #05080c;
+    --panel: #0a0e13;
+    --panel-hdr: #0d1219;
+    --border: #1c2530;
+    --text: #f2f6fa;
+    --muted: #8792a0;
+    --accent: #3fa7ff;    /* course / track marker cyan-blue */
+    --ok: #00e07a;        /* live / signal green */
+    --down: #ff3b30;      /* alarm red */
+    --warn: #ff9500;      /* sim / caution orange */
+    /* instrument-face tokens */
+    --face: #060a0f;    /* dial/track face fallback (gauges use faceGrad gradient) */
+    --hull: #0e141c;    /* ship / rudder body fill fallback */
+    --bezel: #2a3546;   /* gauge bezel ring / outline */
     --grid: #1a2330;    /* minor ticks / gridlines */
-    --tick: #7d8895;    /* major ticks (== muted) */
+    --tick: #8792a0;    /* major ticks */
     --seabed: #33280f;  /* depth-graph seabed fill */
-    --seam: #05080c;    /* panel seam — darker than panel, reads as a bezel gutter */
+    --seam: #04070b;    /* panel seam — darker than panel, reads as a bezel gutter */
     --mono: ui-monospace, "Cascadia Code", "Consolas", "SFMono-Regular", Menlo, monospace;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
   html { height: 100%; }
@@ -352,8 +352,8 @@
     align-items: stretch;
     height: 100%;
     min-height: 0;
-    grid-template-columns: minmax(260px, 1fr) minmax(380px, 1.55fr) minmax(260px, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+    grid-template-columns: minmax(240px, 1fr) minmax(440px, 2.1fr) minmax(240px, 1fr);
+    grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.5fr) minmax(0, 1fr);
     grid-template-areas:
       "coords primary propulsion"
       "env ship autopilot"
@@ -440,16 +440,18 @@
   }
   .ins-val-row { display: flex; align-items: baseline; gap: 4px; }
   .ins-bignum {
-    font-family: var(--mono);
-    font-size: clamp(22px, 3vh, 38px);
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: clamp(26px, 3.8vh, 50px);
     font-variant-numeric: tabular-nums;
     color: var(--text);
-    line-height: 1.1;
+    line-height: 1;
   }
   .ins-unit { font-size: 12px; color: var(--muted); }
   .pri-row { display: flex; flex-wrap: wrap; gap: 8px 18px; }
-  /* value source encoding: green = NMEA-backed, amber = display-only */
-  .v-live { color: var(--ok); }
+  /* value encoding (JPG-style): live values render bold white; sim/display-only values
+     take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
+  .v-live { color: var(--text); }
   .v-sim { color: var(--warn); }
   /* Live/Sim encoding legend — folded into the status strip (no overlap) */
   .ins-legend {
@@ -481,8 +483,8 @@
   #cog-arc { width: 100%; height: auto; max-width: 100%; max-height: 15vh; margin: 4px auto; display: block; }
 
   /* ship panel — schematic + derived vectors + compass repeater + fuel */
-  #ship-schem { width: 100%; height: auto; max-width: 190px; max-height: 26vh; margin: 2px auto; display: block; }
-  .p-ship #compass.repeater { max-width: 150px; max-height: 17vh; }
+  #ship-schem { width: 100%; height: auto; max-width: 260px; max-height: 42vh; margin: 2px auto; display: block; }
+  .p-ship #compass.repeater { max-width: 130px; max-height: 15vh; }
   .ship-sub { text-align: center; }
   .fuel-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; margin-top: 6px; }
   .fuel-cell { display: flex; flex-direction: column; gap: 1px; }

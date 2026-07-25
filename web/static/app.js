@@ -353,7 +353,7 @@
       bar.setAttribute("id", id + "-" + t.kind + "-bar");
       bar.setAttribute("x", String(t.x + 1)); bar.setAttribute("y", String(ENG_BOT));
       bar.setAttribute("width", String(TW - 2)); bar.setAttribute("height", "0");
-      bar.setAttribute("fill", "#ffb02e");
+      bar.setAttribute("fill", "url(#engFill)");
       svg.appendChild(bar);
       const lbl = document.createElementNS(NS, "text");
       lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 16));
@@ -404,7 +404,7 @@
     const mk = document.createElementNS(NS, "polygon");
     mk.setAttribute("id", id + "-mark");
     mk.setAttribute("points", cx + "," + (cy - 7) + " " + (cx + 6) + "," + cy + " " + cx + "," + (cy + 7) + " " + (cx - 6) + "," + cy);
-    mk.setAttribute("fill", "#ffb02e");
+    mk.setAttribute("fill", "#00e07a");
     svg.appendChild(mk);
   }
   function setLinearMarker(id, v, half) {
