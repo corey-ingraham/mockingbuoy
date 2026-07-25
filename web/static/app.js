@@ -610,7 +610,7 @@
     setTxt("ship-rud-val", num(s.rudder_angle_deg, 1));
 
     // fuel (amber = display-only, from s.sim)
-    setTxt("fuel-total", num(sim.fuel_total_l, 0));
+    { const ft = Number(sim.fuel_total_l); setTxt("fuel-total", Number.isFinite(ft) ? Math.round(ft).toLocaleString("en-US") : "----"); }
     setTxt("fuel-rate", num(sim.fuel_rate_lph, 1));
     setTxt("fuel-pernm", sim.fuel_per_nm_l == null ? "---" : num(sim.fuel_per_nm_l, 2));
 

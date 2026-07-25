@@ -369,8 +369,8 @@
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
   .coord-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; }
-  .coord-label { flex: none; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
-  .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(23px, 3.3vh, 40px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.15; white-space: nowrap; }
+  .coord-label { flex: none; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
   .p-propulsion { grid-area: propulsion; }
   .p-ship { grid-area: ship; }
   .p-autopilot { grid-area: autopilot; }

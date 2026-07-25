@@ -1071,7 +1071,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(_: None = Depends(auth)) -> HTMLResponse:
-        return HTMLResponse(_INDEX_HTML.read_text(encoding="utf-8"))
+        # no-store on the HTML document so a redeploy always lands: the browser must re-fetch
+        # index.html (and thus its ?v-busted css/js) instead of serving a stale cached copy.
+        return HTMLResponse(
+            _INDEX_HTML.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
 
     # C2: the UI's CSS + JS are served as their own same-origin ``'self'`` files (not inlined),
     # so a strict CSP with no ``script-src 'unsafe-inline'`` still loads them behind the proxy.
