@@ -22,6 +22,7 @@
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
+  html { height: 100%; }
   body {
     margin: 0;
     background: var(--bg);
@@ -29,8 +30,16 @@
     font-family: var(--sans);
     font-size: 14px;
     line-height: 1.4;
+    /* lock the app to the viewport: header + active view stack, no page scroll.
+       the conning view fills the remaining height (one-screen INS); other views
+       scroll their own content. */
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
   header {
+    flex: none;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -114,7 +123,9 @@
   }
 
   .view { display: none; }
-  .view.active { display: block; }
+  .view.active { display: block; flex: 1 1 auto; min-height: 0; }
+  /* non-conning views scroll their own content within the locked viewport */
+  .view.active:not(#view-conning) { overflow-y: auto; }
 
   main {
     display: grid;
@@ -325,12 +336,23 @@
   .hint { font-size: 11px; color: var(--muted); }
 
   /* ================= CONNING ================= */
-  #view-conning { padding: 12px; position: relative; }
+  #view-conning { padding: 10px; position: relative; }
+  /* one-screen INS: the grid fills the view, the status strip pins to the bottom */
+  #view-conning.active {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    gap: 8px;
+    min-height: 0;
+    overflow: hidden;
+  }
   .conn-ins {
     display: grid;
-    gap: 12px;
+    gap: 10px;
     align-items: stretch;
-    grid-template-columns: minmax(280px, 1fr) minmax(400px, 1.55fr) minmax(280px, 1fr);
+    height: 100%;
+    min-height: 0;
+    grid-template-columns: minmax(260px, 1fr) minmax(380px, 1.55fr) minmax(260px, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
     grid-template-areas:
       "coords primary propulsion"
       "env ship autopilot"
@@ -346,7 +368,11 @@
   .p-helm { grid-area: helm; }
   .p-alerts { grid-area: alerts; }
   @media (max-width: 1100px) {
+    /* narrow screens: abandon the one-screen lock and scroll the view normally */
+    #view-conning.active { overflow: auto; }
     .conn-ins {
+      height: auto;
+      grid-template-rows: none;
       grid-template-columns: 1fr 1fr;
       grid-template-areas:
         "primary primary"
@@ -355,6 +381,9 @@
         "depth propulsion"
         "autopilot alerts";
     }
+    .ins-panel { overflow: visible; }
+    .ins-panel svg, .env-dial svg, .incl-dial svg, .prop-col svg,
+    #cog-arc, #ship-schem, #rudder-arc, #depth-graph, .p-ship #compass.repeater, #rot { max-height: none; }
   }
   @media (max-width: 720px) {
     .conn-ins {
@@ -367,10 +396,15 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
+    /* clip to the grid cell; an over-tall panel scrolls itself rather than
+       forcing a page scroll or overflowing the one-screen layout */
+    min-height: 0;
+    min-width: 0;
+    overflow: auto;
   }
   .ins-hdr {
     display: flex;
@@ -381,7 +415,11 @@
     letter-spacing: 0.5px;
     color: var(--muted);
   }
-  .ins-panel svg { width: 100%; height: auto; max-width: 200px; display: block; margin: 4px auto; }
+  /* Gauges grow to their column width but are bounded by a viewport-relative height
+     so a tall gauge scales down (letterboxed) instead of forcing the page to scroll.
+     Per-gauge rules below tune the height budget; the vh values are the live-tuning knob. */
+  .ins-panel svg { width: 100%; height: auto; max-width: 100%; max-height: 20vh; display: block; margin: 2px auto; }
+  #rot { max-height: 10vh; }
   .ro-item { display: flex; flex-direction: column; gap: 2px; }
   .ins-label {
     font-size: 10px;
@@ -392,7 +430,7 @@
   .ins-val-row { display: flex; align-items: baseline; gap: 4px; }
   .ins-bignum {
     font-family: var(--mono);
-    font-size: 26px;
+    font-size: clamp(22px, 3vh, 38px);
     font-variant-numeric: tabular-nums;
     color: var(--text);
     line-height: 1.1;
@@ -418,38 +456,38 @@
   /* env panel — twin wind dials + weather readings */
   .env-dials { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; }
-  .env-dial svg { width: 100%; height: auto; max-width: 160px; margin: 2px auto; }
+  .env-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 18vh; margin: 2px auto; }
   .env-dial .g-sub { margin-top: 2px; text-align: center; }
   .env-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 4px; }
   .env-cell { display: flex; flex-direction: column; gap: 1px; }
-  .env-num { font-family: var(--mono); font-size: 18px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .env-num { font-family: var(--mono); font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* depth panel — value + alert + history graph */
   .depth-vals { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
-  #depth-graph { width: 100%; height: auto; max-width: 100%; margin: 4px 0 0; }
+  #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 16vh; margin: 4px 0 0; }
 
-  /* primary panel — COG tape arc (wider than the generic 200px gauge cap) */
-  #cog-arc { width: 100%; height: auto; max-width: 340px; margin: 6px auto; display: block; }
+  /* primary panel — COG tape arc (wide, short) */
+  #cog-arc { width: 100%; height: auto; max-width: 100%; max-height: 15vh; margin: 4px auto; display: block; }
 
   /* ship panel — schematic + derived vectors + compass repeater + fuel */
-  #ship-schem { width: 100%; height: auto; max-width: 210px; margin: 2px auto; display: block; }
-  .p-ship #compass.repeater { max-width: 150px; }
+  #ship-schem { width: 100%; height: auto; max-width: 190px; max-height: 26vh; margin: 2px auto; display: block; }
+  .p-ship #compass.repeater { max-width: 150px; max-height: 17vh; }
   .ship-sub { text-align: center; }
   .fuel-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; margin-top: 6px; }
   .fuel-cell { display: flex; flex-direction: column; gap: 1px; }
   .fuel-num { font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* helm panel — rudder fan + twin inclinometers */
-  #rudder-arc { width: 100%; height: auto; max-width: 230px; margin: 2px auto; display: block; }
+  #rudder-arc { width: 100%; height: auto; max-width: 240px; max-height: 15vh; margin: 2px auto; display: block; }
   .incl-dials { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
   .incl-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 118px; max-width: 168px; }
-  .incl-dial svg { width: 100%; height: auto; max-width: 160px; margin: 2px auto; }
+  .incl-dial svg { width: 100%; height: auto; max-width: 160px; max-height: 13vh; margin: 2px auto; }
   .incl-dial .g-sub { text-align: center; margin-top: 2px; }
 
   /* propulsion panel — twin vertical engine bars (amber = display-only) */
   .prop-gauges { display: flex; gap: 10px; justify-content: center; align-items: flex-end; flex-wrap: wrap; }
   .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 90px; min-width: 84px; max-width: 120px; }
-  .prop-col svg { width: 100%; height: auto; max-width: 100px; margin: 2px auto; display: block; }
+  .prop-col svg { width: 100%; height: auto; max-width: 104px; max-height: 24vh; margin: 2px auto; display: block; }
   .prop-col .g-sub { text-align: center; margin-top: 2px; }
 
   /* autopilot panel — mode pill + track point + metrics + linear indicators */
@@ -467,7 +505,7 @@
   .ap-coord { font-family: var(--mono); font-size: 15px; font-variant-numeric: tabular-nums; }
   .ap-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; }
   .ap-cell { display: flex; flex-direction: column; gap: 1px; }
-  .ap-num { font-family: var(--mono); font-size: 18px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .ap-num { font-family: var(--mono); font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .ap-ind { display: flex; flex-direction: column; gap: 2px; }
   .ap-ind svg { width: 100%; height: auto; max-width: 100%; margin: 0; display: block; }
 
