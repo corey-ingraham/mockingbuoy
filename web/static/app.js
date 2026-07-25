@@ -395,7 +395,7 @@
   // Twin-engine vertical bar gauge: an RPM track (0-3500) + a LOAD track (0-100) drawn once into
   // the 110x230 svg; each carries a bottom-anchored amber fill rect (y=BOT-h; height=h) whose id is
   // "<id>-rpm-bar" / "<id>-load-bar", updated by setEngineBar in the hot repaint. Amber = display-only.
-  const ENG_TOP = 10, ENG_BOT = 200, ENG_H = ENG_BOT - ENG_TOP; // track window 190px tall
+  const ENG_TOP = 10, ENG_BOT = 300, ENG_H = ENG_BOT - ENG_TOP; // tall track (viewBox 200x340) so bars fill
   function buildEngineGauge(id) {
     const svg = $(id);
     if (!svg) return;
@@ -416,13 +416,13 @@
       for (const tv of t.ticks) {
         const y = ENG_BOT - (tv / t.max) * ENG_H;
         const ln = document.createElementNS(NS, "line");
-        ln.setAttribute("x1", String(t.x - 4)); ln.setAttribute("y1", y.toFixed(1));
+        ln.setAttribute("x1", String(t.x - 5)); ln.setAttribute("y1", y.toFixed(1));
         ln.setAttribute("x2", String(t.x)); ln.setAttribute("y2", y.toFixed(1));
-        ln.setAttribute("stroke", "#7d8895"); ln.setAttribute("stroke-width", "1");
+        ln.setAttribute("stroke", "#aab4bf"); ln.setAttribute("stroke-width", "1.4");
         svg.appendChild(ln);
         const tx = document.createElementNS(NS, "text");
-        tx.setAttribute("x", String(t.x - 6)); tx.setAttribute("y", (y + 3).toFixed(1));
-        tx.setAttribute("fill", "#7d8895"); tx.setAttribute("font-size", "7");
+        tx.setAttribute("x", String(t.x - 7)); tx.setAttribute("y", (y + 3).toFixed(1));
+        tx.setAttribute("fill", "#aab4bf"); tx.setAttribute("font-size", "9"); tx.setAttribute("font-weight", "700");
         tx.setAttribute("font-family", "monospace"); tx.setAttribute("text-anchor", "end");
         tx.textContent = tv.toLocaleString("en-US");
         svg.appendChild(tx);
@@ -441,9 +441,9 @@
       mark.setAttribute("fill", "#dfe6ec");
       svg.appendChild(mark);
       const lbl = document.createElementNS(NS, "text");
-      lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 16));
-      lbl.setAttribute("fill", "#7d8895"); lbl.setAttribute("font-size", "9");
-      lbl.setAttribute("font-family", "monospace"); lbl.setAttribute("text-anchor", "middle");
+      lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 18));
+      lbl.setAttribute("fill", "#c3ccd4"); lbl.setAttribute("font-size", "12"); lbl.setAttribute("font-weight", "700");
+      lbl.setAttribute("font-family", "Segoe UI, system-ui, sans-serif"); lbl.setAttribute("text-anchor", "middle");
       lbl.textContent = t.label;
       svg.appendChild(lbl);
     }
@@ -785,7 +785,7 @@
     // black seabed below the trace, down to the graph floor
     const seabed = mk("polygon");
     seabed.setAttribute("points", traceStr + " " + tp[n - 1][0].toFixed(1) + "," + y1 + " " + tp[0][0].toFixed(1) + "," + y1);
-    seabed.setAttribute("fill", "#04070b");
+    seabed.setAttribute("fill", "#2b333d");
     dyn.appendChild(seabed);
     // light-blue water column between the surface line and the seabed trace
     const waterTop = tp.map((p) => p[0].toFixed(1) + "," + surfY(p[0]).toFixed(1)).join(" ");
