@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=10">
+<link rel="stylesheet" href="/static/app.css?v=11">
 </head>
 <body>
 
@@ -199,6 +199,7 @@
     <div class="ins-panel p-ship">
       <div class="ins-hdr"><span>Ship</span><span id="cmp-src" class="src src-off">OFF</span></div>
       <!-- schematic (bow-up, heading-up) with vectors derived from real emitted fields (green) -->
+      <div class="ship-fill">
       <svg id="ship-schem" viewBox="0 0 260 360" aria-label="ship schematic with derived vectors">
         <text x="130" y="16" fill="#7d8895" font-size="10" font-family="monospace" text-anchor="middle">BOW</text>
         <text x="130" y="352" fill="#7d8895" font-size="10" font-family="monospace" text-anchor="middle">STERN</text>
@@ -221,6 +222,7 @@
         <g id="ship-astern" opacity="0"><line stroke="#22dd77" stroke-width="2.5"/><polygon fill="#22dd77"/></g>
         <text id="ship-vstern" x="130" y="308" fill="#22dd77" font-size="10" font-family="monospace" text-anchor="middle"></text>
       </svg>
+      </div>
       <div class="ship-sub g-sub">FWD <span id="ship-vfwd" class="v-live">--</span> kn</div>
       <!-- heading compass repeater -->
       <svg id="compass" class="repeater" viewBox="0 0 200 200" aria-label="heading compass">
@@ -613,6 +615,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=10"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>
