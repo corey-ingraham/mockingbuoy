@@ -172,7 +172,7 @@
       line.setAttribute("y1", (cy + r1 * Math.sin(a)).toFixed(1));
       line.setAttribute("x2", (cx + r2 * Math.cos(a)).toFixed(1));
       line.setAttribute("y2", (cy + r2 * Math.sin(a)).toFixed(1));
-      line.setAttribute("stroke", major ? "#7d8895" : "#1a2330");
+      line.setAttribute("stroke", major ? "#7d8895" : (labels && labels.minorColor) || "#1a2330");
       line.setAttribute("stroke-width", major ? "1.5" : "1");
       group.appendChild(line);
       if (major && labels) {
@@ -242,14 +242,14 @@
     if (!g) return;
     // finer graduations (every 10deg) + 0/90/180/270 relative-bearing numbers on the majors
     const nums = { 0: "0", 90: "90", 180: "180", 270: "270" };
-    buildDialTicks(g, 100, 100, 94, 88, 80, 10, 90, { r: 66, fn: (deg) => nums[deg] || "" });
+    buildDialTicks(g, 100, 100, 94, 88, 80, 10, 90, { r: 66, minorColor: "#4a5560", fn: (deg) => nums[deg] || "" });
   })();
   // wind TRUE dial: north-up card with cardinal labels + finer graduations
   (function buildWtdTicks() {
     const g = $("wtd-ticks");
     if (!g) return;
     const cards = { 0: "N", 90: "E", 180: "S", 270: "W" };
-    buildDialTicks(g, 80, 80, 74, 70, 60, 10, 90, { r: 50, fn: (deg) => cards[deg] || "" });
+    buildDialTicks(g, 80, 80, 74, 70, 60, 10, 90, { r: 50, minorColor: "#4a5560", fn: (deg) => cards[deg] || "" });
   })();
   // seed the depth-alert display constant (must match ALERT_DEPTH_M)
   (function setDepthAlert() {
@@ -400,10 +400,10 @@
     const svg = $(id);
     if (!svg) return;
     const NS = "http://www.w3.org/2000/svg";
-    const TW = 30;
+    const TW = 36;
     const tracks = [
-      { kind: "rpm", x: 16, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM" },
-      { kind: "load", x: 64, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
+      { kind: "rpm", x: 14, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM" },
+      { kind: "load", x: 62, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
     ];
     for (const t of tracks) {
       const bg = document.createElementNS(NS, "rect");
@@ -470,6 +470,13 @@
     track.setAttribute("rx", "7"); track.setAttribute("fill", "url(#faceGrad)");
     track.setAttribute("stroke", "url(#bezelGrad)"); track.setAttribute("stroke-width", "1");
     svg.appendChild(track);
+    // light-green deviation fill between centre-zero and the marker (JPG style), sized by setLinearMarker
+    const fillR = document.createElementNS(NS, "rect");
+    fillR.setAttribute("id", id + "-fill");
+    fillR.setAttribute("x", String(cx)); fillR.setAttribute("y", String(cy - 5));
+    fillR.setAttribute("width", "0"); fillR.setAttribute("height", "10");
+    fillR.setAttribute("fill", "#00e07a"); fillR.setAttribute("opacity", "0.32");
+    svg.appendChild(fillR);
     // graduations: minor every 0.1, major every 0.5
     for (let i = -10; i <= 10; i++) {
       const f = i / 10, x = cx + f * 100, big = i % 5 === 0;
@@ -504,6 +511,8 @@
     const frac = Number.isFinite(Number(v)) ? Math.max(-1, Math.min(1, Number(v) / half)) : 0;
     const x = cx + frac * 100;
     mk.setAttribute("points", x.toFixed(1) + "," + (cy - 7) + " " + (x + 6).toFixed(1) + "," + cy + " " + x.toFixed(1) + "," + (cy + 7) + " " + (x - 6).toFixed(1) + "," + cy);
+    const fill = $(id.replace(/-mark$/, "-fill"));
+    if (fill) { fill.setAttribute("x", Math.min(cx, x).toFixed(1)); fill.setAttribute("width", Math.abs(x - cx).toFixed(1)); }
   }
   // build the twin engine bars + the two autopilot linear indicators once (each guards a missing target)
   (function buildPropulsionGauges() {
@@ -717,7 +726,7 @@
     if (!dyn) return;
     const NS = "http://www.w3.org/2000/svg";
     while (dyn.firstChild) dyn.removeChild(dyn.firstChild);
-    const x0 = 34, y0 = 10, x1 = 286, y1 = 162, w = x1 - x0, h = y1 - y0;
+    const x0 = 34, y0 = 24, x1 = 286, y1 = 162, w = x1 - x0, h = y1 - y0;
     const n = depthHistory.length;
     const mk = (tag) => document.createElementNS(NS, tag);
     const label = (x, y, txt, anchor) => {
@@ -748,11 +757,27 @@
       // depth labels on the RIGHT of the plot (JPG style), 1 decimal so they read distinctly
       label(x1 + 5, yy + 3, (mn + (i / GRID) * span).toFixed(1), "start");
     }
-    // faint ship-silhouette watermark, top-right corner (JPG style)
-    const wm = mk("path");
-    wm.setAttribute("d", "M" + (x1 - 34) + "," + (y0 + 9) + " L" + (x1 - 14) + "," + (y0 + 9) + " L" + (x1 - 6) + "," + (y0 + 13) + " L" + (x1 - 14) + "," + (y0 + 17) + " L" + (x1 - 34) + "," + (y0 + 17) + " Z M" + (x1 - 30) + "," + (y0 + 9) + " L" + (x1 - 30) + "," + (y0 + 4) + " L" + (x1 - 22) + "," + (y0 + 4) + " L" + (x1 - 22) + "," + (y0 + 9) + " Z");
-    wm.setAttribute("fill", "#41505f"); wm.setAttribute("opacity", "0.6");
-    dyn.appendChild(wm);
+    // ocean-surface line along the top of the plot (gentle wave, sea-blue)
+    let wave = "";
+    for (let wx = x0; wx <= x1; wx += 6) { const wy = y0 + Math.sin((wx - x0) / 8) * 1.3; wave += (wx > x0 ? " " : "") + wx.toFixed(1) + "," + wy.toFixed(1); }
+    const surf = mk("polyline");
+    surf.setAttribute("points", wave); surf.setAttribute("fill", "none");
+    surf.setAttribute("stroke", "#3a8fc4"); surf.setAttribute("stroke-width", "1.6"); surf.setAttribute("opacity", "0.85");
+    dyn.appendChild(surf);
+    // small shadowed side-view ship (pitch-gauge silhouette family) sitting ON the surface, top-right
+    const sx = x1 - 34, sy = y0;
+    const ship = mk("path");
+    ship.setAttribute("d",
+      "M" + (sx - 15) + "," + (sy - 6) + " L" + (sx + 11) + "," + (sy - 6) + " L" + (sx + 18) + "," + (sy - 3) + " L" + (sx + 12) + "," + sy + " L" + (sx - 15) + "," + sy + " Z" +
+      " M" + (sx - 8) + "," + (sy - 6) + " L" + (sx - 8) + "," + (sy - 11) + " L" + (sx - 1) + "," + (sy - 11) + " L" + (sx - 1) + "," + (sy - 6) + " Z" +
+      " M" + (sx + 2) + "," + (sy - 6) + " L" + (sx + 2) + "," + (sy - 9) + " L" + (sx + 6) + "," + (sy - 9) + " L" + (sx + 6) + "," + (sy - 6) + " Z");
+    ship.setAttribute("fill", "#5a6675"); ship.setAttribute("opacity", "0.82");
+    dyn.appendChild(ship);
+    const mast = mk("line");
+    mast.setAttribute("x1", (sx - 4).toFixed(1)); mast.setAttribute("y1", (sy - 11).toFixed(1));
+    mast.setAttribute("x2", (sx - 4).toFixed(1)); mast.setAttribute("y2", (sy - 15).toFixed(1));
+    mast.setAttribute("stroke", "#5a6675"); mast.setAttribute("stroke-width", "0.8"); mast.setAttribute("opacity", "0.82");
+    dyn.appendChild(mast);
     let pts = "";
     for (let j = 0; j < n; j++) pts += (j ? " " : "") + xOf(j).toFixed(1) + "," + yOf(depthHistory[j]).toFixed(1);
     // seabed fill below the trace
