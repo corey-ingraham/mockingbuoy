@@ -18,6 +18,7 @@
     --grid: #1a2330;    /* minor ticks / gridlines */
     --tick: #7d8895;    /* major ticks (== muted) */
     --seabed: #33280f;  /* depth-graph seabed fill */
+    --seam: #05080c;    /* panel seam — darker than panel, reads as a bezel gutter */
     --mono: ui-monospace, "Cascadia Code", "Consolas", "SFMono-Regular", Menlo, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
@@ -336,18 +337,18 @@
   .hint { font-size: 11px; color: var(--muted); }
 
   /* ================= CONNING ================= */
-  #view-conning { padding: 10px; position: relative; }
+  #view-conning { padding: 7px; position: relative; }
   /* one-screen INS: the grid fills the view, the status strip pins to the bottom */
   #view-conning.active {
     display: grid;
     grid-template-rows: 1fr auto;
-    gap: 8px;
+    gap: 6px;
     min-height: 0;
     overflow: hidden;
   }
   .conn-ins {
     display: grid;
-    gap: 10px;
+    gap: 6px;
     align-items: stretch;
     height: 100%;
     min-height: 0;
@@ -394,9 +395,12 @@
   }
   .ins-panel {
     background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 8px 10px;
+    /* bezel language: tight radius + a dark seam border (not a light outline) +
+       a hairline top highlight so tiles read as recessed instrument panels */
+    border: 1px solid var(--seam);
+    border-radius: 4px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    padding: 0 10px 8px;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -406,14 +410,21 @@
     min-width: 0;
     overflow: auto;
   }
+  /* panel header → thin full-width title bar (bleeds to the panel edges) */
   .ins-hdr {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-size: 11px;
+    margin: 0 -10px 2px;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.28);
+    border-bottom: 1px solid var(--seam);
+    border-radius: 4px 4px 0 0;
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 1px;
     color: var(--muted);
+    flex: none;
   }
   /* Gauges grow to their column width but are bounded by a viewport-relative height
      so a tall gauge scales down (letterboxed) instead of forcing the page to scroll.
@@ -567,11 +578,10 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-    padding: 10px 12px;
-    margin-top: 12px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    padding: 6px 12px;
+    background: var(--panel-hdr);
+    border: 1px solid var(--seam);
+    border-radius: 4px;
     font-size: 11px;
   }
   .src-strip .chip {
