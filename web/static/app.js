@@ -195,11 +195,11 @@
     const g = $(id); if (!g) return;
     if (!Number.isFinite(len) || len < 2) { g.setAttribute("opacity", "0"); return; }
     g.setAttribute("opacity", "1");
-    g.setAttribute("transform", "rotate(" + Number(thetaDeg).toFixed(1) + " 130 180)");
+    g.setAttribute("transform", "rotate(" + Number(thetaDeg).toFixed(1) + " 150 195)");
     const line = g.querySelector("line"), head = g.querySelector("polygon");
-    const tip = 180 - len;
+    const tip = 195 - len;
     if (line) line.setAttribute("y2", tip.toFixed(1));
-    if (head) head.setAttribute("points", "130," + tip.toFixed(1) + " 124," + (tip + 10).toFixed(1) + " 136," + (tip + 10).toFixed(1));
+    if (head) head.setAttribute("points", "150," + tip.toFixed(1) + " 144," + (tip + 10).toFixed(1) + " 156," + (tip + 10).toFixed(1));
   }
   // Ship-schematic horizontal (athwartships) callout arrow at row y; +v = starboard (right).
   function setLatArrow(id, v, y) {
@@ -208,9 +208,9 @@
     g.setAttribute("opacity", "1");
     const dir = v >= 0 ? 1 : -1;
     const len = Math.max(8, Math.min(60, Math.abs(v) * 18));
-    const x1 = 130 + dir * len;
+    const x1 = 150 + dir * len;
     const line = g.querySelector("line"), head = g.querySelector("polygon");
-    if (line) { line.setAttribute("x1", "130"); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
+    if (line) { line.setAttribute("x1", "150"); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
     if (head) head.setAttribute("points", x1.toFixed(1) + "," + y + " " + (x1 - dir * 10).toFixed(1) + "," + (y - 5) + " " + (x1 - dir * 10).toFixed(1) + "," + (y + 5));
   }
 
@@ -468,6 +468,9 @@
     // COG tape ring rotates by -cog behind the fixed window (needs cog only; north-wrap free)
     const cogTape = $("cog-tape");
     if (cogTape && Number.isFinite(cog)) cogTape.setAttribute("transform", "rotate(" + (-cog).toFixed(1) + " 200 460)");
+    // prominent live heading centred over the tape
+    const cogBig = $("cog-big");
+    if (cogBig && Number.isFinite(cog)) cogBig.textContent = num(cog, 0);
 
     // rate of turn (full scale +/-30 dpm -> +/-90px)
     const rot = Number(s.rot_dpm) || 0;
@@ -514,11 +517,16 @@
     const vFwd = trackOk ? shipSog * Math.cos(dRad) : 0;
     const tang = rot * Math.PI / (180 * 60) * 15 * 1.9438; // yaw contribution at L/2, m/s -> kn
     const vBow = vLat + tang, vStern = vLat - tang;
-    setLatArrow("ship-abow", vBow, 88);
-    setLatArrow("ship-astern", vStern, 280);
-    setTxt("ship-vbow", Math.abs(vBow) < 0.05 ? "" : Math.abs(vBow).toFixed(2) + (vBow >= 0 ? " S" : " P"));
-    setTxt("ship-vstern", Math.abs(vStern) < 0.05 ? "" : Math.abs(vStern).toFixed(2) + (vStern >= 0 ? " S" : " P"));
+    setLatArrow("ship-abow", vBow, 112);
+    setLatArrow("ship-astern", vStern, 279);
+    // bow/stern lateral walk shown as a always-populated kt readout in the hull boxes
+    setTxt("ship-vbow", Math.abs(vBow).toFixed(2) + " kt");
+    setTxt("ship-vstern", Math.abs(vStern).toFixed(2) + " kt");
     setTxt("ship-vfwd", num(vFwd, 1));
+    // rudder blade at the ship stern (graphic mirrors the helm gauge; negate so +stbd swings right)
+    const shipRudBlade = $("ship-rud-blade");
+    if (shipRudBlade && Number.isFinite(rud)) shipRudBlade.setAttribute("transform", "rotate(" + (-rud).toFixed(1) + " 150 374)");
+    setTxt("ship-rud-val", num(s.rudder_angle_deg, 1));
 
     // fuel (amber = display-only, from s.sim)
     setTxt("fuel-total", num(sim.fuel_total_l, 0));

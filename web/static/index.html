@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=11">
+<link rel="stylesheet" href="/static/app.css?v=12">
 </head>
 <body>
 
@@ -92,12 +92,16 @@
         </div>
       </div>
       <!-- COG tape: full rotating ring behind a fixed window (north-wrap free) -->
-      <svg id="cog-arc" viewBox="0 0 400 130" aria-label="course over ground">
-        <rect x="0.5" y="0.5" width="399" height="129" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
+      <svg id="cog-arc" viewBox="0 0 400 150" aria-label="course over ground">
+        <rect x="0.5" y="0.5" width="399" height="149" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
+        <text x="10" y="16" fill="#8792a0" font-size="10" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">COG</text>
+        <!-- prominent live heading, centred over the tape -->
+        <text id="cog-big" x="200" y="46" fill="#f2f6fa" font-size="48" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <!-- moving scale ring (smaller side numbers) below the hero readout -->
         <g id="cog-tape"></g>
-        <text x="8" y="14" fill="#7d8895" font-size="9" font-family="monospace">COG</text>
-        <line x1="200" y1="46" x2="200" y2="126" stroke="#22dd77" stroke-width="1.2" stroke-opacity="0.45"/>
-        <polygon points="200,60 193,46 207,46" fill="#22dd77"/>
+        <!-- fixed centre caret + accent line -->
+        <polygon points="200,74 192,60 208,60" fill="#00e07a"/>
+        <line x1="200" y1="60" x2="200" y2="146" stroke="#00e07a" stroke-width="1.4" stroke-opacity="0.4"/>
       </svg>
       <div class="ins-hdr" style="margin-top:6px;"><span>Rate of Turn</span><span id="rot-src" class="src src-off">OFF</span></div>
       <svg id="rot" viewBox="0 0 200 90" aria-label="rate of turn">
@@ -200,53 +204,50 @@
       <div class="ins-hdr"><span>Ship</span><span id="cmp-src" class="src src-off">OFF</span></div>
       <!-- schematic (bow-up, heading-up) with vectors derived from real emitted fields (green) -->
       <div class="ship-fill">
-      <svg id="ship-schem" viewBox="0 0 260 360" aria-label="ship schematic with derived vectors">
-        <text x="130" y="16" fill="#7d8895" font-size="10" font-family="monospace" text-anchor="middle">BOW</text>
-        <text x="130" y="352" fill="#7d8895" font-size="10" font-family="monospace" text-anchor="middle">STERN</text>
-        <!-- hull, drawn once -->
-        <path d="M130,40 C158,74 168,150 165,244 L165,300 C165,318 150,326 130,326 C110,326 95,318 95,300 L95,244 C92,150 102,74 130,40 Z" fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
-        <line x1="95" y1="180" x2="165" y2="180" stroke="#8b95a3" stroke-width="1" stroke-opacity="0.4"/>
-        <!-- set/drift (dashed) + ground-track (solid), both green (derived) -->
+      <svg id="ship-schem" viewBox="0 0 300 452" aria-label="ship schematic with derived vectors, fuel, and rudder">
+        <text x="150" y="16" fill="#8792a0" font-size="11" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">BOW</text>
+        <!-- hull (bow up), glossy gradient -->
+        <path d="M150,20 C198,64 212,156 206,252 L206,320 C206,352 182,368 150,368 C118,368 92,352 92,320 L92,252 C86,156 100,64 150,20 Z" fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
+        <!-- ground-track / set-drift vectors (green, derived) -->
         <g id="ship-vec-cur" opacity="0">
-          <line x1="130" y1="180" x2="130" y2="180" stroke="#22dd77" stroke-width="2.5" stroke-dasharray="6 4"/>
-          <polygon points="130,180 125,190 135,190" fill="#22dd77"/>
+          <line x1="150" y1="195" x2="150" y2="195" stroke="#00e07a" stroke-width="2.5" stroke-dasharray="6 4"/>
+          <polygon points="150,195 145,205 155,205" fill="#00e07a"/>
         </g>
         <g id="ship-vec-cog" opacity="0">
-          <line x1="130" y1="180" x2="130" y2="180" stroke="#22dd77" stroke-width="3"/>
-          <polygon points="130,180 124,190 136,190" fill="#22dd77"/>
+          <line x1="150" y1="195" x2="150" y2="195" stroke="#00e07a" stroke-width="3"/>
+          <polygon points="150,195 144,205 156,205" fill="#00e07a"/>
         </g>
-        <circle cx="130" cy="180" r="3.5" fill="#dde4ea"/>
-        <!-- athwartships (lateral) speed callouts at bow + stern -->
-        <g id="ship-abow" opacity="0"><line stroke="#22dd77" stroke-width="2.5"/><polygon fill="#22dd77"/></g>
-        <text id="ship-vbow" x="130" y="72" fill="#22dd77" font-size="10" font-family="monospace" text-anchor="middle"></text>
-        <g id="ship-astern" opacity="0"><line stroke="#22dd77" stroke-width="2.5"/><polygon fill="#22dd77"/></g>
-        <text id="ship-vstern" x="130" y="308" fill="#22dd77" font-size="10" font-family="monospace" text-anchor="middle"></text>
-      </svg>
-      </div>
-      <div class="ship-sub g-sub">FWD <span id="ship-vfwd" class="v-live">--</span> kn</div>
-      <!-- heading compass repeater -->
-      <svg id="compass" class="repeater" viewBox="0 0 200 200" aria-label="heading compass">
-        <circle cx="100" cy="100" r="94" fill="url(#faceGrad)" stroke="#1c2530"/>
-        <g id="compass-card"></g>
-        <!-- COG marker (rotates to cog - heading) -->
-        <g id="cog-marker">
-          <polygon points="100,12 95,24 105,24" fill="#3fa7ff"/>
+        <!-- athwartships (lateral) walk arrows, derived; hidden when ~0 -->
+        <g id="ship-abow" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
+        <g id="ship-astern" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
+        <!-- bow-walk readout box -->
+        <rect x="110" y="96" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vbow" x="150" y="118" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <!-- centre fuel table (orange = display-only sim) -->
+        <rect x="72" y="156" width="156" height="74" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
+        <line x1="124" y1="156" x2="124" y2="230" stroke="#1c2530"/>
+        <line x1="176" y1="156" x2="176" y2="230" stroke="#1c2530"/>
+        <text x="98" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL L</text>
+        <text x="150" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/HR</text>
+        <text x="202" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/NM</text>
+        <text id="fuel-total" x="98" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
+        <text id="fuel-rate" x="150" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
+        <text id="fuel-pernm" x="202" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <!-- stern-walk readout box -->
+        <rect x="110" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vstern" x="150" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <circle cx="150" cy="195" r="3.5" fill="#f2f6fa"/>
+        <!-- rudder indicator at the stern: arc scale + deflecting blade + number -->
+        <path d="M110,410 Q150,432 190,410" fill="none" stroke="#8792a0" stroke-width="2"/>
+        <line x1="150" y1="404" x2="150" y2="416" stroke="#8792a0" stroke-width="1.5"/>
+        <line x1="120" y1="411" x2="126" y2="419" stroke="#8792a0" stroke-width="1.2"/>
+        <line x1="180" y1="411" x2="174" y2="419" stroke="#8792a0" stroke-width="1.2"/>
+        <g id="ship-rud-blade" transform="rotate(0 150 374)">
+          <polygon points="150,374 145,408 155,408" fill="#f2f6fa"/>
         </g>
-        <!-- fixed lubber line at top -->
-        <polygon points="100,6 94,20 106,20" fill="#ff4d4d"/>
-        <circle cx="100" cy="100" r="4" fill="#dde4ea"/>
+        <circle cx="150" cy="374" r="3" fill="#cdd5dc"/>
+        <text x="150" y="446" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">Rudder <tspan id="ship-rud-val">--</tspan>°</text>
       </svg>
-      <div class="g-read"><span id="cmp-hdg" class="v-live">---</span>°T</div>
-      <div class="g-sub">COG <span id="cmp-cog" class="v-live">---</span>°</div>
-      <div class="ro-item" style="margin-top:6px;">
-        <div class="ins-label">Heading T / M</div>
-        <div class="ins-val-row"><span id="ro-hdg" class="ins-bignum v-live">---</span></div>
-      </div>
-      <!-- fuel (amber = display-only, from s.sim) -->
-      <div class="fuel-row">
-        <div class="fuel-cell"><div class="ins-label">Fuel total</div><div class="ins-val-row"><span id="fuel-total" class="fuel-num v-sim">----</span><span class="ins-unit">L</span></div></div>
-        <div class="fuel-cell"><div class="ins-label">Burn rate</div><div class="ins-val-row"><span id="fuel-rate" class="fuel-num v-sim">--</span><span class="ins-unit">L/h</span></div></div>
-        <div class="fuel-cell"><div class="ins-label">Per NM</div><div class="ins-val-row"><span id="fuel-pernm" class="fuel-num v-sim">---</span><span class="ins-unit">L</span></div></div>
       </div>
     </div>
 
@@ -615,6 +616,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>
