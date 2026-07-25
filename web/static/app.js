@@ -737,11 +737,11 @@
       t.textContent = txt; dyn.appendChild(t);
     };
     if (n < 2) { label((x0 + x1) / 2, (y0 + y1) / 2, "acquiring depth…", "middle"); return; }
-    // autoscale with 10% padding and a 2 m minimum span
-    let mn = Math.min.apply(null, depthHistory), mx = Math.max.apply(null, depthHistory);
-    if (mx - mn < 2) { const mid = (mn + mx) / 2; mn = mid - 1; mx = mid + 1; }
-    const pad = (mx - mn) * 0.1; mn -= pad; mx += pad;
-    const span = (mx - mn) || 1;
+    // surface-to-seabed scale: 0 m fixed at the top; axis max slides to a nice ceiling below the deepest sample
+    const dataMax = Math.max.apply(null, depthHistory.concat([ALERT_DEPTH_M]));
+    const mn = 0;
+    const mx = Math.max(20, Math.ceil((dataMax * 1.6) / 10) * 10);
+    const span = mx - mn;
     const xstep = w / (DEPTH_CAP - 1);
     const xOf = (j) => x1 - (n - 1 - j) * xstep;      // newest at right
     const yOf = (depth) => y0 + (depth - mn) / span * h; // inverted: deeper = lower
@@ -754,8 +754,8 @@
       gl.setAttribute("y1", yy.toFixed(1)); gl.setAttribute("y2", yy.toFixed(1));
       gl.setAttribute("stroke", "#1c2530"); gl.setAttribute("stroke-width", "0.6");
       dyn.appendChild(gl);
-      // depth labels on the RIGHT of the plot (JPG style), 1 decimal so they read distinctly
-      label(x1 + 5, yy + 3, (mn + (i / GRID) * span).toFixed(1), "start");
+      // depth labels on the RIGHT of the plot (0 at the top, JPG style)
+      label(x1 + 5, yy + 3, (mn + (i / GRID) * span).toFixed(0), "start");
     }
     // ocean-surface line along the top of the plot (gentle wave, sea-blue)
     let wave = "";
@@ -768,9 +768,12 @@
     const sx = x1 - 34, sy = y0;
     const ship = mk("path");
     ship.setAttribute("d",
-      "M" + (sx - 15) + "," + (sy - 6) + " L" + (sx + 11) + "," + (sy - 6) + " L" + (sx + 18) + "," + (sy - 3) + " L" + (sx + 12) + "," + sy + " L" + (sx - 15) + "," + sy + " Z" +
-      " M" + (sx - 8) + "," + (sy - 6) + " L" + (sx - 8) + "," + (sy - 11) + " L" + (sx - 1) + "," + (sy - 11) + " L" + (sx - 1) + "," + (sy - 6) + " Z" +
-      " M" + (sx + 2) + "," + (sy - 6) + " L" + (sx + 2) + "," + (sy - 9) + " L" + (sx + 6) + "," + (sy - 9) + " L" + (sx + 6) + "," + (sy - 6) + " Z");
+      // smooth hull: raked bow (right), rounded forefoot, gentle sheer
+      "M" + (sx - 15) + "," + (sy - 5) + " L" + (sx + 9) + "," + (sy - 5) + " Q" + (sx + 18) + "," + (sy - 6) + " " + (sx + 19) + "," + (sy - 1) + " Q" + (sx + 15) + "," + (sy + 1) + " " + (sx + 7) + "," + (sy + 1) + " L" + (sx - 12) + "," + (sy + 1) + " Q" + (sx - 16) + "," + (sy + 1) + " " + (sx - 15) + "," + (sy - 5) + " Z" +
+      // rounded superstructure
+      " M" + (sx - 7) + "," + (sy - 5) + " L" + (sx - 7) + "," + (sy - 10) + " Q" + (sx - 7) + "," + (sy - 11) + " " + (sx - 5) + "," + (sy - 11) + " L" + (sx - 1) + "," + (sy - 11) + " Q" + (sx + 1) + "," + (sy - 11) + " " + (sx + 1) + "," + (sy - 9) + " L" + (sx + 1) + "," + (sy - 5) + " Z" +
+      // funnel
+      " M" + (sx + 3) + "," + (sy - 5) + " L" + (sx + 3) + "," + (sy - 9) + " L" + (sx + 7) + "," + (sy - 9) + " L" + (sx + 7) + "," + (sy - 5) + " Z");
     ship.setAttribute("fill", "#5a6675"); ship.setAttribute("opacity", "0.82");
     dyn.appendChild(ship);
     const mast = mk("line");
