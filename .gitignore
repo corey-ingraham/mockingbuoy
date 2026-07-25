@@ -47,3 +47,6 @@ profiles/*.local.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Untracked whole-repo red-team scratch report (never commit)
+.redteam-report.md

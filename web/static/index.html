@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v=6">
 </head>
 <body>
 
@@ -28,11 +28,165 @@
 <section id="view-conning" class="view active">
   <div class="stale-overlay">CONNECTION LOST</div>
 
-  <div class="conn-grid">
-    <!-- Heading compass -->
-    <div class="gauge">
-      <div class="g-title"><span>Heading</span><span id="cmp-src" class="src src-off">OFF</span></div>
-      <svg id="compass" viewBox="0 0 200 200" aria-label="heading compass">
+  <!-- INS grid: coords | primary | propulsion / env | ship | autopilot / depth | helm | alerts -->
+  <div class="conn-ins">
+
+    <!-- COORDINATES (re-homed from #readouts) -->
+    <div class="ins-panel p-coords">
+      <div class="ins-hdr"><span>Coordinates</span></div>
+      <div class="ro-item">
+        <div class="ins-label">Latitude</div>
+        <div class="ins-val-row"><span id="ro-lat" class="ins-bignum v-live">---</span></div>
+      </div>
+      <div class="ro-item">
+        <div class="ins-label">Longitude</div>
+        <div class="ins-val-row"><span id="ro-lon" class="ins-bignum v-live">---</span></div>
+      </div>
+      <div class="ro-item">
+        <div class="ins-label">UTC</div>
+        <div class="ins-val-row"><span id="ro-utc" class="ins-bignum">--:--:--</span></div>
+      </div>
+    </div>
+
+    <!-- PRIMARY: SOG / STW / COG bignums + Rate of Turn (moved) -->
+    <div class="ins-panel p-primary">
+      <div class="ins-hdr"><span>Primary</span></div>
+      <div class="pri-row">
+        <div class="ro-item">
+          <div class="ins-label">SOG</div>
+          <div class="ins-val-row"><span id="pri-sog" class="ins-bignum v-live">---</span><span class="ins-unit">kn</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">STW</div>
+          <div class="ins-val-row"><span id="pri-stw" class="ins-bignum v-live">---</span><span class="ins-unit">kn</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">COG</div>
+          <div class="ins-val-row"><span id="pri-cog" class="ins-bignum v-live">---</span><span class="ins-unit">°</span></div>
+        </div>
+      </div>
+      <!-- COG tape: full rotating ring behind a fixed window (north-wrap free) -->
+      <svg id="cog-arc" viewBox="0 0 400 130" aria-label="course over ground">
+        <rect x="0.5" y="0.5" width="399" height="129" rx="6" fill="#0d1117" stroke="#30363d"/>
+        <g id="cog-tape"></g>
+        <text x="8" y="14" fill="#8b949e" font-size="9" font-family="monospace">COG</text>
+        <line x1="200" y1="46" x2="200" y2="126" stroke="#3fb950" stroke-width="1.2" stroke-opacity="0.45"/>
+        <polygon points="200,60 193,46 207,46" fill="#3fb950"/>
+      </svg>
+      <div class="ins-hdr" style="margin-top:6px;"><span>Rate of Turn</span><span id="rot-src" class="src src-off">OFF</span></div>
+      <svg id="rot" viewBox="0 0 200 90" aria-label="rate of turn">
+        <rect x="8" y="34" width="184" height="20" rx="4" fill="#0d1117" stroke="#30363d"/>
+        <line x1="100" y1="28" x2="100" y2="60" stroke="#c9d1d9" stroke-width="2"/>
+        <text x="20" y="78" fill="#8b949e" font-size="9" font-family="monospace">PORT</text>
+        <text x="150" y="78" fill="#8b949e" font-size="9" font-family="monospace">STBD</text>
+        <rect id="rot-bar" x="100" y="36" width="0" height="16" fill="#d29922"/>
+      </svg>
+      <div class="g-read"><span id="rot-val" class="v-live">--</span> <span class="g-sub">°/min</span></div>
+    </div>
+
+    <!-- PROPULSION: twin vertical engine bars (RPM + LOAD), amber = display-only (s.sim) -->
+    <div class="ins-panel p-propulsion">
+      <div class="ins-hdr"><span>Propulsion</span></div>
+      <div class="prop-gauges">
+        <div class="prop-col">
+          <svg id="prop-port" viewBox="0 0 110 230" aria-label="port engine"></svg>
+          <div class="g-sub">PORT <span id="prop-port-rpm" class="v-sim">----</span> rpm · <span id="prop-port-load" class="v-sim">--</span>%</div>
+        </div>
+        <div class="prop-col">
+          <svg id="prop-stbd" viewBox="0 0 110 230" aria-label="starboard engine"></svg>
+          <div class="g-sub">STBD <span id="prop-stbd-rpm" class="v-sim">----</span> rpm · <span id="prop-stbd-load" class="v-sim">--</span>%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ENVIRONMENT: wind TRUE dial (new) + wind RELATIVE dial (from #wind) + weather -->
+    <div class="ins-panel p-env">
+      <div class="ins-hdr"><span>Environment</span></div>
+      <div class="env-dials">
+        <!-- wind TRUE: north-up needle dial -->
+        <div class="env-dial">
+          <svg id="wind-true-dial" viewBox="0 0 160 160" aria-label="true wind">
+            <circle cx="80" cy="80" r="74" fill="#0d1117" stroke="#30363d"/>
+            <g id="wtd-ticks"></g>
+            <g id="wtd-needle">
+              <line x1="80" y1="80" x2="80" y2="14" stroke="#58a6ff" stroke-width="3"/>
+              <polygon points="80,8 74,22 86,22" fill="#58a6ff"/>
+            </g>
+            <circle cx="80" cy="80" r="3.5" fill="#c9d1d9"/>
+          </svg>
+          <div class="g-sub">TRUE <span id="wtd-spd" class="v-live">--</span>kn @ <span id="wtd-dir" class="v-live">--</span>°</div>
+        </div>
+        <!-- wind RELATIVE: apparent wind vs bow (danger sector + ship glyph) -->
+        <div class="env-dial">
+          <svg id="wind-rel-dial" viewBox="0 0 200 200" aria-label="relative wind">
+            <circle cx="100" cy="100" r="94" fill="#0d1117" stroke="#30363d"/>
+            <!-- static red danger sector (~330→030°, presentational no-go) -->
+            <path d="M56.0,23.8 A88,88 0 0 1 144.0,23.8" fill="none" stroke="#f85149" stroke-width="6" stroke-opacity="0.5" stroke-linecap="round"/>
+            <g id="wind-ticks"></g>
+            <!-- bow marker -->
+            <polygon points="100,10 94,26 106,26" fill="#8b949e"/>
+            <text x="100" y="44" fill="#8b949e" font-size="10" font-family="monospace" text-anchor="middle">BOW</text>
+            <!-- centred ship glyph (bow up) -->
+            <path d="M100,78 C104,86 105,102 102,116 L98,116 C95,102 96,86 100,78 Z" fill="#21262d" stroke="#8b949e" stroke-width="1"/>
+            <!-- apparent wind (solid) -->
+            <g id="wind-app">
+              <line x1="100" y1="100" x2="100" y2="24" stroke="#58a6ff" stroke-width="3"/>
+              <polygon points="100,18 94,30 106,30" fill="#58a6ff"/>
+            </g>
+            <circle cx="100" cy="100" r="4" fill="#c9d1d9"/>
+          </svg>
+          <div class="g-sub">REL <span id="wrd-spd" class="v-live">--</span>kn @ <span id="wrd-ang" class="v-live">--</span>°</div>
+        </div>
+      </div>
+      <div class="env-readings">
+        <div class="env-cell">
+          <div class="ins-label">Water</div>
+          <div class="ins-val-row"><span id="env-wtemp" class="env-num v-sim">--</span><span class="ins-unit">°C</span></div>
+        </div>
+        <div class="env-cell">
+          <div class="ins-label">Air</div>
+          <div class="ins-val-row"><span id="env-atemp" class="env-num v-sim">--</span><span class="ins-unit">°C</span></div>
+        </div>
+        <div class="env-cell">
+          <div class="ins-label">Humidity</div>
+          <div class="ins-val-row"><span id="env-hum" class="env-num v-sim">--</span><span class="ins-unit">%</span></div>
+        </div>
+        <div class="env-cell">
+          <div class="ins-label">Pressure</div>
+          <div class="ins-val-row"><span id="env-press" class="env-num v-sim">--</span><span class="ins-unit">hPa</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SHIP: schematic + derived vectors + fuel + heading compass repeater -->
+    <div class="ins-panel p-ship">
+      <div class="ins-hdr"><span>Ship</span><span id="cmp-src" class="src src-off">OFF</span></div>
+      <!-- schematic (bow-up, heading-up) with vectors derived from real emitted fields (green) -->
+      <svg id="ship-schem" viewBox="0 0 260 360" aria-label="ship schematic with derived vectors">
+        <text x="130" y="16" fill="#8b949e" font-size="10" font-family="monospace" text-anchor="middle">BOW</text>
+        <text x="130" y="352" fill="#8b949e" font-size="10" font-family="monospace" text-anchor="middle">STERN</text>
+        <!-- hull, drawn once -->
+        <path d="M130,40 C158,74 168,150 165,244 L165,300 C165,318 150,326 130,326 C110,326 95,318 95,300 L95,244 C92,150 102,74 130,40 Z" fill="#12171f" stroke="#30363d" stroke-width="1.5"/>
+        <line x1="95" y1="180" x2="165" y2="180" stroke="#30363d" stroke-width="1" stroke-opacity="0.6"/>
+        <!-- set/drift (dashed) + ground-track (solid), both green (derived) -->
+        <g id="ship-vec-cur" opacity="0">
+          <line x1="130" y1="180" x2="130" y2="180" stroke="#3fb950" stroke-width="2.5" stroke-dasharray="6 4"/>
+          <polygon points="130,180 125,190 135,190" fill="#3fb950"/>
+        </g>
+        <g id="ship-vec-cog" opacity="0">
+          <line x1="130" y1="180" x2="130" y2="180" stroke="#3fb950" stroke-width="3"/>
+          <polygon points="130,180 124,190 136,190" fill="#3fb950"/>
+        </g>
+        <circle cx="130" cy="180" r="3.5" fill="#c9d1d9"/>
+        <!-- athwartships (lateral) speed callouts at bow + stern -->
+        <g id="ship-abow" opacity="0"><line stroke="#3fb950" stroke-width="2.5"/><polygon fill="#3fb950"/></g>
+        <text id="ship-vbow" x="130" y="72" fill="#3fb950" font-size="10" font-family="monospace" text-anchor="middle"></text>
+        <g id="ship-astern" opacity="0"><line stroke="#3fb950" stroke-width="2.5"/><polygon fill="#3fb950"/></g>
+        <text id="ship-vstern" x="130" y="308" fill="#3fb950" font-size="10" font-family="monospace" text-anchor="middle"></text>
+      </svg>
+      <div class="ship-sub g-sub">FWD <span id="ship-vfwd" class="v-live">--</span> kn</div>
+      <!-- heading compass repeater -->
+      <svg id="compass" class="repeater" viewBox="0 0 200 200" aria-label="heading compass">
         <circle cx="100" cy="100" r="94" fill="#0d1117" stroke="#30363d"/>
         <g id="compass-card"></g>
         <!-- COG marker (rotates to cog - heading) -->
@@ -43,88 +197,134 @@
         <polygon points="100,6 94,20 106,20" fill="#f85149"/>
         <circle cx="100" cy="100" r="4" fill="#c9d1d9"/>
       </svg>
-      <div class="g-read"><span id="cmp-hdg">---</span>°T</div>
-      <div class="g-sub">COG <span id="cmp-cog">---</span>°</div>
-    </div>
-
-    <!-- Rate of turn -->
-    <div class="gauge">
-      <div class="g-title"><span>Rate of Turn</span><span id="rot-src" class="src src-off">OFF</span></div>
-      <svg id="rot" viewBox="0 0 200 90" aria-label="rate of turn">
-        <rect x="8" y="34" width="184" height="20" rx="4" fill="#0d1117" stroke="#30363d"/>
-        <line x1="100" y1="28" x2="100" y2="60" stroke="#c9d1d9" stroke-width="2"/>
-        <text x="20" y="78" fill="#8b949e" font-size="9" font-family="monospace">PORT</text>
-        <text x="150" y="78" fill="#8b949e" font-size="9" font-family="monospace">STBD</text>
-        <rect id="rot-bar" x="100" y="36" width="0" height="16" fill="#d29922"/>
-      </svg>
-      <div class="g-read"><span id="rot-val">--</span> <span class="g-sub">°/min</span></div>
-    </div>
-
-    <!-- Inclinometer -->
-    <div class="gauge">
-      <div class="g-title"><span>Attitude</span><span class="src src-sim">SIM</span></div>
-      <svg id="incl" viewBox="0 0 200 200" aria-label="inclinometer">
-        <defs><clipPath id="incl-clip"><circle cx="100" cy="100" r="92"/></clipPath></defs>
-        <circle cx="100" cy="100" r="94" fill="#0d1117" stroke="#30363d"/>
-        <g clip-path="url(#incl-clip)">
-          <g id="incl-horizon">
-            <rect x="-120" y="-120" width="440" height="220" fill="#12324f"/>
-            <rect x="-120" y="100" width="440" height="220" fill="#3a2a12"/>
-            <line x1="-120" y1="100" x2="320" y2="100" stroke="#c9d1d9" stroke-width="2"/>
-            <g stroke="#8b949e" stroke-width="1">
-              <line x1="70" y1="70" x2="130" y2="70"/>
-              <line x1="80" y1="85" x2="120" y2="85"/>
-              <line x1="80" y1="115" x2="120" y2="115"/>
-              <line x1="70" y1="130" x2="130" y2="130"/>
-            </g>
-          </g>
-        </g>
-        <!-- fixed reference -->
-        <line x1="60" y1="100" x2="85" y2="100" stroke="#f85149" stroke-width="3"/>
-        <line x1="115" y1="100" x2="140" y2="100" stroke="#f85149" stroke-width="3"/>
-        <circle cx="100" cy="100" r="3" fill="#f85149"/>
-      </svg>
-      <div class="g-sub">Roll <span id="incl-roll">--</span>° &nbsp; Pitch <span id="incl-pitch">--</span>°</div>
-    </div>
-
-    <!-- Wind rose -->
-    <div class="gauge">
-      <div class="g-title"><span>Wind</span><span class="src src-sim">SIM</span></div>
-      <svg id="wind" viewBox="0 0 200 200" aria-label="wind rose">
-        <circle cx="100" cy="100" r="94" fill="#0d1117" stroke="#30363d"/>
-        <g id="wind-ticks"></g>
-        <!-- bow marker -->
-        <polygon points="100,10 94,26 106,26" fill="#8b949e"/>
-        <text x="100" y="44" fill="#8b949e" font-size="10" font-family="monospace" text-anchor="middle">BOW</text>
-        <!-- true wind (dashed) -->
-        <g id="wind-true">
-          <line x1="100" y1="100" x2="100" y2="24" stroke="#8b949e" stroke-width="3" stroke-dasharray="5 4"/>
-          <polygon points="100,18 94,30 106,30" fill="#8b949e"/>
-        </g>
-        <!-- apparent wind (solid) -->
-        <g id="wind-app">
-          <line x1="100" y1="100" x2="100" y2="24" stroke="#58a6ff" stroke-width="3"/>
-          <polygon points="100,18 94,30 106,30" fill="#58a6ff"/>
-        </g>
-        <circle cx="100" cy="100" r="4" fill="#c9d1d9"/>
-      </svg>
-      <div class="g-sub">
-        APP <span id="wind-app-spd">--</span>kn @ <span id="wind-app-ang">--</span>° &nbsp;·&nbsp;
-        TRUE <span id="wind-true-spd">--</span>kn @ <span id="wind-true-dir">--</span>°
+      <div class="g-read"><span id="cmp-hdg" class="v-live">---</span>°T</div>
+      <div class="g-sub">COG <span id="cmp-cog" class="v-live">---</span>°</div>
+      <div class="ro-item" style="margin-top:6px;">
+        <div class="ins-label">Heading T / M</div>
+        <div class="ins-val-row"><span id="ro-hdg" class="ins-bignum v-live">---</span></div>
+      </div>
+      <!-- fuel (amber = display-only, from s.sim) -->
+      <div class="fuel-row">
+        <div class="fuel-cell"><div class="ins-label">Fuel total</div><div class="ins-val-row"><span id="fuel-total" class="fuel-num v-sim">----</span><span class="ins-unit">L</span></div></div>
+        <div class="fuel-cell"><div class="ins-label">Burn rate</div><div class="ins-val-row"><span id="fuel-rate" class="fuel-num v-sim">--</span><span class="ins-unit">L/h</span></div></div>
+        <div class="fuel-cell"><div class="ins-label">Per NM</div><div class="ins-val-row"><span id="fuel-pernm" class="fuel-num v-sim">---</span><span class="ins-unit">L</span></div></div>
       </div>
     </div>
+
+    <!-- AUTOPILOT: mode pill + synthetic track point + metrics + linear off-course/off-track (amber = display-only, s.sim) -->
+    <div class="ins-panel p-autopilot">
+      <div class="ins-hdr"><span>Autopilot</span><span id="ap-mode" class="ap-pill v-sim">---</span></div>
+      <div class="ap-track">
+        <div class="ins-label">Track waypoint</div>
+        <div class="ins-val-row"><span id="ap-track-lat" class="ap-coord v-sim">---</span></div>
+        <div class="ins-val-row"><span id="ap-track-lon" class="ap-coord v-sim">---</span></div>
+      </div>
+      <div class="ap-metrics">
+        <div class="ap-cell"><div class="ins-label">Distance</div><div class="ins-val-row"><span id="ap-dist" class="ap-num v-sim">--</span><span class="ins-unit">NM</span></div></div>
+        <div class="ap-cell"><div class="ins-label">Course</div><div class="ins-val-row"><span id="ap-course" class="ap-num v-sim">---</span><span class="ins-unit">°</span></div></div>
+        <div class="ap-cell"><div class="ins-label">TTG</div><div class="ins-val-row"><span id="ap-ttg" class="ap-num v-sim">--:--</span></div></div>
+      </div>
+      <div class="ap-ind">
+        <div class="ins-label">Off-course (±5°)</div>
+        <svg id="ap-offcourse" viewBox="0 0 220 44" aria-label="off course"></svg>
+      </div>
+      <div class="ap-ind">
+        <div class="ins-label">Off-track (±50 m)</div>
+        <svg id="ap-xtd" viewBox="0 0 220 44" aria-label="cross-track error"></svg>
+      </div>
+    </div>
+
+    <!-- DEPTH: value (re-homed) + alert constant + 1 Hz history graph -->
+    <div class="ins-panel p-depth">
+      <div class="ins-hdr"><span>Depth</span></div>
+      <div class="depth-vals">
+        <div class="ro-item">
+          <div class="ins-label">Depth</div>
+          <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">Alert depth</div>
+          <div class="ins-val-row"><span id="depth-alert" class="ins-bignum v-sim">--</span><span class="ins-unit">m</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">Sea State</div>
+          <div class="ins-val-row"><span id="ro-sea" class="ins-bignum v-live">---</span><span class="ins-unit">WMO</span></div>
+        </div>
+      </div>
+      <svg id="depth-graph" viewBox="0 0 320 120" aria-label="depth history">
+        <rect x="34" y="8" width="278" height="92" fill="#0d1117" stroke="#30363d"/>
+        <g id="depth-dyn"></g>
+      </svg>
+    </div>
+
+    <!-- HELM: rudder-angle fan + twin marine inclinometers -->
+    <div class="ins-panel p-helm">
+      <div class="ins-hdr"><span>Helm</span></div>
+      <!-- rudder-angle fan (green = NMEA-backed); red hard-over zones beyond +/-30 -->
+      <svg id="rudder-arc" viewBox="0 0 200 120" aria-label="rudder angle">
+        <g id="rud-scale"></g>
+        <g id="rud-needle">
+          <line x1="100" y1="18" x2="100" y2="100" stroke="#3fb950" stroke-width="3"/>
+          <polygon points="100,108 94,94 106,94" fill="#3fb950"/>
+        </g>
+        <circle cx="100" cy="18" r="4" fill="#c9d1d9"/>
+        <text x="16" y="30" fill="#f85149" font-size="10" font-family="monospace">PORT</text>
+        <text x="184" y="30" fill="#3fb950" font-size="10" font-family="monospace" text-anchor="end">STBD</text>
+      </svg>
+      <div class="g-sub" style="text-align:center;">Rudder <span id="rud-val" class="v-live">--</span>°</div>
+      <!-- inclinometers: rotating ship glyphs (side-view pitch, stern-view roll) -->
+      <div class="incl-dials">
+        <div class="incl-dial">
+          <svg id="incl-pitch-dial" viewBox="0 0 160 120" aria-label="pitch inclinometer">
+            <g id="incl-pitch-scale"></g>
+            <g id="incl-pitch-glyph">
+              <line x1="34" y1="66" x2="126" y2="66" stroke="#3fb950" stroke-width="1" stroke-opacity="0.4"/>
+              <path d="M44,60 L112,60 L124,66 L112,72 L44,72 Z" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+            </g>
+            <line x1="80" y1="28" x2="80" y2="98" stroke="#f85149" stroke-width="1" stroke-opacity="0.5"/>
+            <text x="14" y="92" fill="#8b949e" font-size="9" font-family="monospace">STN</text>
+            <text x="146" y="92" fill="#8b949e" font-size="9" font-family="monospace" text-anchor="end">BOW</text>
+          </svg>
+          <div class="g-sub">Pitch <span id="incl-pitch" class="v-live">--</span>°</div>
+        </div>
+        <div class="incl-dial">
+          <svg id="incl-roll-dial" viewBox="0 0 160 120" aria-label="roll inclinometer">
+            <g id="incl-roll-scale"></g>
+            <g id="incl-roll-glyph">
+              <line x1="40" y1="66" x2="120" y2="66" stroke="#3fb950" stroke-width="1" stroke-opacity="0.4"/>
+              <path d="M58,60 L102,60 L96,74 Q80,80 64,74 Z" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+              <line x1="80" y1="60" x2="80" y2="42" stroke="#3fb950" stroke-width="1.5"/>
+            </g>
+            <line x1="80" y1="28" x2="80" y2="98" stroke="#f85149" stroke-width="1" stroke-opacity="0.5"/>
+            <text x="14" y="92" fill="#8b949e" font-size="9" font-family="monospace">PT</text>
+            <text x="146" y="92" fill="#8b949e" font-size="9" font-family="monospace" text-anchor="end">SB</text>
+          </svg>
+          <div class="g-sub">Roll <span id="incl-roll" class="v-live">--</span>°</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
+    <div class="ins-panel p-alerts">
+      <div class="ins-hdr"><span>Alerts</span><button id="alerts-silence" class="small">Silence</button></div>
+      <div id="alerts-list" class="alerts-list"><div class="hint">No active alerts</div></div>
+    </div>
+
   </div>
 
-  <!-- digital readouts -->
-  <div class="readouts" id="readouts"></div>
-
-  <!-- data-source strip -->
+  <!-- data-source strip (neutral, no source colour coding) -->
   <div class="src-strip" id="src-strip">
     <span class="kv">Channels:</span>
     <span id="src-chips" style="display:inline-flex;gap:8px;flex-wrap:wrap;"></span>
     <span class="spacer" style="flex:1"></span>
     <span class="kv">Mode <b id="strip-mode">—</b></span>
     <span class="kv">Time source <b id="strip-time">—</b></span>
+  </div>
+
+  <!-- source-encoding legend -->
+  <div class="ins-legend">
+    <span class="lg lg-live"><span class="dotc">●</span> NMEA-backed</span>
+    <span class="lg lg-sim"><span class="dotc">●</span> display-only</span>
   </div>
 </section>
 
@@ -378,6 +578,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=6"></script>
 </body>
 </html>

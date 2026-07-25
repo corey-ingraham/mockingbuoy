@@ -594,6 +594,36 @@ def test_state_to_dict_includes_new_fields_and_apparent_wind(sample_state: Any) 
     assert d["utc"] == sample_state.utc.isoformat()
 
 
+def test_display_sim_returns_full_sim_key_set(sample_state: Any) -> None:
+    """The display-only sim (grafted onto the SSE ``state`` frame under ``sim``) returns exactly
+    the key set the conning-tab JS reads. Asserted at the function level — never by hitting the
+    unbounded ``/api/stream``."""
+    from web.display_sim import simulate_display_instruments
+
+    sim = simulate_display_instruments(sample_state)
+    assert set(sim) == {
+        "rpm_port",
+        "rpm_stbd",
+        "load_port_pct",
+        "load_stbd_pct",
+        "fuel_rate_lph",
+        "fuel_per_nm_l",
+        "fuel_total_l",
+        "water_temp_c",
+        "air_temp_c",
+        "humidity_pct",
+        "pressure_hpa",
+        "ap_mode",
+        "ap_off_course_deg",
+        "ap_track_course_deg",
+        "ap_xtd_m",
+        "ap_distance_nm",
+        "ap_time_to_go_s",
+        "ap_track_lat",
+        "ap_track_lon",
+    }
+
+
 def test_health_dict_carries_mode_and_source(client: TestClient) -> None:
     """Running: per-channel ``source`` badge + top-level ``mode``/``time_source``. Stopped: ``mode``
     from config, ``time_source`` omitted (no live clock to name)."""
@@ -1484,8 +1514,10 @@ def test_index_references_external_css_and_js_no_inline_blocks() -> None:
     """C2: the UI must load its stylesheet + script as same-origin ``/static`` files (not inline)
     so a strict CSP with no ``script-src 'unsafe-inline'`` still renders the page behind Caddy."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    assert '<link rel="stylesheet" href="/static/app.css">' in html
-    assert '<script src="/static/app.js"></script>' in html
+    # Assets load from same-origin /static (the C2/CSP property); an optional ?v= cache-buster on
+    # the href/src is allowed (defeats stale-asset pairing on redeploy) — match the path prefix.
+    assert '<link rel="stylesheet" href="/static/app.css' in html
+    assert '<script src="/static/app.js' in html
     # No inline blocks survive (the tags now carry href/src attributes, never the bare form).
     assert "<style>" not in html
     assert "<script>" not in html

@@ -2,6 +2,8 @@
 (function () {
   const MAX_LINES = 300;
   const STALE_MS = 3500;
+  const DEPTH_CAP = 180;    // 1 Hz depth samples => 3-minute history window
+  const ALERT_DEPTH_M = 5;  // display-only shallow-water alert threshold (amber)
 
   // Manual-field range table mirroring the server's _UPDATE_RANGES (client-side pre-check only).
   const RANGES = {
@@ -60,6 +62,12 @@
   let lastState = null;             // last state event
   let lastStateTs = 0;
   let statePending = false;
+  const depthHistory = [];          // decimated 1 Hz depth samples (cap DEPTH_CAP)
+  let lastDepthSampleTs = 0;
+  const ackedAlerts = new Set();    // alert keys the operator acknowledged (auto-clears -> re-arms)
+  let alertsSilenced = false;       // cosmetic silence toggle (no audio in this app)
+  const alertFlags = { depthLow: false }; // state-frame-derived flags merged into applyHealth alerts
+  const alertFirstSeen = {};        // alert key -> first-seen ms (row age)
   let activeTab = "conning";
   let diagTimer = null, secTimer = null;
 
@@ -99,6 +107,21 @@
     const m = t.match(/T(\d{2}:\d{2}:\d{2})/);
     return m ? m[1] : t;
   }
+  // time-to-go seconds -> "H:MM" (autopilot readout)
+  function fmtTtg(sec) {
+    const s = Number(sec);
+    if (!Number.isFinite(s) || s < 0) return "--:--";
+    const total = Math.round(s / 60);
+    const h = Math.floor(total / 60), m = total % 60;
+    return h + ":" + (m < 10 ? "0" : "") + m;
+  }
+  // alert-row age: whole seconds -> compact "Ns" / "Nm" / "Nh"
+  function fmtAge(s) {
+    if (!Number.isFinite(s) || s < 0) return "0s";
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    return Math.floor(s / 3600) + "h";
+  }
 
   /* =====================================================================
    *  TABS
@@ -122,154 +145,508 @@
   /* =====================================================================
    *  CONNING (state SSE driven, rAF-throttled)
    * ===================================================================== */
-  // build compass rose ticks + wind rose ticks once
-  (function buildCompassCard() {
-    const card = $("compass-card");
-    const cx = 100, cy = 100;
-    for (let deg = 0; deg < 360; deg += 10) {
-      const major = deg % 30 === 0;
-      const r1 = 94, r2 = major ? 80 : 87;
+  // Reusable radial tick-ring builder (shared by the compass rose, the wind rose, and the
+  // Phase-3 dials). Draws minor/major ticks from r1 inward and, when `labels` is supplied,
+  // a text label at each major tick. `majorEvery` is a degree modulus (0 => no majors).
+  // `labels` = { r, fn(deg) -> string } or null. No-ops on a missing group so a stripped/
+  // renamed target downgrades to a blank dial instead of throwing at load time.
+  function buildDialTicks(group, cx, cy, r1, rMinor, rMajor, step, majorEvery, labels) {
+    if (!group) return;
+    const NS = "http://www.w3.org/2000/svg";
+    for (let deg = 0; deg < 360; deg += step) {
+      const major = majorEvery > 0 && deg % majorEvery === 0;
+      const r2 = major ? rMajor : rMinor;
       const a = (deg - 90) * Math.PI / 180;
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      const line = document.createElementNS(NS, "line");
       line.setAttribute("x1", (cx + r1 * Math.cos(a)).toFixed(1));
       line.setAttribute("y1", (cy + r1 * Math.sin(a)).toFixed(1));
       line.setAttribute("x2", (cx + r2 * Math.cos(a)).toFixed(1));
       line.setAttribute("y2", (cy + r2 * Math.sin(a)).toFixed(1));
       line.setAttribute("stroke", major ? "#8b949e" : "#3d444d");
       line.setAttribute("stroke-width", major ? "1.5" : "1");
-      card.appendChild(line);
-      if (major) {
-        const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        const rr = 70;
+      group.appendChild(line);
+      if (major && labels) {
+        const t = document.createElementNS(NS, "text");
+        const rr = labels.r != null ? labels.r : 70;
         t.setAttribute("x", (cx + rr * Math.cos(a)).toFixed(1));
         t.setAttribute("y", (cy + rr * Math.sin(a) + 4).toFixed(1));
         t.setAttribute("fill", "#c9d1d9");
         t.setAttribute("font-size", "10");
         t.setAttribute("font-family", "monospace");
         t.setAttribute("text-anchor", "middle");
-        const cards = { 0: "N", 90: "E", 180: "S", 270: "W" };
-        t.textContent = cards[deg] || String(deg / 10 * 10).padStart(2, "0").slice(0, 2);
-        if (!cards[deg]) t.textContent = (deg < 100 ? "0" : "") + deg;
-        card.appendChild(t);
+        t.textContent = labels.fn(deg);
+        group.appendChild(t);
       }
     }
+  }
+
+  // wrap a bearing delta into (-180, 180]
+  function wrap180(x) { const a = ((Number(x) % 360) + 360) % 360; return a > 180 ? a - 360 : a; }
+  // Ship-schematic radial vector: a fixed-up line+arrowhead inside a group rotated to `thetaDeg`
+  // about the hull centre (130,180). Length in px; hidden (opacity 0) when degenerate so a
+  // baseline/zero input shows nothing rather than a NaN transform.
+  function setShipVec(id, thetaDeg, len) {
+    const g = $(id); if (!g) return;
+    if (!Number.isFinite(len) || len < 2) { g.setAttribute("opacity", "0"); return; }
+    g.setAttribute("opacity", "1");
+    g.setAttribute("transform", "rotate(" + Number(thetaDeg).toFixed(1) + " 130 180)");
+    const line = g.querySelector("line"), head = g.querySelector("polygon");
+    const tip = 180 - len;
+    if (line) line.setAttribute("y2", tip.toFixed(1));
+    if (head) head.setAttribute("points", "130," + tip.toFixed(1) + " 124," + (tip + 10).toFixed(1) + " 136," + (tip + 10).toFixed(1));
+  }
+  // Ship-schematic horizontal (athwartships) callout arrow at row y; +v = starboard (right).
+  function setLatArrow(id, v, y) {
+    const g = $(id); if (!g) return;
+    if (!Number.isFinite(v) || Math.abs(v) < 0.05) { g.setAttribute("opacity", "0"); return; }
+    g.setAttribute("opacity", "1");
+    const dir = v >= 0 ? 1 : -1;
+    const len = Math.max(8, Math.min(60, Math.abs(v) * 18));
+    const x1 = 130 + dir * len;
+    const line = g.querySelector("line"), head = g.querySelector("polygon");
+    if (line) { line.setAttribute("x1", "130"); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
+    if (head) head.setAttribute("points", x1.toFixed(1) + "," + y + " " + (x1 - dir * 10).toFixed(1) + "," + (y - 5) + " " + (x1 - dir * 10).toFixed(1) + "," + (y + 5));
+  }
+
+  // build compass rose ticks + wind rose ticks once
+  (function buildCompassCard() {
+    const card = $("compass-card");
+    if (!card) return;
+    const cards = { 0: "N", 90: "E", 180: "S", 270: "W" };
+    buildDialTicks(card, 100, 100, 94, 87, 80, 10, 30, {
+      r: 70,
+      fn: (deg) => cards[deg] || ((deg < 100 ? "0" : "") + deg),
+    });
   })();
   (function buildWindTicks() {
-    const g = $("wind-ticks"), cx = 100, cy = 100;
-    for (let deg = 0; deg < 360; deg += 30) {
-      const a = (deg - 90) * Math.PI / 180;
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", (cx + 94 * Math.cos(a)).toFixed(1));
-      line.setAttribute("y1", (cy + 94 * Math.sin(a)).toFixed(1));
-      line.setAttribute("x2", (cx + 84 * Math.cos(a)).toFixed(1));
-      line.setAttribute("y2", (cy + 84 * Math.sin(a)).toFixed(1));
-      line.setAttribute("stroke", "#3d444d");
-      g.appendChild(line);
+    const g = $("wind-ticks");
+    if (!g) return;
+    buildDialTicks(g, 100, 100, 94, 84, 84, 30, 0, null);
+  })();
+  // wind TRUE dial: north-up card with cardinal labels
+  (function buildWtdTicks() {
+    const g = $("wtd-ticks");
+    if (!g) return;
+    const cards = { 0: "N", 90: "E", 180: "S", 270: "W" };
+    buildDialTicks(g, 80, 80, 74, 68, 60, 30, 90, { r: 50, fn: (deg) => cards[deg] || "" });
+  })();
+  // seed the depth-alert display constant (must match ALERT_DEPTH_M)
+  (function setDepthAlert() {
+    const n = $("depth-alert");
+    if (n) n.textContent = ALERT_DEPTH_M.toFixed(1);
+  })();
+  // COG tape: a full 0-360 tick ring (5deg minor / 30deg major, 3-digit labels) built once about
+  // the off-screen centre (200,460); repaint rotates it by -cog so no north-wrap seam appears.
+  (function buildCogTape() {
+    const g = $("cog-tape");
+    if (!g) return;
+    buildDialTicks(g, 200, 460, 400, 390, 380, 5, 30, {
+      r: 366,
+      fn: (deg) => (deg < 10 ? "00" : deg < 100 ? "0" : "") + deg,
+    });
+  })();
+  // rudder fan scale: base arc + red hard-over zones (beyond +/-30) + ticks/labels, hung below
+  // pivot (100,18); arcs drawn as sampled polylines so the geometry is flag-independent.
+  (function buildRudderScale() {
+    const g = $("rud-scale");
+    if (!g) return;
+    const NS = "http://www.w3.org/2000/svg";
+    const px = 100, py = 18;
+    const pt = (a, r) => [px + r * Math.sin(a * Math.PI / 180), py + r * Math.cos(a * Math.PI / 180)];
+    const poly = (a0, a1, r, color, w) => {
+      let d = "";
+      for (let a = a0; a <= a1 + 0.001; a += 3) { const p = pt(a, r); d += (d ? " " : "") + p[0].toFixed(1) + "," + p[1].toFixed(1); }
+      const e = document.createElementNS(NS, "polyline");
+      e.setAttribute("points", d); e.setAttribute("fill", "none");
+      e.setAttribute("stroke", color); e.setAttribute("stroke-width", w);
+      g.appendChild(e);
+    };
+    poly(-45, 45, 92, "#30363d", "1.5");
+    poly(-45, -30, 92, "#f85149", "3");
+    poly(30, 45, 92, "#f85149", "3");
+    for (let a = -45; a <= 45; a += 15) {
+      const p1 = pt(a, 78), p2 = pt(a, 92);
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
+      ln.setAttribute("x2", p2[0].toFixed(1)); ln.setAttribute("y2", p2[1].toFixed(1));
+      ln.setAttribute("stroke", Math.abs(a) >= 30 ? "#f85149" : "#8b949e");
+      ln.setAttribute("stroke-width", a === 0 ? "2" : "1.2");
+      g.appendChild(ln);
+      const lp = pt(a, 66);
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", lp[0].toFixed(1)); t.setAttribute("y", (lp[1] + 3).toFixed(1));
+      t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "9");
+      t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", "middle");
+      t.textContent = String(Math.abs(a));
+      g.appendChild(t);
     }
   })();
-
-  // Digital readout registry: id -> {label, unit, srcKind, get(state)}
-  // srcKind: "gps" | "heading" | "sim" | "time"
-  const READOUTS = [
-    { key: "sog", label: "SOG", unit: "kn", srcKind: "gps", get: (s) => num(s.sog_kn, 1) },
-    { key: "stw", label: "STW", unit: "kn", srcKind: "sim", get: (s) => num(s.stw_kn, 1) },
-    { key: "cog", label: "COG", unit: "°", srcKind: "gps", get: (s) => num(s.cog_deg, 0) },
-    { key: "hdg", label: "HDG", unit: "T / M", srcKind: "heading", get: (s) => num(s.heading_true_deg, 0) + " / " + num(s.heading_mag_deg, 0) },
-    { key: "lat", label: "Latitude", unit: "", srcKind: "gps", get: (s) => fmtLat(s.lat) },
-    { key: "lon", label: "Longitude", unit: "", srcKind: "gps", get: (s) => fmtLon(s.lon) },
-    { key: "depth", label: "Depth", unit: "m", srcKind: "sim", get: (s) => num(s.depth_m, 1) },
-    { key: "utc", label: "UTC", unit: "", srcKind: "time", get: (s) => fmtUtc(s.utc) },
-    { key: "sea", label: "Sea State", unit: "WMO", srcKind: "sim", get: (s) => num(s.sea_state, 0) },
-  ];
-  const roNodes = {};
-  (function buildReadouts() {
-    const wrap = $("readouts");
-    for (const r of READOUTS) {
-      const box = el("div", "ro");
-      const top = el("div", "ro-top");
-      top.appendChild(el("span", "ro-label", r.label));
-      const tag = el("span", "src src-off", "OFF");
-      top.appendChild(tag);
-      box.appendChild(top);
-      const val = el("div", "ro-val", "---");
-      box.appendChild(val);
-      if (r.unit) box.appendChild(el("div", "ro-unit", r.unit));
-      wrap.appendChild(box);
-      roNodes[r.key] = { val, tag };
-    }
+  // inclinometer protractor scales (-30..30, 10deg ticks) drawn once above each glyph centre (80,66).
+  (function buildInclScales() {
+    const NS = "http://www.w3.org/2000/svg";
+    const cx = 80, cy = 66;
+    const pt = (a, r) => [cx + r * Math.sin(a * Math.PI / 180), cy - r * Math.cos(a * Math.PI / 180)];
+    ["incl-pitch-scale", "incl-roll-scale"].forEach((gid) => {
+      const g = $(gid);
+      if (!g) return;
+      let d = "";
+      for (let a = -30; a <= 30.001; a += 3) { const p = pt(a, 44); d += (d ? " " : "") + p[0].toFixed(1) + "," + p[1].toFixed(1); }
+      const arc = document.createElementNS(NS, "polyline");
+      arc.setAttribute("points", d); arc.setAttribute("fill", "none");
+      arc.setAttribute("stroke", "#30363d"); arc.setAttribute("stroke-width", "1.5");
+      g.appendChild(arc);
+      for (let a = -30; a <= 30; a += 10) {
+        const p1 = pt(a, 40), p2 = pt(a, 48);
+        const ln = document.createElementNS(NS, "line");
+        ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
+        ln.setAttribute("x2", p2[0].toFixed(1)); ln.setAttribute("y2", p2[1].toFixed(1));
+        ln.setAttribute("stroke", a === 0 ? "#c9d1d9" : "#8b949e");
+        ln.setAttribute("stroke-width", a === 0 ? "1.6" : "1");
+        g.appendChild(ln);
+      }
+    });
   })();
 
-  function sourceForKind(kind) {
-    if (kind === "gps") return parseSource(channelSourceByRole("gps"));
-    if (kind === "heading") return parseSource(channelSourceByRole("heading"));
-    if (kind === "sim") return { tag: "SIM", cls: "src-sim" };
-    if (kind === "time") {
-      const ts = (lastHealth && lastHealth.time_source) ? String(lastHealth.time_source).toUpperCase() : "—";
-      return { tag: ts, cls: "src-time" };
+  // Twin-engine vertical bar gauge: an RPM track (0-3500) + a LOAD track (0-100) drawn once into
+  // the 110x230 svg; each carries a bottom-anchored amber fill rect (y=BOT-h; height=h) whose id is
+  // "<id>-rpm-bar" / "<id>-load-bar", updated by setEngineBar in the hot repaint. Amber = display-only.
+  const ENG_TOP = 10, ENG_BOT = 200, ENG_H = ENG_BOT - ENG_TOP; // track window 190px tall
+  function buildEngineGauge(id) {
+    const svg = $(id);
+    if (!svg) return;
+    const NS = "http://www.w3.org/2000/svg";
+    const TW = 30;
+    const tracks = [
+      { kind: "rpm", x: 16, max: 3500, ticks: [0, 875, 1750, 2625, 3500], label: "RPM" },
+      { kind: "load", x: 64, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
+    ];
+    for (const t of tracks) {
+      const bg = document.createElementNS(NS, "rect");
+      bg.setAttribute("x", String(t.x)); bg.setAttribute("y", String(ENG_TOP));
+      bg.setAttribute("width", String(TW)); bg.setAttribute("height", String(ENG_H));
+      bg.setAttribute("rx", "3"); bg.setAttribute("fill", "#0d1117"); bg.setAttribute("stroke", "#30363d");
+      svg.appendChild(bg);
+      for (const tv of t.ticks) {
+        const y = ENG_BOT - (tv / t.max) * ENG_H;
+        const ln = document.createElementNS(NS, "line");
+        ln.setAttribute("x1", String(t.x - 4)); ln.setAttribute("y1", y.toFixed(1));
+        ln.setAttribute("x2", String(t.x)); ln.setAttribute("y2", y.toFixed(1));
+        ln.setAttribute("stroke", "#8b949e"); ln.setAttribute("stroke-width", "1");
+        svg.appendChild(ln);
+        const tx = document.createElementNS(NS, "text");
+        tx.setAttribute("x", String(t.x - 6)); tx.setAttribute("y", (y + 3).toFixed(1));
+        tx.setAttribute("fill", "#8b949e"); tx.setAttribute("font-size", "7");
+        tx.setAttribute("font-family", "monospace"); tx.setAttribute("text-anchor", "end");
+        tx.textContent = String(tv);
+        svg.appendChild(tx);
+      }
+      const bar = document.createElementNS(NS, "rect");
+      bar.setAttribute("id", id + "-" + t.kind + "-bar");
+      bar.setAttribute("x", String(t.x + 1)); bar.setAttribute("y", String(ENG_BOT));
+      bar.setAttribute("width", String(TW - 2)); bar.setAttribute("height", "0");
+      bar.setAttribute("fill", "#d29922");
+      svg.appendChild(bar);
+      const lbl = document.createElementNS(NS, "text");
+      lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 16));
+      lbl.setAttribute("fill", "#8b949e"); lbl.setAttribute("font-size", "9");
+      lbl.setAttribute("font-family", "monospace"); lbl.setAttribute("text-anchor", "middle");
+      lbl.textContent = t.label;
+      svg.appendChild(lbl);
     }
-    return { tag: "OFF", cls: "src-off" };
   }
+  function setEngineBar(id, v, max) {
+    const bar = $(id);
+    if (!bar) return;
+    const frac = Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v) / max)) : 0;
+    const h = frac * ENG_H;
+    bar.setAttribute("y", (ENG_BOT - h).toFixed(1));
+    bar.setAttribute("height", h.toFixed(1));
+  }
+  // Autopilot linear deviation indicator: 220x44 with a centre-zero baseline, ±half labels and a
+  // diamond marker "<id>-mark" placed at x=110+clamp(v/half,-1,1)*100 by setLinearMarker. Amber.
+  function buildLinearIndicator(id, halfRange, unit) {
+    const svg = $(id);
+    if (!svg) return;
+    const NS = "http://www.w3.org/2000/svg";
+    const cx = 110, cy = 22, x0 = 10, x1 = 210;
+    const base = document.createElementNS(NS, "line");
+    base.setAttribute("x1", String(x0)); base.setAttribute("y1", String(cy));
+    base.setAttribute("x2", String(x1)); base.setAttribute("y2", String(cy));
+    base.setAttribute("stroke", "#30363d"); base.setAttribute("stroke-width", "2");
+    svg.appendChild(base);
+    [-1, -0.5, 0, 0.5, 1].forEach((f) => {
+      const x = cx + f * 100, big = f === 0;
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", x.toFixed(1)); ln.setAttribute("y1", String(cy - (big ? 8 : 5)));
+      ln.setAttribute("x2", x.toFixed(1)); ln.setAttribute("y2", String(cy + (big ? 8 : 5)));
+      ln.setAttribute("stroke", big ? "#8b949e" : "#3d444d"); ln.setAttribute("stroke-width", big ? "1.5" : "1");
+      svg.appendChild(ln);
+    });
+    const mklabel = (x, txt, anchor) => {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", String(x)); t.setAttribute("y", String(cy + 18));
+      t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "8");
+      t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", anchor);
+      t.textContent = txt; svg.appendChild(t);
+    };
+    mklabel(x0, "-" + halfRange + unit, "start");
+    mklabel(cx, "0", "middle");
+    mklabel(x1, "+" + halfRange + unit, "end");
+    const mk = document.createElementNS(NS, "polygon");
+    mk.setAttribute("id", id + "-mark");
+    mk.setAttribute("points", cx + "," + (cy - 7) + " " + (cx + 6) + "," + cy + " " + cx + "," + (cy + 7) + " " + (cx - 6) + "," + cy);
+    mk.setAttribute("fill", "#d29922");
+    svg.appendChild(mk);
+  }
+  function setLinearMarker(id, v, half) {
+    const mk = $(id);
+    if (!mk) return;
+    const cx = 110, cy = 22;
+    const frac = Number.isFinite(Number(v)) ? Math.max(-1, Math.min(1, Number(v) / half)) : 0;
+    const x = cx + frac * 100;
+    mk.setAttribute("points", x.toFixed(1) + "," + (cy - 7) + " " + (x + 6).toFixed(1) + "," + cy + " " + x.toFixed(1) + "," + (cy + 7) + " " + (x - 6).toFixed(1) + "," + cy);
+  }
+  // build the twin engine bars + the two autopilot linear indicators once (each guards a missing target)
+  (function buildPropulsionGauges() {
+    buildEngineGauge("prop-port");
+    buildEngineGauge("prop-stbd");
+  })();
+  (function buildApIndicators() {
+    buildLinearIndicator("ap-offcourse", 5, "°");
+    buildLinearIndicator("ap-xtd", 50, "m");
+  })();
+  // cosmetic Silence toggle for the alerts panel (no audio in this app; re-renders row styling)
+  (function wireAlertSilence() {
+    const b = $("alerts-silence");
+    if (!b) return;
+    b.addEventListener("click", () => {
+      alertsSilenced = !alertsSilenced;
+      b.textContent = alertsSilenced ? "Silenced" : "Silence";
+      b.classList.toggle("active", alertsSilenced);
+      renderAlerts();
+    });
+  })();
 
   function repaintConning() {
     statePending = false;
     const s = lastState;
     if (!s) return;
+    const sim = s.sim || {};
+    const setTxt = (id, v) => { const n = $(id); if (n) n.textContent = v; };
 
     // compass
     const hdg = Number(s.heading_true_deg);
     if (Number.isFinite(hdg)) {
-      $("compass-card").setAttribute("transform", "rotate(" + (-hdg) + " 100 100)");
-      $("cmp-hdg").textContent = num(hdg, 0);
+      const compassCard = $("compass-card");
+      if (compassCard) compassCard.setAttribute("transform", "rotate(" + (-hdg) + " 100 100)");
+      const cmpHdg = $("cmp-hdg");
+      if (cmpHdg) cmpHdg.textContent = num(hdg, 0);
     }
     const cog = Number(s.cog_deg);
     if (Number.isFinite(cog) && Number.isFinite(hdg)) {
-      $("cog-marker").setAttribute("transform", "rotate(" + (cog - hdg) + " 100 100)");
-      $("cmp-cog").textContent = num(cog, 0);
+      const cogMarker = $("cog-marker");
+      if (cogMarker) cogMarker.setAttribute("transform", "rotate(" + (cog - hdg) + " 100 100)");
+      const cmpCog = $("cmp-cog");
+      if (cmpCog) cmpCog.textContent = num(cog, 0);
     }
+    // COG tape ring rotates by -cog behind the fixed window (needs cog only; north-wrap free)
+    const cogTape = $("cog-tape");
+    if (cogTape && Number.isFinite(cog)) cogTape.setAttribute("transform", "rotate(" + (-cog).toFixed(1) + " 200 460)");
 
     // rate of turn (full scale +/-30 dpm -> +/-90px)
     const rot = Number(s.rot_dpm) || 0;
     const scaled = Math.max(-30, Math.min(30, rot)) / 30 * 90;
     const bar = $("rot-bar");
-    if (scaled >= 0) { bar.setAttribute("x", "100"); bar.setAttribute("width", scaled.toFixed(1)); }
-    else { bar.setAttribute("x", (100 + scaled).toFixed(1)); bar.setAttribute("width", (-scaled).toFixed(1)); }
-    $("rot-val").textContent = num(rot, 1);
-
-    // inclinometer: rotate by -roll, translate horizon by pitch
-    const roll = Number(s.roll_deg) || 0, pitch = Number(s.pitch_deg) || 0;
-    $("incl-horizon").setAttribute("transform", "rotate(" + (-roll) + " 100 100) translate(0 " + (pitch * 2).toFixed(1) + ")");
-    $("incl-roll").textContent = num(roll, 1);
-    $("incl-pitch").textContent = num(pitch, 1);
-
-    // wind rose
-    const appAng = Number(s.app_wind_angle_deg);
-    if (Number.isFinite(appAng)) $("wind-app").setAttribute("transform", "rotate(" + appAng + " 100 100)");
-    const trueDir = Number(s.wind_dir_deg), hd = Number(s.heading_true_deg);
-    if (Number.isFinite(trueDir) && Number.isFinite(hd)) $("wind-true").setAttribute("transform", "rotate(" + (trueDir - hd) + " 100 100)");
-    $("wind-app-spd").textContent = num(s.app_wind_speed_kn, 1);
-    $("wind-app-ang").textContent = num(s.app_wind_angle_deg, 0);
-    $("wind-true-spd").textContent = num(s.wind_speed_kn, 1);
-    $("wind-true-dir").textContent = num(s.wind_dir_deg, 0);
-
-    // digital readouts + per-value source tags
-    for (const r of READOUTS) {
-      const n = roNodes[r.key];
-      n.val.textContent = r.get(s);
-      const src = sourceForKind(r.srcKind);
-      n.tag.textContent = src.tag;
-      n.tag.className = "src " + src.cls;
+    if (bar) {
+      if (scaled >= 0) { bar.setAttribute("x", "100"); bar.setAttribute("width", scaled.toFixed(1)); }
+      else { bar.setAttribute("x", (100 + scaled).toFixed(1)); bar.setAttribute("width", (-scaled).toFixed(1)); }
     }
+    const rotVal = $("rot-val");
+    if (rotVal) rotVal.textContent = num(rot, 1);
+
+    // inclinometers: rotating ship glyphs (side-view pitch, stern-view roll)
+    const roll = Number(s.roll_deg) || 0, pitch = Number(s.pitch_deg) || 0;
+    const inclPitchGlyph = $("incl-pitch-glyph");
+    if (inclPitchGlyph) inclPitchGlyph.setAttribute("transform", "rotate(" + (-pitch).toFixed(1) + " 80 66)");
+    const inclRollGlyph = $("incl-roll-glyph");
+    if (inclRollGlyph) inclRollGlyph.setAttribute("transform", "rotate(" + roll.toFixed(1) + " 80 66)");
+    const inclRoll = $("incl-roll");
+    if (inclRoll) inclRoll.textContent = num(roll, 1);
+    const inclPitch = $("incl-pitch");
+    if (inclPitch) inclPitch.textContent = num(pitch, 1);
+
+    // rudder-angle fan (green = NMEA-backed)
+    const rud = Number(s.rudder_angle_deg);
+    const rudNeedle = $("rud-needle");
+    // Needle hangs BELOW the pivot, so a positive (starboard) angle must rotate the tip to screen
+    // RIGHT where the STBD ticks are — negate to match the scale (+rud = starboard = right).
+    if (rudNeedle && Number.isFinite(rud)) rudNeedle.setAttribute("transform", "rotate(" + (-rud).toFixed(1) + " 100 18)");
+    setTxt("rud-val", num(s.rudder_angle_deg, 1));
+
+    // ship schematic — every vector derived from real emitted fields (green)
+    const shipCog = Number(s.cog_deg), shipHdg = Number(s.heading_true_deg);
+    const shipSog = Number(s.sog_kn) || 0;
+    const setDeg = Number(s.set_deg), driftKn = Number(s.drift_kn) || 0;
+    const trackOk = Number.isFinite(shipCog) && Number.isFinite(shipHdg);
+    const curOk = Number.isFinite(setDeg) && Number.isFinite(shipHdg);
+    setShipVec("ship-vec-cog", trackOk ? shipCog - shipHdg : 0, trackOk ? Math.min(90, shipSog * 9) : 0);
+    setShipVec("ship-vec-cur", curOk ? setDeg - shipHdg : 0, curOk ? Math.min(70, driftKn * 18) : 0);
+    // athwartships (docking) lateral speeds recovered from ground track + yaw; L=30 m, midships pivot
+    const dlt = trackOk ? wrap180(shipCog - shipHdg) : 0;
+    const dRad = dlt * Math.PI / 180;
+    const vLat = trackOk ? shipSog * Math.sin(dRad) : 0;
+    const vFwd = trackOk ? shipSog * Math.cos(dRad) : 0;
+    const tang = rot * Math.PI / (180 * 60) * 15 * 1.9438; // yaw contribution at L/2, m/s -> kn
+    const vBow = vLat + tang, vStern = vLat - tang;
+    setLatArrow("ship-abow", vBow, 88);
+    setLatArrow("ship-astern", vStern, 280);
+    setTxt("ship-vbow", Math.abs(vBow) < 0.05 ? "" : Math.abs(vBow).toFixed(2) + (vBow >= 0 ? " S" : " P"));
+    setTxt("ship-vstern", Math.abs(vStern) < 0.05 ? "" : Math.abs(vStern).toFixed(2) + (vStern >= 0 ? " S" : " P"));
+    setTxt("ship-vfwd", num(vFwd, 1));
+
+    // fuel (amber = display-only, from s.sim)
+    setTxt("fuel-total", num(sim.fuel_total_l, 0));
+    setTxt("fuel-rate", num(sim.fuel_rate_lph, 1));
+    setTxt("fuel-pernm", sim.fuel_per_nm_l == null ? "---" : num(sim.fuel_per_nm_l, 2));
+
+    // wind — relative (apparent) dial: solid vector rotates about the 200x200 rose centre
+    const appAng = Number(s.app_wind_angle_deg);
+    const windApp = $("wind-app");
+    if (windApp && Number.isFinite(appAng)) windApp.setAttribute("transform", "rotate(" + appAng + " 100 100)");
+    // wind — true dial: north-up needle rotates to the compass wind direction (160x160 centre)
+    const windDir = Number(s.wind_dir_deg);
+    const wtdNeedle = $("wtd-needle");
+    if (wtdNeedle && Number.isFinite(windDir)) wtdNeedle.setAttribute("transform", "rotate(" + windDir + " 80 80)");
+    // wind readouts (green = NMEA-backed)
+    setTxt("wrd-spd", num(s.app_wind_speed_kn, 1));
+    setTxt("wrd-ang", num(s.app_wind_angle_deg, 0));
+    setTxt("wtd-spd", num(s.wind_speed_kn, 1));
+    setTxt("wtd-dir", num(s.wind_dir_deg, 0));
+
+    // environment (amber = display-only, from s.sim)
+    setTxt("env-wtemp", num(sim.water_temp_c, 1));
+    setTxt("env-atemp", num(sim.air_temp_c, 1));
+    setTxt("env-hum", num(sim.humidity_pct, 0));
+    setTxt("env-press", num(sim.pressure_hpa, 0));
+
+    // propulsion — twin engine bars (amber = display-only, from s.sim)
+    setEngineBar("prop-port-rpm-bar", sim.rpm_port, 3500);
+    setEngineBar("prop-port-load-bar", sim.load_port_pct, 100);
+    setEngineBar("prop-stbd-rpm-bar", sim.rpm_stbd, 3500);
+    setEngineBar("prop-stbd-load-bar", sim.load_stbd_pct, 100);
+    setTxt("prop-port-rpm", num(sim.rpm_port, 0));
+    setTxt("prop-port-load", num(sim.load_port_pct, 0));
+    setTxt("prop-stbd-rpm", num(sim.rpm_stbd, 0));
+    setTxt("prop-stbd-load", num(sim.load_stbd_pct, 0));
+
+    // autopilot — mode pill + synthetic track point + metrics + linear deviation (amber = display-only)
+    setTxt("ap-mode", sim.ap_mode == null ? "---" : String(sim.ap_mode));
+    setTxt("ap-track-lat", fmtLat(sim.ap_track_lat));
+    setTxt("ap-track-lon", fmtLon(sim.ap_track_lon));
+    setTxt("ap-dist", num(sim.ap_distance_nm, 1));
+    setTxt("ap-course", num(sim.ap_track_course_deg, 0));
+    setTxt("ap-ttg", fmtTtg(sim.ap_time_to_go_s));
+    setLinearMarker("ap-offcourse-mark", sim.ap_off_course_deg, 5);
+    setLinearMarker("ap-xtd-mark", sim.ap_xtd_m, 50);
+
+    // re-homed nav bignums (former #readouts values now live in panels; colour class is
+    // assigned once in the markup, hot repaint only sets textContent)
+    setTxt("pri-sog", num(s.sog_kn, 1));
+    setTxt("pri-stw", num(s.stw_kn, 1));
+    setTxt("pri-cog", num(s.cog_deg, 0));
+    setTxt("ro-hdg", num(s.heading_true_deg, 0) + " / " + num(s.heading_mag_deg, 0));
+    setTxt("ro-lat", fmtLat(s.lat));
+    setTxt("ro-lon", fmtLon(s.lon));
+    setTxt("ro-depth", num(s.depth_m, 1));
+    setTxt("ro-utc", fmtUtc(s.utc));
+    setTxt("ro-sea", num(s.sea_state, 0));
+
     // gauge header source tags
-    const g = parseSource(channelSourceByRole("gps"));
     const h = parseSource(channelSourceByRole("heading"));
-    $("cmp-src").textContent = h.tag; $("cmp-src").className = "src " + h.cls;
-    $("rot-src").textContent = h.tag; $("rot-src").className = "src " + h.cls;
+    const cmpSrc = $("cmp-src");
+    if (cmpSrc) { cmpSrc.textContent = h.tag; cmpSrc.className = "src " + h.cls; }
+    const rotSrc = $("rot-src");
+    if (rotSrc) { rotSrc.textContent = h.tag; rotSrc.className = "src " + h.cls; }
   }
 
   function requestConningPaint() {
     if (statePending) return;
     statePending = true;
     requestAnimationFrame(repaintConning);
+  }
+
+  // Depth history graph — sampled at 1 Hz off the state stream (decimated) and redrawn on
+  // each sample, independent of the rAF conning repaint. Array caps at DEPTH_CAP (3 min).
+  function sampleDepth(s) {
+    if (!s) return;
+    const d = Number(s.depth_m);
+    if (!Number.isFinite(d)) return;
+    const now = Date.now();
+    if (now - lastDepthSampleTs < 1000) return;
+    lastDepthSampleTs = now;
+    depthHistory.push(d);
+    while (depthHistory.length > DEPTH_CAP) depthHistory.shift();
+    renderDepthGraph();
+    // shallow-water flag feeds the alerts panel (rendered in applyHealth); re-render for prompt display
+    const wasLow = alertFlags.depthLow;
+    alertFlags.depthLow = d > 0 && d < ALERT_DEPTH_M;
+    if (alertFlags.depthLow !== wasLow) renderAlerts();
+  }
+  function renderDepthGraph() {
+    const dyn = $("depth-dyn");
+    if (!dyn) return;
+    const NS = "http://www.w3.org/2000/svg";
+    while (dyn.firstChild) dyn.removeChild(dyn.firstChild);
+    const x0 = 34, y0 = 8, x1 = 312, y1 = 100, w = x1 - x0, h = y1 - y0;
+    const n = depthHistory.length;
+    const mk = (tag) => document.createElementNS(NS, tag);
+    const label = (x, y, txt, anchor) => {
+      const t = mk("text");
+      t.setAttribute("x", String(x)); t.setAttribute("y", String(y));
+      t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "9");
+      t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", anchor || "end");
+      t.textContent = txt; dyn.appendChild(t);
+    };
+    if (n < 2) { label((x0 + x1) / 2, (y0 + y1) / 2, "acquiring depth…", "middle"); return; }
+    // autoscale with 10% padding and a 2 m minimum span
+    let mn = Math.min.apply(null, depthHistory), mx = Math.max.apply(null, depthHistory);
+    if (mx - mn < 2) { const mid = (mn + mx) / 2; mn = mid - 1; mx = mid + 1; }
+    const pad = (mx - mn) * 0.1; mn -= pad; mx += pad;
+    const span = (mx - mn) || 1;
+    const xstep = w / (DEPTH_CAP - 1);
+    const xOf = (j) => x1 - (n - 1 - j) * xstep;      // newest at right
+    const yOf = (depth) => y0 + (depth - mn) / span * h; // inverted: deeper = lower
+    let pts = "";
+    for (let j = 0; j < n; j++) pts += (j ? " " : "") + xOf(j).toFixed(1) + "," + yOf(depthHistory[j]).toFixed(1);
+    // seabed fill below the trace
+    const fill = mk("polygon");
+    fill.setAttribute("points", pts + " " + xOf(n - 1).toFixed(1) + "," + y1 + " " + xOf(0).toFixed(1) + "," + y1);
+    fill.setAttribute("fill", "#3a2a12"); fill.setAttribute("opacity", "0.55");
+    dyn.appendChild(fill);
+    // depth trace
+    const line = mk("polyline");
+    line.setAttribute("id", "depth-line");
+    line.setAttribute("points", pts);
+    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#58a6ff"); line.setAttribute("stroke-width", "1.5");
+    dyn.appendChild(line);
+    // alert threshold hline (red dashed) when within the scaled window
+    if (ALERT_DEPTH_M >= mn && ALERT_DEPTH_M <= mx) {
+      const al = mk("line");
+      al.setAttribute("x1", String(x0)); al.setAttribute("x2", String(x1));
+      al.setAttribute("y1", yOf(ALERT_DEPTH_M).toFixed(1)); al.setAttribute("y2", yOf(ALERT_DEPTH_M).toFixed(1));
+      al.setAttribute("stroke", "#f85149"); al.setAttribute("stroke-width", "1"); al.setAttribute("stroke-dasharray", "4 3");
+      dyn.appendChild(al);
+    }
+    // ship marker at "Now"
+    const shipDot = mk("circle");
+    shipDot.setAttribute("cx", xOf(n - 1).toFixed(1)); shipDot.setAttribute("cy", yOf(depthHistory[n - 1]).toFixed(1));
+    shipDot.setAttribute("r", "3"); shipDot.setAttribute("fill", "#c9d1d9");
+    dyn.appendChild(shipDot);
+    // axis labels: shallow (top) / deep (bottom) + time span
+    label(x0 - 3, y0 + 8, mn.toFixed(1));
+    label(x0 - 3, y1, mx.toFixed(1));
+    label(x0, y1 + 14, "-3m", "start");
+    label(x1, y1 + 14, "now", "end");
   }
 
   // stale detector
@@ -280,21 +657,25 @@
 
   function updateSourceStrip() {
     const chips = $("src-chips");
-    chips.textContent = "";
-    const bySource = {};
-    if (lastHealth && Array.isArray(lastHealth.channels)) {
-      for (const c of lastHealth.channels) bySource[c.channel_id] = c.source;
+    if (chips) {
+      chips.textContent = "";
+      const bySource = {};
+      if (lastHealth && Array.isArray(lastHealth.channels)) {
+        for (const c of lastHealth.channels) bySource[c.channel_id] = c.source;
+      }
+      for (const id of channelOrder) {
+        const chip = el("span", "chip");
+        chip.appendChild(el("span", "cid", id));
+        const src = parseSource(bySource[id]);
+        const tag = el("span", "src " + src.cls, src.tag);
+        chip.appendChild(tag);
+        chips.appendChild(chip);
+      }
     }
-    for (const id of channelOrder) {
-      const chip = el("span", "chip");
-      chip.appendChild(el("span", "cid", id));
-      const src = parseSource(bySource[id]);
-      const tag = el("span", "src " + src.cls, src.tag);
-      chip.appendChild(tag);
-      chips.appendChild(chip);
-    }
-    $("strip-mode").textContent = (lastHealth && lastHealth.mode) || (cfg && cfg.mode) || "—";
-    $("strip-time").textContent = (lastHealth && lastHealth.time_source) ? String(lastHealth.time_source).toUpperCase() : "—";
+    const stripMode = $("strip-mode");
+    if (stripMode) stripMode.textContent = (lastHealth && lastHealth.mode) || (cfg && cfg.mode) || "—";
+    const stripTime = $("strip-time");
+    if (stripTime) stripTime.textContent = (lastHealth && lastHealth.time_source) ? String(lastHealth.time_source).toUpperCase() : "—";
   }
 
   /* =====================================================================
@@ -444,6 +825,60 @@
     pushLine(aggState, line);
   }
 
+  // Derive the active alert set from the last health frame + state-frame flags. Each alert carries a
+  // stable `key` so an acknowledge sticks to a condition and auto-clears (re-arms) when it disappears.
+  function deriveAlerts() {
+    const out = [];
+    const h = lastHealth;
+    if (h && typeof h === "object") {
+      if (h.status === "stopped") out.push({ key: "engine-stopped", sev: "crit", text: "Engine stopped" });
+      else if (h.ok === false) out.push({ key: "engine-degraded", sev: "warn", text: "Engine degraded" });
+      const chans = Array.isArray(h.channels) ? h.channels : [];
+      for (const c of chans) {
+        const id = c.channel_id || c.id;
+        const enabled = c.enabled !== false;
+        if (enabled && c.alive === false) out.push({ key: "dead:" + id, sev: "crit", text: id + " channel dead" });
+        if (typeof c.build_errors === "number" && c.build_errors > 0) out.push({ key: "errs:" + id, sev: "warn", text: id + " build errors (" + c.build_errors + ")" });
+        const sinks = Array.isArray(c.sinks) ? c.sinks : [];
+        for (const sk of sinks) {
+          if (sk.down === true) out.push({ key: "sink:" + id + ":" + sk.name, sev: "warn", text: id + " sink down: " + sk.name });
+        }
+      }
+    }
+    if (alertFlags.depthLow) out.push({ key: "depth-low", sev: "crit", text: "Shallow water < " + ALERT_DEPTH_M.toFixed(1) + " m" });
+    return out;
+  }
+  // Render the alerts panel. Called from applyHealth (so rows keep refreshing when state frames stop)
+  // and from the depth sampler (so a shallow reading shows promptly). NOT from repaintConning.
+  function renderAlerts() {
+    const list = $("alerts-list");
+    if (!list) return;
+    const alerts = deriveAlerts();
+    const now = Date.now();
+    const activeKeys = new Set(alerts.map((a) => a.key));
+    // drop age + acknowledge state for cleared conditions so a reappearance re-alarms + resets the age
+    for (const k of Object.keys(alertFirstSeen)) if (!activeKeys.has(k)) delete alertFirstSeen[k];
+    for (const k of Array.from(ackedAlerts)) if (!activeKeys.has(k)) ackedAlerts.delete(k);
+    list.textContent = "";
+    if (!alerts.length) { list.appendChild(el("div", "hint", "No active alerts")); return; }
+    alerts.sort((a, b) => (a.sev === "crit" ? 0 : 1) - (b.sev === "crit" ? 0 : 1));
+    for (const a of alerts) {
+      if (!(a.key in alertFirstSeen)) alertFirstSeen[a.key] = now;
+      const acked = ackedAlerts.has(a.key);
+      const row = el("div", "alert-row" + (acked ? " acked" : "") + (alertsSilenced ? " silenced" : ""));
+      row.appendChild(el("span", "alert-dot " + (a.sev === "crit" ? "crit" : "warn")));
+      row.appendChild(el("span", "alert-text", a.text));
+      row.appendChild(el("span", "alert-age", fmtAge(Math.round((now - alertFirstSeen[a.key]) / 1000))));
+      const ack = el("button", "small alert-ack", acked ? "Ack'd" : "Ack");
+      ack.addEventListener("click", () => {
+        if (ackedAlerts.has(a.key)) ackedAlerts.delete(a.key); else ackedAlerts.add(a.key);
+        renderAlerts();
+      });
+      row.appendChild(ack);
+      list.appendChild(row);
+    }
+  }
+
   function applyHealth(h) {
     if (!h || typeof h !== "object") return;
     lastHealth = h;
@@ -488,6 +923,7 @@
     }
     updateSourceStrip();
     updateConfigChannelSources();
+    renderAlerts();
   }
 
   /* =====================================================================
@@ -509,6 +945,7 @@
     es.addEventListener("state", (ev) => {
       let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       lastState = d; lastStateTs = Date.now();
+      sampleDepth(d);
       if (activeTab === "conning") requestConningPaint();
       else if (activeTab === "config") renderRouteProgress(d.route || null);
     });

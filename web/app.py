@@ -43,6 +43,7 @@ from nmea_sim.engine import Engine, HealthReport, port_is_operational, targetabl
 from nmea_sim.serialport import SerialPort
 from nmea_sim.state import VesselState
 from nmea_sim.wind import apparent_wind
+from web.display_sim import simulate_display_instruments
 
 # --- constants --------------------------------------------------------------------
 
@@ -1617,6 +1618,10 @@ async def _state_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
                     route = manager.route_status()
                     if route is not None:
                         frame["route"] = route
+                    # Display-only instrument sim (propulsion/fuel/environment/autopilot):
+                    # SSE-only, never on the wire; rendered amber so it is not mistaken for
+                    # NMEA-backed truth. Grafted here, not in ``_state_to_dict``.
+                    frame["sim"] = simulate_display_instruments(snapshot)
                     broker.publish_state(frame)
         except Exception:
             logger.exception("state broadcast loop: skipping a tick after an error")
