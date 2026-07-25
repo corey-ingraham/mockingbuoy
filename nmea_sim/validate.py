@@ -254,15 +254,8 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
         port = spec.tcp_tap.port
         if not (_MIN_PORT <= port <= _MAX_PORT):
             errors.append(f"{where}: tcp_tap.port {port} out of range {_MIN_PORT}-{_MAX_PORT}")
-
-    # A tap-only channel carries no serial/backend writer, so its TCP tap is its ONLY sink.
-    # Without an enabled tcp_tap it would emit nowhere — reject it loudly rather than run a
-    # silent no-op channel.
-    if spec.tap_only and (spec.tcp_tap is None or not spec.tcp_tap.enabled):
-        errors.append(
-            f"{where}: tap_only is set but there is no enabled tcp_tap — a tap-only channel has "
-            "no serial writer, so an enabled tcp_tap is its only possible output"
-        )
+    # NOTE: the tap_only "must have some output" rule lives in _validate_globals, which can also
+    # see the top-level aggregate_tap that may satisfy it.
 
     # Baud budget: does the offered load fit the wire? Skipped on unbuildable framing (reported
     # above), which would otherwise raise a raw ValueError out of budget.evaluate.
@@ -633,6 +626,39 @@ def _validate_globals(config: EngineConfig, errors: list[str]) -> None:
 
     if not config.channels:
         errors.append("config has no channels")
+
+    # Tap ports each open a TCP server, so every ENABLED tap port — per-channel taps plus the
+    # consolidated aggregate tap — must be unique; two servers cannot bind the same port.
+    tap_ports: list[tuple[str, int]] = [
+        (f"channel {ch.id!r} tcp_tap", ch.tcp_tap.port)
+        for ch in config.channels
+        if ch.tcp_tap is not None and ch.tcp_tap.enabled
+    ]
+    agg_on = config.aggregate_tap is not None and config.aggregate_tap.enabled
+    if agg_on:
+        assert config.aggregate_tap is not None  # narrowed by agg_on; for the type checker
+        agg_port = config.aggregate_tap.port
+        if not (_MIN_PORT <= agg_port <= _MAX_PORT):
+            errors.append(f"aggregate_tap.port {agg_port} out of range {_MIN_PORT}-{_MAX_PORT}")
+        tap_ports.append(("aggregate_tap", agg_port))
+    seen_ports: dict[int, str] = {}
+    for name, port in tap_ports:
+        if port in seen_ports:
+            errors.append(
+                f"tap port {port} is claimed by both {seen_ports[port]} and {name} — each TCP "
+                "tap needs its own port"
+            )
+        else:
+            seen_ports[port] = name
+
+    # A tap-only channel has no serial/backend writer, so it needs SOME tap as its output: either
+    # its own enabled tcp_tap or the consolidated aggregate tap. With neither it emits nowhere.
+    for ch in config.channels:
+        if ch.tap_only and not agg_on and (ch.tcp_tap is None or not ch.tcp_tap.enabled):
+            errors.append(
+                f"channel {ch.id!r}: tap_only is set but there is no output — enable its tcp_tap "
+                "or the top-level aggregate_tap (a tap-only channel has no serial writer)"
+            )
 
     # Belt-and-braces mode guard: the dataclass __post_init__ already rejects a bad mode, but a
     # test (or any caller) can construct EngineConfig directly, so re-check here.

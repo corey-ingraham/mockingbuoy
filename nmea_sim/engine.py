@@ -1224,6 +1224,17 @@ class Engine:
         # emission begins. Duck-typed on a ``start()`` method.
         self._startables: list[object] = []
 
+        # Optional CONSOLIDATED tap: one shared TcpTap that EVERY channel fans out to, so a single
+        # client sees the full merged NMEA stream (the multiplexer feed). Built and registered ONCE;
+        # ``_build_sinks`` appends a per-channel _Sink wrapping this shared writer. TcpTap's
+        # write_line is lock-guarded, so concurrent fan-in from all worker threads is safe.
+        self._aggregate_tap: TcpTap | None = None
+        self._aggregate_tap_name = ""
+        if config.aggregate_tap is not None and config.aggregate_tap.enabled:
+            self._aggregate_tap = TcpTap(config.tcp_tap_host, config.aggregate_tap.port)
+            self._aggregate_tap_name = f"aggregate_tap:{config.aggregate_tap.port}"
+            self._register_startable(self._aggregate_tap)
+
         self._workers: list[_ChannelWorker] = []
         for spec in config.channels:
             if ais_only and spec.role == "ais" and spec.ais is not None:
@@ -1447,6 +1458,11 @@ class Engine:
             tap = TcpTap(self._config.tcp_tap_host, spec.tcp_tap.port)
             self._register_startable(tap)
             sinks.append(_Sink(f"tcp_tap:{spec.tcp_tap.port}", tap))
+        # The consolidated aggregate tap (if enabled) is a SHARED writer: every channel gets its
+        # own _Sink wrapper (per-channel down/error state) around the one TcpTap, already
+        # registered once at construction — do NOT re-register (it would start/close N times).
+        if self._aggregate_tap is not None:
+            sinks.append(_Sink(self._aggregate_tap_name, self._aggregate_tap))
         if sink_hook is not None:
             for i, writer in enumerate(sink_hook(spec)):
                 self._register_startable(writer)

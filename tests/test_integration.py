@@ -146,6 +146,7 @@ def _base_config(
     backend: str = "null",
     initial: dict[str, object] | None = None,
     movement: MovementSpec | None = None,
+    aggregate_tap: TcpTapSpec | None = None,
 ) -> EngineConfig:
     return EngineConfig(
         writer_backend=backend,
@@ -153,6 +154,7 @@ def _base_config(
         time_source=TimeSourceSpec(mode="system_utc"),
         initial_state_raw=dict(_INITIAL_STATE if initial is None else initial),
         channels=channels,
+        aggregate_tap=aggregate_tap,
     )
 
 
@@ -298,6 +300,52 @@ def test_tap_only_channel_publishes_over_tcp_without_a_serial_writer() -> None:
         finally:
             sock.close()
         assert lines and all(x.startswith("$II") for x in lines), lines
+    finally:
+        engine.stop()
+
+
+# --- 1b'') consolidated aggregate tap: every channel merged onto one port ---------
+
+
+def test_aggregate_tap_carries_every_channel_on_one_port() -> None:
+    # The multiplexer feed: GPS + heading + a tap-only instrument channel ALL fan into one shared
+    # TCP port, so a single client sees the full merged stream (GP + HE + II talkers together).
+    port = _free_tcp_port()
+    gps = ChannelSpec(
+        id="gps", role="gps", path="none", baud=38400, talker="GP", emit=[EmitSpec("RMC", 10.0)]
+    )
+    heading = ChannelSpec(
+        id="heading",
+        role="heading",
+        path="none",
+        baud=38400,
+        talker="HE",
+        emit=[EmitSpec("HDT", 10.0)],
+    )
+    instrument = ChannelSpec(
+        id="tcp-tap",
+        role="instrument",
+        path="",
+        baud=38400,
+        talker="II",
+        emit=[EmitSpec("VHW", 10.0)],
+        tap_only=True,
+    )
+    cfg = _base_config(
+        [gps, heading, instrument],
+        backend="null",
+        aggregate_tap=TcpTapSpec(enabled=True, port=port),
+    )
+    engine = Engine(cfg)
+    engine.start()
+    try:
+        sock = _connect(port)
+        try:
+            lines = _recv_lines(sock, 30, timeout=5.0)
+        finally:
+            sock.close()
+        talkers = {ln[1:3] for ln in lines if ln.startswith("$")}
+        assert {"GP", "HE", "II"} <= talkers, (talkers, lines[:10])
     finally:
         engine.stop()
 

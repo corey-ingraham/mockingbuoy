@@ -148,6 +148,25 @@ def test_tap_only_with_enabled_tcp_tap_is_valid() -> None:
     assert validate(_config([ch])) == []
 
 
+def test_tap_only_is_satisfied_by_the_aggregate_tap() -> None:
+    # A tap-only channel with no per-channel tap is valid when the aggregate tap is enabled —
+    # the consolidated feed is its output.
+    cfg = _config([_instrument(tap_only=True)], aggregate_tap=TcpTapSpec(enabled=True, port=10110))
+    assert validate(cfg) == []
+
+
+def test_aggregate_tap_port_out_of_range_is_rejected() -> None:
+    cfg = _config([_gps()], aggregate_tap=TcpTapSpec(enabled=True, port=99999))
+    assert any("aggregate_tap.port" in p for p in validate(cfg))
+
+
+def test_aggregate_tap_port_collision_with_channel_tap_is_rejected() -> None:
+    # The aggregate tap and a per-channel tap cannot bind the same port.
+    ch = _gps(tcp_tap=TcpTapSpec(enabled=True, port=10110))
+    cfg = _config([ch], aggregate_tap=TcpTapSpec(enabled=True, port=10110))
+    assert any("tap port 10110" in p for p in validate(cfg))
+
+
 def test_gps_requires_talker() -> None:
     problems = validate(_config([_gps(talker="")]))
     assert any("requires a 'talker'" in p for p in problems)

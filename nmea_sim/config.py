@@ -44,6 +44,7 @@ _ENGINE_CONFIG_KEYS = frozenset(
         "voltage_sense",
         "route",
         "replay",
+        "aggregate_tap",
     }
 )
 
@@ -560,6 +561,11 @@ class EngineConfig:
     # Optional record-and-replay source, active only under mode 'replay'. None (the default) means
     # "no replay". Its file-exists precondition is enforced eagerly in ``validate``.
     replay: ReplaySpec | None = None
+    # Optional CONSOLIDATED tap: one TCP port that every channel fans out to (in addition to its
+    # own writer/tap), so a single client gets the full merged NMEA stream — the classic
+    # multiplexer feed. None (the default) means "no aggregate tap". Binds on ``tcp_tap_host``;
+    # its port must not collide with any per-channel ``tcp_tap`` port (enforced in ``validate``).
+    aggregate_tap: TcpTapSpec | None = None
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
@@ -595,6 +601,9 @@ class EngineConfig:
             # Absent -> None (disabled), so configs written before these seams are unchanged.
             route=(RouteSpec.from_dict(rt) if (rt := data.get("route")) is not None else None),
             replay=(ReplaySpec.from_dict(rp) if (rp := data.get("replay")) is not None else None),
+            aggregate_tap=(
+                TcpTapSpec.from_dict(at) if (at := data.get("aggregate_tap")) is not None else None
+            ),
         )
 
     @classmethod
@@ -667,6 +676,8 @@ class EngineConfig:
             out["route"] = self.route.to_dict()
         if self.replay is not None:
             out["replay"] = self.replay.to_dict()
+        if self.aggregate_tap is not None:
+            out["aggregate_tap"] = self.aggregate_tap.to_dict()
         return out
 
     def save(self, path: str | Path) -> None:

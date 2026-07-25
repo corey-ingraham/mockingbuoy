@@ -70,6 +70,34 @@ def test_tap_only_channel_round_trips() -> None:
     assert "tap_only" not in normal.to_dict()
 
 
+def test_aggregate_tap_round_trips() -> None:
+    # The consolidated tap: one port every channel fans into (the multiplexer feed).
+    raw: dict[str, object] = {
+        "writer_backend": "serial",
+        "initial_state": {"lat": 0.0, "lon": 0.0},
+        "channels": [
+            {
+                "id": "gps",
+                "role": "gps",
+                "path": "/dev/x",
+                "baud": 4800,
+                "talker": "GP",
+                "emit": [{"sentence": "RMC", "rate_hz": 1.0}],
+            }
+        ],
+        "aggregate_tap": {"enabled": True, "port": 10110},
+    }
+    cfg = EngineConfig.from_dict(raw)
+    assert cfg.aggregate_tap is not None and cfg.aggregate_tap.port == 10110
+    restored = EngineConfig.from_dict(cfg.to_dict())
+    assert restored.aggregate_tap is not None and restored.aggregate_tap.enabled is True
+    # Absent -> None, and to_dict omits it (no noise for configs that never set it).
+    without = {k: v for k, v in raw.items() if k != "aggregate_tap"}
+    parsed = EngineConfig.from_dict(without)
+    assert parsed.aggregate_tap is None
+    assert "aggregate_tap" not in parsed.to_dict()
+
+
 def test_build_initial_state_fills_utc() -> None:
     cfg = EngineConfig.load(CONFIG_PATH)
     utc = datetime(2024, 1, 1, tzinfo=UTC)
