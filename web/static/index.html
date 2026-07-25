@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=12">
+<link rel="stylesheet" href="/static/app.css?v=13">
 </head>
 <body>
 
@@ -91,27 +91,17 @@
           <div class="ins-val-row"><span id="pri-cog" class="ins-bignum v-live">---</span><span class="ins-unit">°</span></div>
         </div>
       </div>
-      <!-- COG tape: full rotating ring behind a fixed window (north-wrap free) -->
-      <svg id="cog-arc" viewBox="0 0 400 150" aria-label="course over ground">
-        <rect x="0.5" y="0.5" width="399" height="149" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
-        <text x="10" y="16" fill="#8792a0" font-size="10" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">COG</text>
-        <!-- prominent live heading, centred over the tape -->
-        <text id="cog-big" x="200" y="46" fill="#f2f6fa" font-size="48" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
-        <!-- moving scale ring (smaller side numbers) below the hero readout -->
-        <g id="cog-tape"></g>
-        <!-- fixed centre caret + accent line -->
-        <polygon points="200,74 192,60 208,60" fill="#00e07a"/>
-        <line x1="200" y1="60" x2="200" y2="146" stroke="#00e07a" stroke-width="1.4" stroke-opacity="0.4"/>
+      <!-- heading tape: POC-style linear scale, big centred heading, scrolls as she turns -->
+      <svg id="heading-tape" viewBox="0 0 460 140" aria-label="heading">
+        <rect x="0.5" y="0.5" width="459" height="139" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
+        <text x="12" y="20" fill="#8792a0" font-size="11" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">HDG</text>
+        <text id="heading-big" x="230" y="54" fill="#f2f6fa" font-size="54" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <clipPath id="htClip"><rect x="6" y="72" width="448" height="62"/></clipPath>
+        <g clip-path="url(#htClip)"><g id="htape-scroll"></g></g>
+        <polygon points="230,92 221,76 239,76" fill="#00e07a"/>
+        <line x1="230" y1="76" x2="230" y2="136" stroke="#00e07a" stroke-width="1.6" stroke-opacity="0.4"/>
       </svg>
-      <div class="ins-hdr" style="margin-top:6px;"><span>Rate of Turn</span><span id="rot-src" class="src src-off">OFF</span></div>
-      <svg id="rot" viewBox="0 0 200 90" aria-label="rate of turn">
-        <rect x="8" y="34" width="184" height="20" rx="4" fill="url(#faceGrad)" stroke="#1c2530"/>
-        <line x1="100" y1="28" x2="100" y2="60" stroke="#dde4ea" stroke-width="2"/>
-        <text x="20" y="78" fill="#7d8895" font-size="9" font-family="monospace">PORT</text>
-        <text x="150" y="78" fill="#7d8895" font-size="9" font-family="monospace">STBD</text>
-        <rect id="rot-bar" x="100" y="36" width="0" height="16" fill="#ffb02e"/>
-      </svg>
-      <div class="g-read"><span id="rot-val" class="v-live">--</span> <span class="g-sub">°/min</span></div>
+      <div class="g-read" style="text-align:center;">Rate of turn <span id="rot-val" class="v-live">--</span> <span class="g-sub">°/min</span></div>
     </div>
 
     <!-- PROPULSION: twin vertical engine bars (RPM + LOAD), amber = display-only (s.sim) -->
@@ -221,8 +211,9 @@
         <g id="ship-abow" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
         <g id="ship-astern" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
         <!-- bow-walk readout box -->
-        <rect x="110" y="96" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
-        <text id="ship-vbow" x="150" y="118" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <rect x="106" y="96" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vbow" x="146" y="118" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <polygon points="190,106 200,112 190,118" fill="#cfd6dd"/>
         <!-- centre fuel table (orange = display-only sim) -->
         <rect x="72" y="156" width="156" height="74" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
         <line x1="124" y1="156" x2="124" y2="230" stroke="#1c2530"/>
@@ -234,18 +225,19 @@
         <text id="fuel-rate" x="150" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
         <text id="fuel-pernm" x="202" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
         <!-- stern-walk readout box -->
-        <rect x="110" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
-        <text id="ship-vstern" x="150" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <rect x="106" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vstern" x="146" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <polygon points="190,268 200,274 190,280" fill="#cfd6dd"/>
         <circle cx="150" cy="195" r="3.5" fill="#f2f6fa"/>
         <!-- rudder indicator at the stern: arc scale + deflecting blade + number -->
         <path d="M110,410 Q150,432 190,410" fill="none" stroke="#8792a0" stroke-width="2"/>
         <line x1="150" y1="404" x2="150" y2="416" stroke="#8792a0" stroke-width="1.5"/>
         <line x1="120" y1="411" x2="126" y2="419" stroke="#8792a0" stroke-width="1.2"/>
         <line x1="180" y1="411" x2="174" y2="419" stroke="#8792a0" stroke-width="1.2"/>
-        <g id="ship-rud-blade" transform="rotate(0 150 374)">
-          <polygon points="150,374 145,408 155,408" fill="#f2f6fa"/>
+        <g id="ship-rud-blade" transform="rotate(0 150 372)">
+          <path d="M143,372 L157,372 L152,406 Q150,414 148,406 Z" fill="#f2f6fa"/>
         </g>
-        <circle cx="150" cy="374" r="3" fill="#cdd5dc"/>
+        <circle cx="150" cy="372" r="4" fill="#cdd5dc"/>
         <text x="150" y="446" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">Rudder <tspan id="ship-rud-val">--</tspan>°</text>
       </svg>
       </div>
@@ -300,44 +292,46 @@
     <!-- HELM: rudder-angle fan + twin marine inclinometers -->
     <div class="ins-panel p-helm">
       <div class="ins-hdr"><span>Helm</span></div>
-      <!-- rudder-angle fan (green = NMEA-backed); red hard-over zones beyond +/-30 -->
-      <svg id="rudder-arc" viewBox="0 0 200 120" aria-label="rudder angle">
-        <g id="rud-scale"></g>
-        <g id="rud-needle">
-          <line x1="100" y1="18" x2="100" y2="100" stroke="#22dd77" stroke-width="3"/>
-          <polygon points="100,108 94,94 106,94" fill="#22dd77"/>
-        </g>
-        <circle cx="100" cy="18" r="4" fill="#dde4ea"/>
-        <text x="16" y="30" fill="#ff4d4d" font-size="10" font-family="monospace">PORT</text>
-        <text x="184" y="30" fill="#22dd77" font-size="10" font-family="monospace" text-anchor="end">STBD</text>
-      </svg>
-      <div class="g-sub" style="text-align:center;">Rudder <span id="rud-val" class="v-live">--</span>°</div>
-      <!-- inclinometers: rotating ship glyphs (side-view pitch, stern-view roll) -->
+      <!-- inclinometers: glossy dials, grey hull glyph over an orange heel/horizon fill -->
       <div class="incl-dials">
         <div class="incl-dial">
-          <svg id="incl-pitch-dial" viewBox="0 0 160 120" aria-label="pitch inclinometer">
-            <g id="incl-pitch-scale"></g>
-            <g id="incl-pitch-glyph">
-              <line x1="34" y1="66" x2="126" y2="66" stroke="#22dd77" stroke-width="1" stroke-opacity="0.4"/>
-              <path d="M44,60 L112,60 L124,66 L112,72 L44,72 Z" fill="#182230" stroke="#22dd77" stroke-width="1.5"/>
+          <svg id="incl-pitch-dial" viewBox="0 0 160 132" aria-label="pitch inclinometer">
+            <clipPath id="ipClip"><circle cx="80" cy="66" r="52"/></clipPath>
+            <circle cx="80" cy="66" r="57" fill="none" stroke="#05080c" stroke-width="4"/>
+            <circle cx="80" cy="66" r="54" fill="none" stroke="url(#bezelGrad)" stroke-width="3"/>
+            <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
+            <g clip-path="url(#ipClip)">
+              <g id="incl-pitch-scale"></g>
+              <g id="incl-pitch-glyph">
+                <rect x="8" y="66" width="144" height="72" fill="#ff9500" fill-opacity="0.82"/>
+                <path d="M46,60 L112,60 L126,66 L112,72 L46,72 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
+              </g>
+              <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
+              <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
             </g>
-            <line x1="80" y1="28" x2="80" y2="98" stroke="#ff4d4d" stroke-width="1" stroke-opacity="0.5"/>
-            <text x="14" y="92" fill="#7d8895" font-size="9" font-family="monospace">STN</text>
-            <text x="146" y="92" fill="#7d8895" font-size="9" font-family="monospace" text-anchor="end">BOW</text>
+            <text x="20" y="106" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">STN</text>
+            <text x="140" y="106" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="end">BOW</text>
           </svg>
           <div class="g-sub">Pitch <span id="incl-pitch" class="v-live">--</span>°</div>
         </div>
         <div class="incl-dial">
-          <svg id="incl-roll-dial" viewBox="0 0 160 120" aria-label="roll inclinometer">
-            <g id="incl-roll-scale"></g>
-            <g id="incl-roll-glyph">
-              <line x1="40" y1="66" x2="120" y2="66" stroke="#22dd77" stroke-width="1" stroke-opacity="0.4"/>
-              <path d="M58,60 L102,60 L96,74 Q80,80 64,74 Z" fill="#182230" stroke="#22dd77" stroke-width="1.5"/>
-              <line x1="80" y1="60" x2="80" y2="42" stroke="#22dd77" stroke-width="1.5"/>
+          <svg id="incl-roll-dial" viewBox="0 0 160 132" aria-label="roll inclinometer">
+            <clipPath id="irClip"><circle cx="80" cy="66" r="52"/></clipPath>
+            <circle cx="80" cy="66" r="57" fill="none" stroke="#05080c" stroke-width="4"/>
+            <circle cx="80" cy="66" r="54" fill="none" stroke="url(#bezelGrad)" stroke-width="3"/>
+            <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
+            <g clip-path="url(#irClip)">
+              <g id="incl-roll-scale"></g>
+              <g id="incl-roll-glyph">
+                <rect x="8" y="66" width="144" height="72" fill="#ff9500" fill-opacity="0.82"/>
+                <path d="M58,58 L102,58 L96,74 Q80,80 64,74 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
+                <line x1="80" y1="58" x2="80" y2="40" stroke="#c3ccd4" stroke-width="1.5"/>
+              </g>
+              <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
+              <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
             </g>
-            <line x1="80" y1="28" x2="80" y2="98" stroke="#ff4d4d" stroke-width="1" stroke-opacity="0.5"/>
-            <text x="14" y="92" fill="#7d8895" font-size="9" font-family="monospace">PT</text>
-            <text x="146" y="92" fill="#7d8895" font-size="9" font-family="monospace" text-anchor="end">SB</text>
+            <text x="20" y="106" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">PT</text>
+            <text x="140" y="106" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="end">SB</text>
           </svg>
           <div class="g-sub">Roll <span id="incl-roll" class="v-live">--</span>°</div>
         </div>
@@ -616,6 +610,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>

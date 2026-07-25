@@ -500,7 +500,9 @@
   #rudder-arc { width: 100%; height: auto; max-width: 240px; max-height: 15vh; margin: 2px auto; display: block; }
   .incl-dials { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
   .incl-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 118px; max-width: 168px; }
-  .incl-dial svg { width: 100%; height: auto; max-width: 160px; max-height: 13vh; margin: 2px auto; }
+  .incl-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 22vh; margin: 2px auto; }
+  .p-helm { justify-content: center; }
+  .incl-dial { max-width: 190px; }
   .incl-dial .g-sub { text-align: center; margin-top: 2px; }
 
   /* propulsion panel — twin vertical engine bars (amber = display-only) */

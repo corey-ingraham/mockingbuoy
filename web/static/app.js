@@ -244,6 +244,35 @@
     const n = $("depth-alert");
     if (n) n.textContent = ALERT_DEPTH_M.toFixed(1);
   })();
+  // Heading tape: a linear 0-360 scale (built -40..400 so the ±window never runs off the ends),
+  // 6 px/deg, majors every 10deg with a 3-digit number. repaint translates #htape-scroll so the
+  // current heading sits under the fixed centre caret; the big #heading-big shows the exact value.
+  const HTAPE_PX = 6;
+  (function buildHeadingTape() {
+    const g = $("htape-scroll");
+    if (!g) return;
+    const NS = "http://www.w3.org/2000/svg";
+    for (let deg = -40; deg <= 400; deg += 2) {
+      const x = (deg * HTAPE_PX).toFixed(1);
+      const major = deg % 10 === 0;
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", x); ln.setAttribute("x2", x);
+      ln.setAttribute("y1", "76"); ln.setAttribute("y2", major ? "94" : "86");
+      ln.setAttribute("stroke", major ? "#dfe6ec" : "#6b7580");
+      ln.setAttribute("stroke-width", major ? "2" : "1.2");
+      g.appendChild(ln);
+      if (major) {
+        const v = ((Math.round(deg) % 360) + 360) % 360;
+        const t = document.createElementNS(NS, "text");
+        t.setAttribute("x", x); t.setAttribute("y", "120");
+        t.setAttribute("fill", "#c3ccd4"); t.setAttribute("font-size", "19");
+        t.setAttribute("font-family", "Segoe UI, system-ui, sans-serif");
+        t.setAttribute("font-weight", "700"); t.setAttribute("text-anchor", "middle");
+        t.textContent = (v < 10 ? "00" : v < 100 ? "0" : "") + v;
+        g.appendChild(t);
+      }
+    }
+  })();
   // COG tape: a full 0-360 tick ring (5deg minor / 30deg major, 3-digit labels) built once about
   // the off-screen centre (200,460); repaint rotates it by -cog so no north-wrap seam appears.
   (function buildCogTape() {
@@ -446,6 +475,11 @@
     // compass
     const hdg = Number(s.heading_true_deg);
     if (Number.isFinite(hdg)) {
+      // heading tape: scroll the scale so the current heading sits under the centre caret
+      const hdgScroll = $("htape-scroll");
+      if (hdgScroll) hdgScroll.setAttribute("transform", "translate(" + (230 - hdg * HTAPE_PX).toFixed(1) + " 0)");
+      const headingBig = $("heading-big");
+      if (headingBig) { const hv = ((Math.round(hdg) % 360) + 360) % 360; headingBig.textContent = (hv < 10 ? "00" : hv < 100 ? "0" : "") + hv; }
       const compassCard = $("compass-card");
       if (compassCard) compassCard.setAttribute("transform", "rotate(" + (-hdg) + " 100 100)");
       // counter-rotate each numeral by +hdg about its own anchor so it rides the card to its
@@ -525,7 +559,7 @@
     setTxt("ship-vfwd", num(vFwd, 1));
     // rudder blade at the ship stern (graphic mirrors the helm gauge; negate so +stbd swings right)
     const shipRudBlade = $("ship-rud-blade");
-    if (shipRudBlade && Number.isFinite(rud)) shipRudBlade.setAttribute("transform", "rotate(" + (-rud).toFixed(1) + " 150 374)");
+    if (shipRudBlade && Number.isFinite(rud)) shipRudBlade.setAttribute("transform", "rotate(" + (-rud).toFixed(1) + " 150 372)");
     setTxt("ship-rud-val", num(s.rudder_angle_deg, 1));
 
     // fuel (amber = display-only, from s.sim)
