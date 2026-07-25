@@ -523,9 +523,11 @@
   .incl-dial .g-sub { text-align: center; margin-top: 2px; }
 
   /* propulsion panel — twin vertical engine bars, per-engine header (Port/Stbd + RPM/Load) */
-  .prop-gauges { display: flex; gap: 16px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
-  .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 150px; min-width: 130px; max-width: 200px; }
-  .prop-col svg { width: 100%; height: auto; max-width: 180px; max-height: 38vh; margin: 4px auto 0; display: block; }
+  .prop-gauges { display: flex; gap: 10px; justify-content: center; align-items: flex-start; }
+  /* flex:1 1 0 + min-width:0 → the two engines always share the panel width evenly and never
+     overflow (no clipped bar), while max-width lets them grow when there's room */
+  .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 0; min-width: 0; max-width: 180px; }
+  .prop-col svg { width: 100%; height: auto; max-width: 180px; max-height: 44vh; margin: 4px auto 0; display: block; }
   .prop-title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text); text-align: center; margin-bottom: 2px; }
   .prop-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 14px; width: 100%; }
   .prop-stat { display: flex; flex-direction: column; align-items: center; }

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=22">
+<link rel="stylesheet" href="/static/app.css?v=23">
 </head>
 <body>
 
@@ -218,7 +218,7 @@
         </div>
       </div>
       <svg id="depth-graph" viewBox="0 0 320 180" aria-label="depth history">
-        <rect x="34" y="8" width="278" height="152" fill="url(#faceGrad)" stroke="#1c2530"/>
+        <rect x="34" y="10" width="252" height="152" fill="url(#faceGrad)" stroke="#1c2530"/>
         <g id="depth-dyn"></g>
       </svg>
     </div>
@@ -340,8 +340,8 @@
               <!-- level sea (static); the ship glyph heels over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-roll-glyph">
-                <!-- USS destroyer head-on (tall but narrower): flared hull, stepped bridge + tall mast -->
-                <path d="M58,62 L102,62 L96,77 Q80,84 64,77 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <!-- USS destroyer head-on (tall, narrower, V keel): flared hull, stepped bridge + tall mast -->
+                <path d="M58,62 L102,62 L94,74 L80,87 L66,74 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <path d="M66,62 L66,54 L72,54 L74,46 L86,46 L88,54 L94,54 L94,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <line x1="80" y1="46" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.5"/>
               </g>
@@ -628,6 +628,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=22"></script>
+<script src="/static/app.js?v=23"></script>
 </body>
 </html>

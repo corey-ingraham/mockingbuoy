@@ -240,14 +240,16 @@
   (function buildWindTicks() {
     const g = $("wind-ticks");
     if (!g) return;
-    buildDialTicks(g, 100, 100, 94, 84, 84, 30, 0, null);
+    // finer graduations (every 10deg) + 0/90/180/270 relative-bearing numbers on the majors
+    const nums = { 0: "0", 90: "90", 180: "180", 270: "270" };
+    buildDialTicks(g, 100, 100, 94, 88, 80, 10, 90, { r: 66, fn: (deg) => nums[deg] || "" });
   })();
-  // wind TRUE dial: north-up card with cardinal labels
+  // wind TRUE dial: north-up card with cardinal labels + finer graduations
   (function buildWtdTicks() {
     const g = $("wtd-ticks");
     if (!g) return;
     const cards = { 0: "N", 90: "E", 180: "S", 270: "W" };
-    buildDialTicks(g, 80, 80, 74, 68, 60, 30, 90, { r: 50, fn: (deg) => cards[deg] || "" });
+    buildDialTicks(g, 80, 80, 74, 70, 60, 10, 90, { r: 50, fn: (deg) => cards[deg] || "" });
   })();
   // seed the depth-alert display constant (must match ALERT_DEPTH_M)
   (function setDepthAlert() {
@@ -344,7 +346,7 @@
     arc.setAttribute("stroke", "#8792a0"); arc.setAttribute("stroke-width", "1.6");
     g.appendChild(arc);
     for (let a = -SPAN; a <= SPAN + 0.001; a += 5) {
-      const major = a % 20 === 0, hard = Math.abs(a) >= 35;
+      const major = a % 15 === 0, hard = Math.abs(a) >= 35;
       const p1 = pt(a, R), p2 = pt(a, R + (major ? 8 : 4));
       const ln = document.createElementNS(NS, "line");
       ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
@@ -352,6 +354,16 @@
       ln.setAttribute("stroke", hard ? "#ff4d4d" : major ? "#c3ccd4" : "#6b7580");
       ln.setAttribute("stroke-width", major ? "1.8" : "1");
       g.appendChild(ln);
+      // small degree numbers on the big (0/15/30) ticks
+      if (major && Math.abs(a) <= 30) {
+        const lp = pt(a, R + 16);
+        const t = document.createElementNS(NS, "text");
+        t.setAttribute("x", lp[0].toFixed(1)); t.setAttribute("y", (lp[1] + 3).toFixed(1));
+        t.setAttribute("fill", "#8792a0"); t.setAttribute("font-size", "11");
+        t.setAttribute("font-family", "Segoe UI, system-ui, sans-serif"); t.setAttribute("text-anchor", "middle");
+        t.textContent = String(Math.abs(a));
+        g.appendChild(t);
+      }
     }
   })();
   // inclinometer protractor scales (-30..30, 10deg ticks) drawn once above each glyph centre (80,66).
@@ -475,7 +487,9 @@
       t.textContent = txt; svg.appendChild(t);
     };
     mklabel(x0, "-" + halfRange + unit, "start");
+    mklabel(cx - 50, "-" + (halfRange / 2) + unit, "middle");
     mklabel(cx, "0", "middle");
+    mklabel(cx + 50, "+" + (halfRange / 2) + unit, "middle");
     mklabel(x1, "+" + halfRange + unit, "end");
     const mk = document.createElementNS(NS, "polygon");
     mk.setAttribute("id", id + "-mark");
@@ -703,7 +717,7 @@
     if (!dyn) return;
     const NS = "http://www.w3.org/2000/svg";
     while (dyn.firstChild) dyn.removeChild(dyn.firstChild);
-    const x0 = 34, y0 = 8, x1 = 312, y1 = 160, w = x1 - x0, h = y1 - y0;
+    const x0 = 34, y0 = 10, x1 = 286, y1 = 162, w = x1 - x0, h = y1 - y0;
     const n = depthHistory.length;
     const mk = (tag) => document.createElementNS(NS, tag);
     const label = (x, y, txt, anchor) => {
@@ -731,8 +745,14 @@
       gl.setAttribute("y1", yy.toFixed(1)); gl.setAttribute("y2", yy.toFixed(1));
       gl.setAttribute("stroke", "#1c2530"); gl.setAttribute("stroke-width", "0.6");
       dyn.appendChild(gl);
-      label(x0 - 3, yy + 3, (mn + (i / GRID) * span).toFixed(0));
+      // depth labels on the RIGHT of the plot (JPG style), 1 decimal so they read distinctly
+      label(x1 + 5, yy + 3, (mn + (i / GRID) * span).toFixed(1), "start");
     }
+    // faint ship-silhouette watermark, top-right corner (JPG style)
+    const wm = mk("path");
+    wm.setAttribute("d", "M" + (x1 - 34) + "," + (y0 + 9) + " L" + (x1 - 14) + "," + (y0 + 9) + " L" + (x1 - 6) + "," + (y0 + 13) + " L" + (x1 - 14) + "," + (y0 + 17) + " L" + (x1 - 34) + "," + (y0 + 17) + " Z M" + (x1 - 30) + "," + (y0 + 9) + " L" + (x1 - 30) + "," + (y0 + 4) + " L" + (x1 - 22) + "," + (y0 + 4) + " L" + (x1 - 22) + "," + (y0 + 9) + " Z");
+    wm.setAttribute("fill", "#41505f"); wm.setAttribute("opacity", "0.6");
+    dyn.appendChild(wm);
     let pts = "";
     for (let j = 0; j < n; j++) pts += (j ? " " : "") + xOf(j).toFixed(1) + "," + yOf(depthHistory[j]).toFixed(1);
     // seabed fill below the trace
@@ -759,8 +779,10 @@
     shipDot.setAttribute("cx", xOf(n - 1).toFixed(1)); shipDot.setAttribute("cy", yOf(depthHistory[n - 1]).toFixed(1));
     shipDot.setAttribute("r", "3"); shipDot.setAttribute("fill", "#dde4ea");
     dyn.appendChild(shipDot);
-    // time-span labels (depth grid labels drawn above)
+    // time-span labels across the x axis (3-minute window)
     label(x0, y1 + 14, "-3m", "start");
+    label(x0 + w / 3, y1 + 14, "-2m", "middle");
+    label(x0 + (2 * w) / 3, y1 + 14, "-1m", "middle");
     label(x1, y1 + 14, "now", "end");
   }
 
