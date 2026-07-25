@@ -54,6 +54,7 @@
   const panes = {};                 // channel_id -> stream pane state
   let channelMeta = {};             // channel_id -> {role, talker}
   let channelOrder = [];            // channel_id[]
+  let aggState = null;              // consolidated (aggregate-tap) pane state, or null
   let cfg = null;                   // last /api/config
   let lastHealth = null;            // last health event
   let lastState = null;             // last state event
@@ -375,8 +376,54 @@
     $("panes").appendChild(pane);
   }
 
-  function appendLine(chId, line) {
-    const p = panes[chId];
+  // The consolidated pane: a live mirror of the aggregate TCP tap — every channel's sentences
+  // merged into one feed, exactly what a client connecting to the aggregate port would receive.
+  function buildAggregatePane(port, tcpHost) {
+    const pane = el("div", "pane");
+
+    const hdr = el("div", "pane-hdr");
+    const roleEl = el("div", "role");
+    roleEl.appendChild(el("span", null, "Consolidated"));
+    hdr.appendChild(roleEl);
+    hdr.appendChild(el("span", "badge tcp-tap", "all channels"));
+    pane.appendChild(hdr);
+
+    const conn = (tcpHost || "127.0.0.1") + ":" + port;
+    const tcp = el("div", "tcp");
+    tcp.appendChild(el("span", "label", "TCP tap"));
+    tcp.appendChild(el("code", null, conn));
+    const btn = el("button", "small", "Copy");
+    btn.addEventListener("click", () => copyText(conn));
+    tcp.appendChild(btn);
+    tcp.appendChild(el("span", "note", "(raw TCP, not a URL)"));
+    pane.appendChild(tcp);
+
+    const feed = el("div", "feed");
+    pane.appendChild(feed);
+
+    const ctl = el("div", "pane-ctl");
+    const frozenTag = el("span", "frozen-tag", "");
+    const btnFreeze = el("button", "small", "Freeze view");
+    const btnClear = el("button", "small", "Clear");
+    ctl.appendChild(btnFreeze);
+    ctl.appendChild(btnClear);
+    ctl.appendChild(frozenTag);
+    pane.appendChild(ctl);
+
+    const state = { pane, feed, frozen: false, count: 0 };
+    btnFreeze.addEventListener("click", () => {
+      state.frozen = !state.frozen;
+      btnFreeze.textContent = state.frozen ? "Resume view" : "Freeze view";
+      feed.classList.toggle("frozen", state.frozen);
+      frozenTag.textContent = state.frozen ? "VIEW FROZEN (log paused)" : "";
+    });
+    btnClear.addEventListener("click", () => { feed.textContent = ""; state.count = 0; });
+
+    aggState = state;
+    $("panes").appendChild(pane);
+  }
+
+  function pushLine(p, line) {
     if (!p || p.frozen) return;
     const div = el("div", "line");
     div.appendChild(document.createTextNode(line));
@@ -388,6 +435,13 @@
     while (p.count > MAX_LINES && p.feed.firstChild) { p.feed.removeChild(p.feed.firstChild); p.count--; }
     const nearBottom = p.feed.scrollHeight - p.feed.scrollTop - p.feed.clientHeight < 40;
     if (nearBottom) p.feed.scrollTop = p.feed.scrollHeight;
+  }
+
+  function appendLine(chId, line) {
+    // Route to the channel's own pane (if it has one) AND the consolidated pane, which mirrors
+    // the aggregate TCP tap by showing every channel's sentences merged, live.
+    pushLine(panes[chId], line);
+    pushLine(aggState, line);
   }
 
   function applyHealth(h) {
@@ -1120,11 +1174,16 @@
     }
     const tcpHost = cfg.tcp_tap_host || "127.0.0.1";
     const channels = Array.isArray(cfg.channels) ? cfg.channels : [];
+    const aggOn = !!(cfg.aggregate_tap && cfg.aggregate_tap.enabled);
     channelOrder = channels.map((c) => c.id);
     for (const ch of channels) {
       channelMeta[ch.id] = { role: String(ch.role || "").toLowerCase(), talker: ch.talker || "" };
+      // A tap-only channel (no serial adapter) has no feed of its own to watch — its sentences
+      // appear in the consolidated pane instead, so don't give it a dedicated pane.
+      if (ch.tap_only && aggOn) continue;
       buildPane(ch, tcpHost);
     }
+    if (aggOn) buildAggregatePane(cfg.aggregate_tap.port, tcpHost);
     buildConfigForms();
     buildConfigChannels();
     buildConfigSentences();
