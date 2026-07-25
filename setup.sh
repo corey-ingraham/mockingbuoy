@@ -231,13 +231,26 @@ log "installing udev rules for stable /dev/nmea-* symlinks ..."
 # and the six LISTEN-ONLY RX input/diagnostic slots (nmea-in-1 .. nmea-in-6) that feed
 # Auto-mode inputs and the Maintenance multi-port view. Installing the file installs all
 # of them; the same --reload/--trigger applies to every slot.
-install -m 0644 "${APP_DIR}/ops/99-mockingbuoy.rules" /etc/udev/rules.d/99-mockingbuoy.rules
+#
+# PRESERVE OPERATOR CUSTOMIZATION: the shipped file carries <VID>/<PID>/<*_SERIAL>
+# placeholders that the operator MUST replace with real per-host serials for the symlinks to
+# appear. Those serials are host-local and never live in the repo — so a re-converge must NOT
+# clobber an edited rule with the pristine template (that silently deletes every /dev/nmea-*
+# symlink on the next udev trigger, exactly as a first field deploy hit). Install the template
+# only when the destination is absent or still byte-identical to it; otherwise leave the
+# operator's edited rule untouched (mirrors how the web password is preserved on re-run).
+DEST_UDEV_RULE="/etc/udev/rules.d/99-mockingbuoy.rules"
+if [ -f "${DEST_UDEV_RULE}" ] && ! cmp -s "${APP_DIR}/ops/99-mockingbuoy.rules" "${DEST_UDEV_RULE}"; then
+    log "udev rule already customized (differs from template) — preserving it, not overwriting"
+else
+    install -m 0644 "${APP_DIR}/ops/99-mockingbuoy.rules" "${DEST_UDEV_RULE}"
+    log "NOTE: edit ${DEST_UDEV_RULE} and replace the ATTRS{serial}/<VID>/<PID>"
+    log "      placeholders with YOUR adapters' serials — for the TX outputs"
+    log "      (nmea-gps/heading/ais) AND for whichever RX input slots you use"
+    log "      (nmea-in-1 .. nmea-in-6); then: udevadm control --reload && udevadm trigger"
+fi
 udevadm control --reload >/dev/null 2>&1 || warn "udevadm control --reload failed (no udev running?)"
 udevadm trigger >/dev/null 2>&1 || warn "udevadm trigger failed"
-log "NOTE: edit /etc/udev/rules.d/99-mockingbuoy.rules and replace the ATTRS{serial}"
-log "      placeholders with YOUR adapters' serials — for the TX outputs"
-log "      (nmea-gps/heading/ais) AND for whichever RX input slots you use"
-log "      (nmea-in-1 .. nmea-in-6); then: udevadm control --reload && udevadm trigger"
 
 # brltty grabs FTDI ttys out from under the service — mask + purge idempotently.
 log "neutralizing brltty (it steals FTDI serial adapters) ..."
