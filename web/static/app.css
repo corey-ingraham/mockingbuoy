@@ -368,9 +368,10 @@
   .conn-col-left .p-depth { flex: 1 1 auto; }
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
-  .coord-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; }
+  /* label + value grouped and right-justified (label sits just left of its value) */
+  .coord-row { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; width: 100%; }
   .coord-label { flex: none; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
-  .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
+  .coord-val { flex: 0 0 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
   .p-ship { grid-area: ship; }
   /* right column: propulsion, attitude (grows to fill the space under propulsion), autopilot, alerts */
   .conn-col-right { grid-area: rightcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
@@ -454,7 +455,7 @@
   .pri-row { display: flex; flex-wrap: wrap; gap: 8px 18px; }
   /* SOG/COG/STW values keep the standard bignum weight/size; only the small
      titles are tuned to match the in-SVG "HDG" caption format (11px/700/muted) */
-  .p-primary .ins-bignum { font-size: clamp(32px, 5vh, 60px); }
+  .p-primary .ins-bignum { font-size: clamp(20px, 2.9vh, 34px); }
   .p-primary .ins-label { font-size: 11px; font-weight: 800; }
   /* rate of turn: label over a larger bold value (JPG style) */
   .rot-block { text-align: center; margin: 2px 0; }
@@ -464,7 +465,7 @@
   /* value encoding (JPG-style): live values render bold white; sim/display-only values
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
-  .v-sim { color: var(--warn); }
+  .v-sim { color: var(--text); }
   /* Live/Sim encoding legend — folded into the status strip (no overlap) */
   .ins-legend {
     display: inline-flex;

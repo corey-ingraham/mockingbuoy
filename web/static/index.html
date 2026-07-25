@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=29">
+<link rel="stylesheet" href="/static/app.css?v=30">
 </head>
 <body>
 
@@ -46,8 +46,11 @@
     <linearGradient id="hullGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#9aa4b0" stop-opacity="0.24"/><stop offset="100%" stop-color="#5a6470" stop-opacity="0.10"/>
     </linearGradient>
-    <linearGradient id="engFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2aff8f"/><stop offset="100%" stop-color="#00a352"/>
+    <linearGradient id="engFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#037a3c"/><stop offset="18%" stop-color="#22e07d"/><stop offset="45%" stop-color="#63ffb2"/><stop offset="62%" stop-color="#18d474"/><stop offset="100%" stop-color="#026634"/>
+    </linearGradient>
+    <linearGradient id="seaGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a92e6"/><stop offset="45%" stop-color="#1f6feb"/><stop offset="100%" stop-color="#0c3a7a"/>
     </linearGradient>
     <filter id="needleShadow" x="-40%" y="-40%" width="180%" height="180%">
       <feDropShadow dx="1.5" dy="2.5" stdDeviation="1.5" flood-color="#000" flood-opacity="0.55"/>
@@ -207,9 +210,9 @@
       <!-- schematic (bow-up, heading-up) with vectors derived from real emitted fields (green) -->
       <div class="ship-fill">
       <svg id="ship-schem" viewBox="0 0 300 452" aria-label="ship schematic with derived vectors, fuel, and rudder">
-        <text x="150" y="16" fill="#8792a0" font-size="11" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">BOW</text>
-        <!-- hull (bow up), glossy gradient -->
-        <path d="M150,10 C198,58 212,156 206,252 L206,320 C206,352 182,368 150,368 C118,368 92,352 92,320 L92,252 C86,156 100,58 150,10 Z" fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
+        <text x="150" y="10" fill="#8792a0" font-size="10" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">BOW</text>
+        <!-- hull (bow up): raked bow, then straight sides back from the widest beam to the stern taper -->
+        <path d="M150,16 C186,48 210,98 210,158 L210,318 C210,350 183,372 150,372 C117,372 90,350 90,318 L90,158 C90,98 114,48 150,16 Z" fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
         <!-- ground-track / set-drift vectors (green, derived) -->
         <g id="ship-vec-cur" opacity="0">
           <line x1="150" y1="195" x2="150" y2="195" stroke="#00e07a" stroke-width="2.5" stroke-dasharray="6 4"/>
@@ -226,16 +229,19 @@
         <rect x="106" y="96" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
         <text id="ship-vbow" x="146" y="118" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
         <polygon points="190,106 200,112 190,118" fill="#cfd6dd"/>
-        <!-- centre fuel table (orange = display-only sim); compact, fits inside the slim hull -->
-        <rect x="100" y="170" width="100" height="52" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
-        <line x1="142" y1="170" x2="142" y2="222" stroke="#1c2530"/>
-        <line x1="171" y1="170" x2="171" y2="222" stroke="#1c2530"/>
-        <text x="121" y="183" fill="#8792a0" font-size="6" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL/GAL</text>
-        <text x="156" y="183" fill="#8792a0" font-size="6" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/HR</text>
-        <text x="185" y="183" fill="#8792a0" font-size="6" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/NM</text>
-        <text id="fuel-total" x="121" y="208" fill="#ff9500" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
-        <text id="fuel-rate" x="156" y="208" fill="#ff9500" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
-        <text id="fuel-pernm" x="185" y="208" fill="#ff9500" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <!-- centre fuel table; two-row headers so each column reads cleanly -->
+        <rect x="100" y="166" width="100" height="60" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
+        <line x1="140" y1="166" x2="140" y2="226" stroke="#1c2530"/>
+        <line x1="170" y1="166" x2="170" y2="226" stroke="#1c2530"/>
+        <text x="120" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL</text>
+        <text x="120" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/GAL</text>
+        <text x="155" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL</text>
+        <text x="155" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/HR</text>
+        <text x="185" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL</text>
+        <text x="185" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/NM</text>
+        <text id="fuel-total" x="120" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
+        <text id="fuel-rate" x="155" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
+        <text id="fuel-pernm" x="185" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
         <!-- stern-walk readout box -->
         <rect x="106" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
         <text id="ship-vstern" x="146" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
@@ -292,7 +298,7 @@
             <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
             <g clip-path="url(#ipClip)">
               <g id="incl-pitch-scale"></g>
-              <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
+              <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-pitch-glyph">
                 <path d="M42,64 L112,64 L124,61 L122,69 Q120,70 114,70 L48,70 Q43,70 42,67 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <path d="M58,64 L58,57 L67,57 L67,52 L79,52 L79,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
@@ -316,7 +322,7 @@
             <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
             <g clip-path="url(#irClip)">
               <g id="incl-roll-scale"></g>
-              <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
+              <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-roll-glyph">
                 <path d="M58,62 L102,62 L94,74 L80,87 L66,74 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <path d="M66,62 L66,54 L72,54 L74,46 L86,46 L88,54 L94,54 L94,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
@@ -633,6 +639,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=29"></script>
+<script src="/static/app.js?v=30"></script>
 </body>
 </html>

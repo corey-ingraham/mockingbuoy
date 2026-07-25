@@ -766,12 +766,15 @@
       // funnel
       " M" + (sx + 3) + "," + (sy - 5) + " L" + (sx + 3) + "," + (sy - 9) + " L" + (sx + 7) + "," + (sy - 9) + " L" + (sx + 7) + "," + (sy - 5) + " Z");
     ship.setAttribute("fill", "#5a6675"); ship.setAttribute("opacity", "0.82");
-    dyn.appendChild(ship);
     const mast = mk("line");
     mast.setAttribute("x1", (sx - 4).toFixed(1)); mast.setAttribute("y1", (sy - 11).toFixed(1));
     mast.setAttribute("x2", (sx - 4).toFixed(1)); mast.setAttribute("y2", (sy - 15).toFixed(1));
     mast.setAttribute("stroke", "#5a6675"); mast.setAttribute("stroke-width", "0.8"); mast.setAttribute("opacity", "0.82");
-    dyn.appendChild(mast);
+    // mirror horizontally so the bow points to the right (same silhouette)
+    const shipG = mk("g");
+    shipG.setAttribute("transform", "translate(" + (2 * sx).toFixed(1) + " 0) scale(-1 1)");
+    shipG.appendChild(ship); shipG.appendChild(mast);
+    dyn.appendChild(shipG);
     // seabed trace points (surface at top → this depth), left→right
     const tp = [];
     for (let j = 0; j < n; j++) tp.push([xOf(j), yOf(depthHistory[j])]);
