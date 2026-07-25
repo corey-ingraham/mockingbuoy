@@ -329,6 +329,31 @@
       g.appendChild(t);
     }
   })();
+  // ship-schematic rudder fan: graduated protractor below the stern pivot (150,372), 0deg straight
+  // down; sampled polyline base arc (flag-independent) + 5deg minor / 20deg major ticks + hard-over red.
+  (function buildShipRudderScale() {
+    const g = $("ship-rud-scale");
+    if (!g) return;
+    const NS = "http://www.w3.org/2000/svg";
+    const cx = 150, cy = 372, R = 48, SPAN = 40;
+    const pt = (a, r) => [cx + r * Math.sin(a * Math.PI / 180), cy + r * Math.cos(a * Math.PI / 180)];
+    let d = "";
+    for (let a = -SPAN; a <= SPAN + 0.001; a += 2) { const p = pt(a, R); d += (d ? " " : "") + p[0].toFixed(1) + "," + p[1].toFixed(1); }
+    const arc = document.createElementNS(NS, "polyline");
+    arc.setAttribute("points", d); arc.setAttribute("fill", "none");
+    arc.setAttribute("stroke", "#8792a0"); arc.setAttribute("stroke-width", "1.6");
+    g.appendChild(arc);
+    for (let a = -SPAN; a <= SPAN + 0.001; a += 5) {
+      const major = a % 20 === 0, hard = Math.abs(a) >= 35;
+      const p1 = pt(a, R), p2 = pt(a, R + (major ? 8 : 4));
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
+      ln.setAttribute("x2", p2[0].toFixed(1)); ln.setAttribute("y2", p2[1].toFixed(1));
+      ln.setAttribute("stroke", hard ? "#ff4d4d" : major ? "#c3ccd4" : "#6b7580");
+      ln.setAttribute("stroke-width", major ? "1.8" : "1");
+      g.appendChild(ln);
+    }
+  })();
   // inclinometer protractor scales (-30..30, 10deg ticks) drawn once above each glyph centre (80,66).
   (function buildInclScales() {
     const NS = "http://www.w3.org/2000/svg";
@@ -372,7 +397,7 @@
       const bg = document.createElementNS(NS, "rect");
       bg.setAttribute("x", String(t.x)); bg.setAttribute("y", String(ENG_TOP));
       bg.setAttribute("width", String(TW)); bg.setAttribute("height", String(ENG_H));
-      bg.setAttribute("rx", "3"); bg.setAttribute("fill", "#060a0f"); bg.setAttribute("stroke", "#263140");
+      bg.setAttribute("rx", "3"); bg.setAttribute("fill", "url(#faceGrad)"); bg.setAttribute("stroke", "url(#bezelGrad)"); bg.setAttribute("stroke-width", "1.5");
       svg.appendChild(bg);
       for (const tv of t.ticks) {
         const y = ENG_BOT - (tv / t.max) * ENG_H;
@@ -394,6 +419,13 @@
       bar.setAttribute("width", String(TW - 2)); bar.setAttribute("height", "0");
       bar.setAttribute("fill", "url(#engFill)");
       svg.appendChild(bar);
+      // white pointer marker riding the bar top (JPG style)
+      const mark = document.createElementNS(NS, "polygon");
+      mark.setAttribute("id", id + "-" + t.kind + "-mark");
+      const mx = t.x + TW + 2;
+      mark.setAttribute("points", mx + "," + ENG_BOT + " " + (mx + 6) + "," + (ENG_BOT - 4) + " " + (mx + 6) + "," + (ENG_BOT + 4));
+      mark.setAttribute("fill", "#dfe6ec");
+      svg.appendChild(mark);
       const lbl = document.createElementNS(NS, "text");
       lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 16));
       lbl.setAttribute("fill", "#7d8895"); lbl.setAttribute("font-size", "9");
@@ -409,6 +441,8 @@
     const h = frac * ENG_H;
     bar.setAttribute("y", (ENG_BOT - h).toFixed(1));
     bar.setAttribute("height", h.toFixed(1));
+    const mk = $(id.replace(/-bar$/, "-mark"));
+    if (mk) mk.setAttribute("transform", "translate(0 " + (-h).toFixed(1) + ")");
   }
   // Autopilot linear deviation indicator: 220x44 with a centre-zero baseline, ±half labels and a
   // diamond marker "<id>-mark" placed at x=110+clamp(v/half,-1,1)*100 by setLinearMarker. Amber.
@@ -417,19 +451,22 @@
     if (!svg) return;
     const NS = "http://www.w3.org/2000/svg";
     const cx = 110, cy = 22, x0 = 10, x1 = 210;
-    const base = document.createElementNS(NS, "line");
-    base.setAttribute("x1", String(x0)); base.setAttribute("y1", String(cy));
-    base.setAttribute("x2", String(x1)); base.setAttribute("y2", String(cy));
-    base.setAttribute("stroke", "#263140"); base.setAttribute("stroke-width", "2");
-    svg.appendChild(base);
-    [-1, -0.5, 0, 0.5, 1].forEach((f) => {
-      const x = cx + f * 100, big = f === 0;
+    // glossy recessed track (JPG style)
+    const track = document.createElementNS(NS, "rect");
+    track.setAttribute("x", String(x0 - 3)); track.setAttribute("y", String(cy - 7));
+    track.setAttribute("width", String(x1 - x0 + 6)); track.setAttribute("height", "14");
+    track.setAttribute("rx", "7"); track.setAttribute("fill", "url(#faceGrad)");
+    track.setAttribute("stroke", "url(#bezelGrad)"); track.setAttribute("stroke-width", "1");
+    svg.appendChild(track);
+    // graduations: minor every 0.1, major every 0.5
+    for (let i = -10; i <= 10; i++) {
+      const f = i / 10, x = cx + f * 100, big = i % 5 === 0;
       const ln = document.createElementNS(NS, "line");
-      ln.setAttribute("x1", x.toFixed(1)); ln.setAttribute("y1", String(cy - (big ? 8 : 5)));
-      ln.setAttribute("x2", x.toFixed(1)); ln.setAttribute("y2", String(cy + (big ? 8 : 5)));
-      ln.setAttribute("stroke", big ? "#7d8895" : "#1a2330"); ln.setAttribute("stroke-width", big ? "1.5" : "1");
+      ln.setAttribute("x1", x.toFixed(1)); ln.setAttribute("y1", String(cy - (big ? 7 : 4)));
+      ln.setAttribute("x2", x.toFixed(1)); ln.setAttribute("y2", String(cy + (big ? 7 : 4)));
+      ln.setAttribute("stroke", big ? "#8792a0" : "#3a4655"); ln.setAttribute("stroke-width", big ? "1.4" : "0.8");
       svg.appendChild(ln);
-    });
+    }
     const mklabel = (x, txt, anchor) => {
       const t = document.createElementNS(NS, "text");
       t.setAttribute("x", String(x)); t.setAttribute("y", String(cy + 18));

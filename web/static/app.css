@@ -352,21 +352,22 @@
     align-items: stretch;
     height: 100%;
     min-height: 0;
-    grid-template-columns: minmax(230px, 1fr) minmax(460px, 2.2fr) minmax(230px, 1fr);
+    grid-template-columns: minmax(250px, 1.15fr) minmax(430px, 1.75fr) minmax(250px, 1.15fr);
     grid-template-rows: minmax(0, 1.05fr) minmax(0, 2.2fr) minmax(0, 1fr);
     grid-template-areas:
       "leftcol primary propulsion"
       "leftcol ship autopilot"
       "leftcol helm alerts";
   }
-  .p-primary { grid-area: primary; overflow: hidden; }
+  .p-primary { grid-area: primary; }
+  /* override .ins-panel{overflow:auto} (defined later, same specificity) — kill stray scrollbars */
+  .ins-panel.p-primary, .ins-panel.p-coords, .ins-panel.p-time { overflow: hidden; }
   /* left column: coords, time, env, depth stacked flush in one grid cell */
   .conn-col-left { grid-area: leftcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-  .conn-col-left .p-coords, .conn-col-left .p-time { flex: 0 0 auto; }
-  .conn-col-left .p-env { flex: 1 1 auto; }
+  .conn-col-left .p-coords, .conn-col-left .p-time, .conn-col-left .p-env { flex: 0 0 auto; }
   .conn-col-left .p-depth { flex: 1 1 auto; }
-  /* coordinates/time read as inline label→value rows (JPG style); flush top, never scroll */
-  .p-coords, .p-time { overflow: hidden; justify-content: flex-start; gap: 6px; }
+  /* coordinates/time read as inline label→value rows (JPG style); flush top */
+  .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
   .coord-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; }
   .coord-label { flex: none; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
   .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
@@ -449,6 +450,11 @@
      titles are tuned to match the in-SVG "HDG" caption format (11px/700/muted) */
   .p-primary .ins-bignum { font-size: clamp(32px, 5vh, 60px); }
   .p-primary .ins-label { font-size: 11px; font-weight: 800; }
+  /* rate of turn: label over a larger bold value (JPG style) */
+  .rot-block { text-align: center; margin: 2px 0; }
+  .rot-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .rot-value { font-family: var(--sans); font-weight: 700; font-size: clamp(18px, 2.6vh, 28px); line-height: 1.1; }
+  .rot-unit { font-size: 12px; color: var(--muted); font-weight: 400; }
   /* value encoding (JPG-style): live values render bold white; sim/display-only values
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
@@ -520,16 +526,19 @@
   .prop-col .g-sub { text-align: center; margin-top: 2px; }
 
   /* autopilot panel — mode pill + track point + metrics + linear indicators */
+  /* NAV mode pill — solid green engaged indicator (JPG style) */
   .ap-pill {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 800;
     letter-spacing: 0.5px;
-    padding: 1px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--warn);
-    background: rgba(210,153,34,.12);
+    padding: 2px 12px;
+    border-radius: 4px;
+    border: 1px solid #00b866;
+    background: var(--ok);
+    color: #04120a;
   }
+  .ap-pill.v-sim { color: #04120a; }
   .ap-track { display: flex; flex-direction: column; gap: 1px; }
   .ap-coord { font-family: var(--mono); font-size: 15px; font-variant-numeric: tabular-nums; }
   .ap-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; }
