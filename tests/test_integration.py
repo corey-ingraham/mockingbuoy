@@ -264,6 +264,44 @@ def test_instrument_channel_emits_through_monitor_seam() -> None:
     assert msg.sentence_type == "VHW"
 
 
+# --- 1b') tap-only channel: software feed with no serial writer -------------------
+
+
+def test_tap_only_channel_publishes_over_tcp_without_a_serial_writer() -> None:
+    # Under the global 'serial' backend a normal channel opens its serial port; a tap_only
+    # channel must NOT — it carries only its TCP tap, so it stays healthy on a host with no
+    # adapter for it, and the instrument sentences still reach a tap client.
+    port = _free_tcp_port()
+    tap_ch = ChannelSpec(
+        id="tcp-tap",
+        role="instrument",
+        path="",  # unused: a tap-only channel has no serial writer
+        baud=38400,
+        talker="II",
+        emit=[EmitSpec("VHW", 5.0), EmitSpec("ROT", 5.0)],
+        tap_only=True,
+        tcp_tap=TcpTapSpec(enabled=True, port=port),
+    )
+    engine = Engine(_base_config([tap_ch], backend="serial"))
+    engine.start()
+    try:
+        # The channel's ONLY sink is the tap — no 'serial' backend sink was built, so no serial
+        # open was attempted and the engine is healthy despite the serial backend + no adapter.
+        health = engine.health()
+        sink_names = [s.name for c in health.channels for s in c.sinks]
+        assert sink_names == [f"tcp_tap:{port}"], sink_names
+        assert health.ok
+        # End-to-end: a tap client receives the channel's instrument (II) sentences over TCP.
+        sock = _connect(port)
+        try:
+            lines = _recv_lines(sock, 3)
+        finally:
+            sock.close()
+        assert lines and all(x.startswith("$II") for x in lines), lines
+    finally:
+        engine.stop()
+
+
 # --- 1c) per-channel runtime mute -------------------------------------------------
 
 

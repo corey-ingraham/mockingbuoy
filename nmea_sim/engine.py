@@ -1434,9 +1434,15 @@ class Engine:
         return forward
 
     def _build_sinks(self, spec: ChannelSpec, sink_hook: SinkHook | None) -> list[_Sink]:
-        backend_writer = self._make_backend_writer(spec)
-        self._register_startable(backend_writer)
-        sinks = [_Sink(self._config.writer_backend, backend_writer)]
+        sinks: list[_Sink] = []
+        # A tap-only channel carries NO backend writer: it publishes solely over its TCP tap (a
+        # software feed with no serial adapter). Skipping the backend sink keeps the global serial
+        # backend from trying to open a port it doesn't have — which would mark the channel down
+        # and flip /healthz to 503. Validation guarantees an enabled tcp_tap exists in this case.
+        if not spec.tap_only:
+            backend_writer = self._make_backend_writer(spec)
+            self._register_startable(backend_writer)
+            sinks.append(_Sink(self._config.writer_backend, backend_writer))
         if spec.tcp_tap is not None and spec.tcp_tap.enabled:
             tap = TcpTap(self._config.tcp_tap_host, spec.tcp_tap.port)
             self._register_startable(tap)

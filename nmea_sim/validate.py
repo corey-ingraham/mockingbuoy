@@ -255,6 +255,15 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
         if not (_MIN_PORT <= port <= _MAX_PORT):
             errors.append(f"{where}: tcp_tap.port {port} out of range {_MIN_PORT}-{_MAX_PORT}")
 
+    # A tap-only channel carries no serial/backend writer, so its TCP tap is its ONLY sink.
+    # Without an enabled tcp_tap it would emit nowhere — reject it loudly rather than run a
+    # silent no-op channel.
+    if spec.tap_only and (spec.tcp_tap is None or not spec.tcp_tap.enabled):
+        errors.append(
+            f"{where}: tap_only is set but there is no enabled tcp_tap — a tap-only channel has "
+            "no serial writer, so an enabled tcp_tap is its only possible output"
+        )
+
     # Baud budget: does the offered load fit the wire? Skipped on unbuildable framing (reported
     # above), which would otherwise raise a raw ValueError out of budget.evaluate.
     if _is_valid_framing(spec.framing):

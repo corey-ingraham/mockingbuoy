@@ -459,6 +459,11 @@ class ChannelSpec:
     emit: list[EmitSpec] = field(default_factory=list)
     ais: AisSpec | None = None
     tcp_tap: TcpTapSpec | None = None
+    # A tap-only channel has no backend writer: it publishes solely over ``tcp_tap`` (a software
+    # feed with no serial adapter). Under the global ``serial`` backend this stops the engine from
+    # opening a port it hasn't got — which would otherwise mark the channel down and flip /healthz
+    # to 503. Its ``path`` is unused. Validation requires an enabled ``tcp_tap`` when this is set.
+    tap_only: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChannelSpec:
@@ -490,6 +495,7 @@ class ChannelSpec:
             ],
             ais=AisSpec.from_dict(ais_data) if ais_data else None,
             tcp_tap=TcpTapSpec.from_dict(tap_data) if tap_data else None,
+            tap_only=bool(data.get("tap_only", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -514,6 +520,8 @@ class ChannelSpec:
             out["ais"] = self.ais.to_dict()
         if self.tcp_tap is not None:
             out["tcp_tap"] = self.tcp_tap.to_dict()
+        if self.tap_only:
+            out["tap_only"] = True
         return out
 
 

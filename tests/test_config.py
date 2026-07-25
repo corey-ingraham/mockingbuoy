@@ -47,6 +47,29 @@ def test_load_example_config_instrument_channel() -> None:
     assert validate(EngineConfig.load(CONFIG_PATH)) == []
 
 
+def test_tap_only_channel_round_trips() -> None:
+    # A tap-only (software) channel: no serial writer, published over its TCP tap only.
+    raw = {
+        "id": "tcp-tap",
+        "role": "instrument",
+        "path": "",
+        "baud": 38400,
+        "talker": "II",
+        "emit": [{"sentence": "VHW", "rate_hz": 1.0}],
+        "tap_only": True,
+        "tcp_tap": {"enabled": True, "port": 10110},
+    }
+    ch = ChannelSpec.from_dict(raw)
+    assert ch.tap_only is True
+    restored = ChannelSpec.from_dict(ch.to_dict())
+    assert restored.tap_only is True
+    assert restored.tcp_tap is not None and restored.tcp_tap.port == 10110
+    # Back-compat: absent/false key -> False, and to_dict omits it (no noise on normal channels).
+    normal = ChannelSpec.from_dict({**raw, "tap_only": False})
+    assert normal.tap_only is False
+    assert "tap_only" not in normal.to_dict()
+
+
 def test_build_initial_state_fills_utc() -> None:
     cfg = EngineConfig.load(CONFIG_PATH)
     utc = datetime(2024, 1, 1, tzinfo=UTC)

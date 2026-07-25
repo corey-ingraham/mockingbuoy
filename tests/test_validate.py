@@ -131,6 +131,23 @@ def test_example_instrument_channel_fits_budget_at_38400() -> None:
     assert validate(_config([inst])) == []
 
 
+def test_tap_only_requires_a_tcp_tap() -> None:
+    # A tap-only channel with no tcp_tap at all emits nowhere -> rejected.
+    problems = validate(_config([_instrument(tap_only=True)]))
+    assert any("tap_only" in p for p in problems)
+
+
+def test_tap_only_with_disabled_tcp_tap_is_rejected() -> None:
+    # A present-but-disabled tap is no output either.
+    ch = _instrument(tap_only=True, tcp_tap=TcpTapSpec(enabled=False, port=10110))
+    assert any("tap_only" in p for p in validate(_config([ch])))
+
+
+def test_tap_only_with_enabled_tcp_tap_is_valid() -> None:
+    ch = _instrument(tap_only=True, tcp_tap=TcpTapSpec(enabled=True, port=10110))
+    assert validate(_config([ch])) == []
+
+
 def test_gps_requires_talker() -> None:
     problems = validate(_config([_gps(talker="")]))
     assert any("requires a 'talker'" in p for p in problems)
