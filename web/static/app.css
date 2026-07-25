@@ -449,8 +449,8 @@
   }
   .ins-unit { font-size: 12px; color: var(--muted); }
   .pri-row { display: flex; flex-wrap: wrap; gap: 8px 18px; }
-  /* SOG/STW/COG sized to sit alongside the enlarged HDG readout on the heading tape */
-  .p-primary .ins-bignum { font-size: clamp(32px, 5vh, 60px); }
+  /* SOG/STW/COG sized + weighted to read identical to the enlarged HDG readout */
+  .p-primary .ins-bignum { font-size: clamp(34px, 5.4vh, 62px); font-weight: 800; letter-spacing: 0.5px; }
   /* value encoding (JPG-style): live values render bold white; sim/display-only values
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
@@ -472,6 +472,7 @@
   .env-dials { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; }
   .env-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 18vh; margin: 2px auto; }
+  .env-dial-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 1px; text-align: center; }
   .env-dial .g-sub { margin-top: 2px; text-align: center; }
   .env-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 4px; }
   .env-cell { display: flex; flex-direction: column; gap: 1px; }
@@ -502,9 +503,9 @@
   #rudder-arc { width: 100%; height: auto; max-width: 240px; max-height: 15vh; margin: 2px auto; display: block; }
   .incl-dials { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
   .incl-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 118px; max-width: 168px; }
-  .incl-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 22vh; margin: 2px auto; }
+  .incl-dial svg { width: 100%; height: auto; max-width: 230px; max-height: 32vh; margin: 2px auto; }
   .p-helm { justify-content: center; }
-  .incl-dial { max-width: 190px; }
+  .incl-dial { max-width: 240px; min-width: 150px; }
   .incl-dial .g-sub { text-align: center; margin-top: 2px; }
 
   /* propulsion panel — twin vertical engine bars (amber = display-only) */

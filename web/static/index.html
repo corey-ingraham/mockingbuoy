@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=14">
+<link rel="stylesheet" href="/static/app.css?v=15">
 </head>
 <body>
 
@@ -72,6 +72,10 @@
         <div class="ins-label">UTC</div>
         <div class="ins-val-row"><span id="ro-utc" class="ins-bignum">--:--:--</span></div>
       </div>
+      <div class="ro-item">
+        <div class="ins-label">Local</div>
+        <div class="ins-val-row"><span id="ro-local" class="ins-bignum">--:--:--</span></div>
+      </div>
     </div>
 
     <!-- PRIMARY: SOG / STW / COG bignums + Rate of Turn (moved) -->
@@ -123,8 +127,9 @@
     <div class="ins-panel p-env">
       <div class="ins-hdr"><span>Environment</span></div>
       <div class="env-dials">
-        <!-- wind TRUE: north-up needle dial -->
+        <!-- wind TRUE: north-up arrow dial -->
         <div class="env-dial">
+          <div class="env-dial-label">Wind True</div>
           <svg id="wind-true-dial" viewBox="0 0 160 160" aria-label="true wind">
             <circle cx="80" cy="80" r="78" fill="none" stroke="#05080c" stroke-width="4"/>
             <circle cx="80" cy="80" r="75" fill="none" stroke="url(#bezelGrad)" stroke-width="3"/>
@@ -132,8 +137,7 @@
             <ellipse cx="80" cy="58" rx="56" ry="36" fill="url(#glassGrad)"/>
             <g id="wtd-ticks"></g>
             <g id="wtd-needle" filter="url(#needleShadow)">
-              <polygon points="80,18 76,80 80,80" fill="#f4f7fa"/>
-              <polygon points="80,18 84,80 80,80" fill="#b7c0c9"/>
+              <polygon points="80,20 70,40 76,40 76,110 84,110 84,40 90,40" fill="#f4f7fa"/>
             </g>
             <circle cx="80" cy="80" r="7" fill="url(#hubGrad)"/>
             <circle cx="77.5" cy="77.5" r="1.8" fill="#ffffff" fill-opacity="0.9"/>
@@ -142,6 +146,7 @@
         </div>
         <!-- wind RELATIVE: apparent wind vs bow (danger sector + ship glyph) -->
         <div class="env-dial">
+          <div class="env-dial-label">Wind Relative</div>
           <svg id="wind-rel-dial" viewBox="0 0 200 200" aria-label="relative wind">
             <defs><clipPath id="wrdClip"><circle cx="100" cy="100" r="89"/></clipPath></defs>
             <circle cx="100" cy="100" r="97" fill="none" stroke="#05080c" stroke-width="5"/>
@@ -160,8 +165,7 @@
             <path d="M100,80 C104,88 105,104 102,118 L98,118 C95,104 96,88 100,80 Z" fill="#182230" stroke="#8792a0" stroke-width="1"/>
             <!-- apparent wind (solid 3D needle) -->
             <g id="wind-app" filter="url(#needleShadow)">
-              <polygon points="100,24 96,100 100,100" fill="#f4f7fa"/>
-              <polygon points="100,24 104,100 100,100" fill="#b7c0c9"/>
+              <polygon points="100,26 88,50 95,50 95,138 105,138 105,50 112,50" fill="#f4f7fa"/>
             </g>
             <circle cx="100" cy="100" r="8" fill="url(#hubGrad)"/>
             <circle cx="97" cy="97" r="2" fill="#ffffff" fill-opacity="0.9"/>
@@ -171,11 +175,11 @@
       </div>
       <div class="env-readings">
         <div class="env-cell">
-          <div class="ins-label">Water</div>
+          <div class="ins-label">Water Temp</div>
           <div class="ins-val-row"><span id="env-wtemp" class="env-num v-sim">--</span><span class="ins-unit">°C</span></div>
         </div>
         <div class="env-cell">
-          <div class="ins-label">Air</div>
+          <div class="ins-label">Air Temp</div>
           <div class="ins-val-row"><span id="env-atemp" class="env-num v-sim">--</span><span class="ins-unit">°C</span></div>
         </div>
         <div class="env-cell">
@@ -288,9 +292,9 @@
       </svg>
     </div>
 
-    <!-- HELM: rudder-angle fan + twin marine inclinometers -->
+    <!-- ATTITUDE: twin marine inclinometers (pitch/trim + roll/heel) -->
     <div class="ins-panel p-helm">
-      <div class="ins-hdr"><span>Helm</span></div>
+      <div class="ins-hdr"><span>Attitude</span></div>
       <!-- inclinometers: glossy dials, grey hull glyph over an orange heel/horizon fill -->
       <div class="incl-dials">
         <div class="incl-dial">
@@ -301,9 +305,12 @@
             <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
             <g clip-path="url(#ipClip)">
               <g id="incl-pitch-scale"></g>
+              <!-- level sea (static); the ship glyph pitches over it -->
+              <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-pitch-glyph">
-                <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
-                <path d="M44,58 Q40,64 44,71 L104,71 Q120,71 130,66 Q120,61 104,61 L44,61 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
+                <!-- side-view hull, bow raised to the right -->
+                <path d="M40,63 L104,63 Q118,63 128,55 L126,65 Q123,71 110,72 L54,72 Q42,72 40,66 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <rect x="60" y="52" width="24" height="11" rx="1.5" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -321,10 +328,13 @@
             <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
             <g clip-path="url(#irClip)">
               <g id="incl-roll-scale"></g>
+              <!-- level sea (static); the ship glyph heels over it -->
+              <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-roll-glyph">
-                <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
-                <path d="M57,56 Q56,55 59,55 L101,55 Q104,55 103,56 L98,71 Q80,82 62,71 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
-                <line x1="80" y1="55" x2="80" y2="38" stroke="#c3ccd4" stroke-width="1.5"/>
+                <!-- front-view hull: flared sides + rounded keel -->
+                <path d="M54,61 L106,61 L99,73 Q80,81 61,73 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <rect x="69" y="50" width="22" height="11" rx="1.5" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="80" y1="50" x2="80" y2="37" stroke="#c3ccd4" stroke-width="1.6"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -609,6 +619,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

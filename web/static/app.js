@@ -107,6 +107,14 @@
     const m = t.match(/T(\d{2}:\d{2}:\d{2})/);
     return m ? m[1] : t;
   }
+  // same HH:MM:SS format as UTC, but in the browser's local timezone
+  function fmtLocal(iso) {
+    if (!iso) return "--:--:--";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "--:--:--";
+    const p = (n) => (n < 10 ? "0" : "") + n;
+    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
   // time-to-go seconds -> "H:MM" (autopilot readout)
   function fmtTtg(sec) {
     const s = Number(sec);
@@ -617,6 +625,7 @@
     setTxt("ro-lon", fmtLon(s.lon));
     setTxt("ro-depth", num(s.depth_m, 1));
     setTxt("ro-utc", fmtUtc(s.utc));
+    setTxt("ro-local", fmtLocal(s.utc));
     setTxt("ro-sea", num(s.sea_state, 0));
 
     // gauge header source tags
