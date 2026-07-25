@@ -352,7 +352,7 @@
     align-items: stretch;
     height: 100%;
     min-height: 0;
-    grid-template-columns: minmax(250px, 1.15fr) minmax(430px, 1.75fr) minmax(250px, 1.15fr);
+    grid-template-columns: minmax(300px, 1.4fr) minmax(360px, 1.45fr) minmax(300px, 1.4fr);
     grid-template-rows: minmax(0, 1.05fr) minmax(0, 2.2fr) minmax(0, 1fr);
     grid-template-areas:
       "leftcol primary rightcol"
@@ -374,9 +374,11 @@
   .p-ship { grid-area: ship; }
   /* right column: propulsion, attitude (grows to fill the space under propulsion), autopilot, alerts */
   .conn-col-right { grid-area: rightcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-  .conn-col-right .p-propulsion { flex: 0 0 auto; }
-  .conn-col-right .p-helm { flex: 1 1 auto; min-height: 0; }
-  .conn-col-right .p-autopilot, .conn-col-right .p-alerts { flex: 0 0 auto; }
+  .conn-col-right .p-propulsion { flex: 1 1 auto; min-height: 0; }
+  .conn-col-right .p-helm, .conn-col-right .p-autopilot, .conn-col-right .p-alerts { flex: 0 0 auto; }
+  /* tight top/bottom on Attitude so propulsion above + autopilot below sit closer */
+  .conn-col-right .p-helm { padding-top: 0; padding-bottom: 4px; }
+  .conn-col-right .p-helm .incl-dials { margin: 0; }
   @media (max-width: 1100px) {
     /* narrow screens: abandon the one-screen lock and scroll the view normally as a single column */
     #view-conning.active { overflow: auto; }
@@ -518,8 +520,8 @@
   #rudder-arc { width: 100%; height: auto; max-width: 240px; max-height: 15vh; margin: 2px auto; display: block; }
   .incl-dials { display: flex; gap: 8px; justify-content: center; }
   /* fill the right column width evenly, as large as it allows (toward the wind-gauge diameter) */
-  .incl-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 0; min-width: 0; max-width: 180px; }
-  .incl-dial svg { width: 100%; height: auto; max-width: 180px; max-height: 30vh; margin: 2px auto; }
+  .incl-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 0; min-width: 0; max-width: 200px; }
+  .incl-dial svg { width: 100%; height: auto; max-width: 200px; max-height: 22vh; margin: 1px auto; }
   .p-helm { justify-content: center; }
   .incl-dial .g-sub { text-align: center; margin-top: 2px; }
 
@@ -527,8 +529,8 @@
   .prop-gauges { display: flex; gap: 10px; justify-content: center; align-items: flex-start; }
   /* flex:1 1 0 + min-width:0 → the two engines always share the panel width evenly and never
      overflow (no clipped bar), while max-width lets them grow when there's room */
-  .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 0; min-width: 0; max-width: 180px; }
-  .prop-col svg { width: 100%; height: auto; max-width: 180px; max-height: 44vh; margin: 4px auto 0; display: block; }
+  .prop-col { display: flex; flex-direction: column; align-items: center; flex: 1 1 0; min-width: 0; max-width: 210px; }
+  .prop-col svg { width: 100%; height: auto; max-width: 210px; max-height: 46vh; margin: 4px auto 0; display: block; }
   .prop-title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text); text-align: center; margin-bottom: 2px; }
   .prop-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 14px; width: 100%; }
   .prop-stat { display: flex; flex-direction: column; align-items: center; }
@@ -536,9 +538,10 @@
   .prop-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* autopilot panel — mode pill + track point + metrics + linear indicators */
-  /* Mode (green NAV pill) as the left column, Track waypoint on the right (JPG layout) */
-  .ap-top { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; }
-  .ap-mode-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+  /* Mode (green NAV pill) + Track waypoint as two evenly-spaced, centred columns across the panel */
+  .ap-top { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; justify-items: center; text-align: center; }
+  .ap-mode-cell { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+  .ap-track { align-items: center; }
   .ap-pill {
     font-family: var(--sans);
     font-size: 13px;

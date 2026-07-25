@@ -759,15 +759,10 @@
       // depth labels on the RIGHT of the plot (0 at the top, JPG style)
       label(x1 + 5, yy + 3, (mn + (i / GRID) * span).toFixed(0), "start");
     }
-    // ocean-surface line along the top of the plot (gentle wave, sea-blue)
-    let wave = "";
-    for (let wx = x0; wx <= x1; wx += 6) { const wy = y0 + Math.sin((wx - x0) / 8) * 1.3; wave += (wx > x0 ? " " : "") + wx.toFixed(1) + "," + wy.toFixed(1); }
-    const surf = mk("polyline");
-    surf.setAttribute("points", wave); surf.setAttribute("fill", "none");
-    surf.setAttribute("stroke", "#3a8fc4"); surf.setAttribute("stroke-width", "1.6"); surf.setAttribute("opacity", "0.85");
-    dyn.appendChild(surf);
+    // organic ocean-surface profile (two combined waves); drawn as a white line below, over the water fill
+    const surfY = (xx) => y0 + Math.sin((xx - x0) / 9) * 1.7 + Math.sin((xx - x0) / 4.2) * 0.9;
     // small shadowed side-view ship (pitch-gauge silhouette family) sitting ON the surface, top-right
-    const sx = x1 - 34, sy = y0;
+    const sx = x1 - 34, sy = surfY(x1 - 34);
     const ship = mk("path");
     ship.setAttribute("d",
       // smooth hull: raked bow (right), rounded forefoot, gentle sheer
@@ -783,19 +778,35 @@
     mast.setAttribute("x2", (sx - 4).toFixed(1)); mast.setAttribute("y2", (sy - 15).toFixed(1));
     mast.setAttribute("stroke", "#5a6675"); mast.setAttribute("stroke-width", "0.8"); mast.setAttribute("opacity", "0.82");
     dyn.appendChild(mast);
-    let pts = "";
-    for (let j = 0; j < n; j++) pts += (j ? " " : "") + xOf(j).toFixed(1) + "," + yOf(depthHistory[j]).toFixed(1);
-    // seabed fill below the trace
-    const fill = mk("polygon");
-    fill.setAttribute("points", pts + " " + xOf(n - 1).toFixed(1) + "," + y1 + " " + xOf(0).toFixed(1) + "," + y1);
-    fill.setAttribute("fill", "#33280f"); fill.setAttribute("opacity", "0.55");
-    dyn.appendChild(fill);
-    // depth trace
+    // seabed trace points (surface at top → this depth), left→right
+    const tp = [];
+    for (let j = 0; j < n; j++) tp.push([xOf(j), yOf(depthHistory[j])]);
+    const traceStr = tp.map((p) => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+    // black seabed below the trace, down to the graph floor
+    const seabed = mk("polygon");
+    seabed.setAttribute("points", traceStr + " " + tp[n - 1][0].toFixed(1) + "," + y1 + " " + tp[0][0].toFixed(1) + "," + y1);
+    seabed.setAttribute("fill", "#04070b");
+    dyn.appendChild(seabed);
+    // light-blue water column between the surface line and the seabed trace
+    const waterTop = tp.map((p) => p[0].toFixed(1) + "," + surfY(p[0]).toFixed(1)).join(" ");
+    const waterBot = tp.slice().reverse().map((p) => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+    const water = mk("polygon");
+    water.setAttribute("points", waterTop + " " + waterBot);
+    water.setAttribute("fill", "#2f78b4"); water.setAttribute("opacity", "0.26");
+    dyn.appendChild(water);
+    // seabed trace (white)
     const line = mk("polyline");
     line.setAttribute("id", "depth-line");
-    line.setAttribute("points", pts);
-    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#3fa7ff"); line.setAttribute("stroke-width", "1.5");
+    line.setAttribute("points", traceStr);
+    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#f2f6fa"); line.setAttribute("stroke-width", "1.6");
     dyn.appendChild(line);
+    // ocean-surface line (white, wavy) on top of the water fill
+    let wave = "";
+    for (let wx = x0; wx <= x1; wx += 4) wave += (wx > x0 ? " " : "") + wx.toFixed(1) + "," + surfY(wx).toFixed(1);
+    const surf = mk("polyline");
+    surf.setAttribute("points", wave); surf.setAttribute("fill", "none");
+    surf.setAttribute("stroke", "#f2f6fa"); surf.setAttribute("stroke-width", "1.6");
+    dyn.appendChild(surf);
     // alert threshold hline (red dashed) when within the scaled window
     if (ALERT_DEPTH_M >= mn && ALERT_DEPTH_M <= mx) {
       const al = mk("line");
