@@ -353,7 +353,7 @@
     height: 100%;
     min-height: 0;
     grid-template-columns: minmax(300px, 1.4fr) minmax(360px, 1.45fr) minmax(300px, 1.4fr);
-    grid-template-rows: minmax(0, 1.05fr) minmax(0, 2.2fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1.35fr) minmax(0, 2.1fr) minmax(0, 1fr);
     grid-template-areas:
       "leftcol primary rightcol"
       "leftcol ship rightcol"
@@ -368,8 +368,8 @@
   .conn-col-left .p-depth { flex: 1 1 auto; }
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
-  /* label + value grouped and right-justified (label sits just left of its value) */
-  .coord-row { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; width: 100%; }
+  /* label + value grouped and centred in the column (label sits just left of its value) */
+  .coord-row { display: flex; align-items: baseline; justify-content: center; gap: 10px; width: 100%; }
   .coord-label { flex: none; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
   .coord-val { flex: 0 0 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
   .p-ship { grid-area: ship; }
@@ -466,6 +466,10 @@
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
   .v-sim { color: var(--text); }
+  /* per-section LIVE/SIM status pill in the panel header */
+  .stat-pill { font-family: var(--sans); font-size: 11px; font-weight: 800; letter-spacing: 0.5px; padding: 1px 8px; border-radius: 4px; }
+  .stat-pill.live { background: var(--ok); color: #04120a; border: 1px solid #00b866; }
+  .stat-pill.sim { background: var(--warn); color: #1c1102; border: 1px solid #cc7a00; }
   /* Live/Sim encoding legend — folded into the status strip (no overlap) */
   .ins-legend {
     display: inline-flex;

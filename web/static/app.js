@@ -256,31 +256,33 @@
     const n = $("depth-alert");
     if (n) n.textContent = ALERT_DEPTH_M.toFixed(1);
   })();
-  // Heading tape: a linear 0-360 scale (built -80..440 so the ±window never runs off the ends),
-  // 6 px/deg, majors every 10deg with a 3-digit number. repaint translates #htape-scroll so the
-  // current heading sits under the fixed centre caret; the big #heading-big shows the exact value.
-  const HTAPE_PX = 6;
-  (function buildHeadingTape() {
-    const g = $("htape-scroll");
+  // Heading arc: a 0-360 tick ring hung about a centre far below the svg (350,700), r=620, so the
+  // top of the ring reads as a shallow curved tape. Majors every 10deg carry a 3-digit number.
+  // repaint rotates #hdg-arc by -heading so the current heading sits under the fixed centre caret;
+  // the big #heading-big shows the exact value.
+  (function buildHeadingArc() {
+    const g = $("hdg-arc");
     if (!g) return;
     const NS = "http://www.w3.org/2000/svg";
-    for (let deg = -80; deg <= 440; deg += 2) {
-      const x = (deg * HTAPE_PX).toFixed(1);
+    const cx = 350, cy = 700, R = 620;
+    const pt = (deg, r) => { const a = (deg - 90) * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+    for (let deg = 0; deg < 360; deg += 2) {
       const major = deg % 10 === 0;
+      const p1 = pt(deg, R), p2 = pt(deg, R - (major ? 20 : 11));
       const ln = document.createElementNS(NS, "line");
-      ln.setAttribute("x1", x); ln.setAttribute("x2", x);
-      ln.setAttribute("y1", "76"); ln.setAttribute("y2", major ? "94" : "86");
+      ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
+      ln.setAttribute("x2", p2[0].toFixed(1)); ln.setAttribute("y2", p2[1].toFixed(1));
       ln.setAttribute("stroke", major ? "#dfe6ec" : "#6b7580");
       ln.setAttribute("stroke-width", major ? "2" : "1.2");
       g.appendChild(ln);
       if (major) {
-        const v = ((Math.round(deg) % 360) + 360) % 360;
+        const lp = pt(deg, R - 36);
         const t = document.createElementNS(NS, "text");
-        t.setAttribute("x", x); t.setAttribute("y", "120");
-        t.setAttribute("fill", "#c3ccd4"); t.setAttribute("font-size", "19");
+        t.setAttribute("x", lp[0].toFixed(1)); t.setAttribute("y", (lp[1] + 6).toFixed(1));
+        t.setAttribute("fill", "#c3ccd4"); t.setAttribute("font-size", "17");
         t.setAttribute("font-family", "Segoe UI, system-ui, sans-serif");
         t.setAttribute("font-weight", "700"); t.setAttribute("text-anchor", "middle");
-        t.textContent = (v < 10 ? "00" : v < 100 ? "0" : "") + v;
+        t.textContent = (deg < 10 ? "00" : deg < 100 ? "0" : "") + deg;
         g.appendChild(t);
       }
     }
@@ -542,8 +544,8 @@
     const hdg = Number(s.heading_true_deg);
     if (Number.isFinite(hdg)) {
       // heading tape: scroll the scale so the current heading sits under the centre caret
-      const hdgScroll = $("htape-scroll");
-      if (hdgScroll) hdgScroll.setAttribute("transform", "translate(" + (350 - hdg * HTAPE_PX).toFixed(1) + " 0)");
+      const hdgArc = $("hdg-arc");
+      if (hdgArc) hdgArc.setAttribute("transform", "rotate(" + (-hdg).toFixed(2) + " 350 700)");
       const headingBig = $("heading-big");
       if (headingBig) { const hv = ((Math.round(hdg) % 360) + 360) % 360; headingBig.textContent = (hv < 10 ? "00" : hv < 100 ? "0" : "") + hv; }
       const compassCard = $("compass-card");
@@ -759,22 +761,17 @@
     const sx = x1 - 34, sy = surfY(x1 - 34);
     const ship = mk("path");
     ship.setAttribute("d",
-      // smooth hull: raked bow (right), rounded forefoot, gentle sheer
-      "M" + (sx - 15) + "," + (sy - 5) + " L" + (sx + 9) + "," + (sy - 5) + " Q" + (sx + 18) + "," + (sy - 6) + " " + (sx + 19) + "," + (sy - 1) + " Q" + (sx + 15) + "," + (sy + 1) + " " + (sx + 7) + "," + (sy + 1) + " L" + (sx - 12) + "," + (sy + 1) + " Q" + (sx - 16) + "," + (sy + 1) + " " + (sx - 15) + "," + (sy - 5) + " Z" +
-      // rounded superstructure
-      " M" + (sx - 7) + "," + (sy - 5) + " L" + (sx - 7) + "," + (sy - 10) + " Q" + (sx - 7) + "," + (sy - 11) + " " + (sx - 5) + "," + (sy - 11) + " L" + (sx - 1) + "," + (sy - 11) + " Q" + (sx + 1) + "," + (sy - 11) + " " + (sx + 1) + "," + (sy - 9) + " L" + (sx + 1) + "," + (sy - 5) + " Z" +
-      // funnel
-      " M" + (sx + 3) + "," + (sy - 5) + " L" + (sx + 3) + "," + (sy - 9) + " L" + (sx + 7) + "," + (sy - 9) + " L" + (sx + 7) + "," + (sy - 5) + " Z");
+      // side-view hull, LONG raked bow rising up-and-forward to a point on the right; blunt stern left
+      "M" + (sx - 17) + "," + (sy - 4) + " L" + (sx + 4) + "," + (sy - 4) + " L" + (sx + 24) + "," + (sy - 7) + " L" + (sx + 15) + "," + (sy + 2) + " L" + (sx - 15) + "," + (sy + 2) + " L" + (sx - 17) + "," + (sy - 4) + " Z" +
+      // superstructure (toward the stern) + funnel
+      " M" + (sx - 9) + "," + (sy - 4) + " L" + (sx - 9) + "," + (sy - 10) + " L" + (sx - 2) + "," + (sy - 10) + " L" + (sx - 2) + "," + (sy - 4) + " Z" +
+      " M" + (sx + 1) + "," + (sy - 4) + " L" + (sx + 1) + "," + (sy - 8) + " L" + (sx + 5) + "," + (sy - 8) + " L" + (sx + 5) + "," + (sy - 4) + " Z");
     ship.setAttribute("fill", "#5a6675"); ship.setAttribute("opacity", "0.82");
     const mast = mk("line");
-    mast.setAttribute("x1", (sx - 4).toFixed(1)); mast.setAttribute("y1", (sy - 11).toFixed(1));
-    mast.setAttribute("x2", (sx - 4).toFixed(1)); mast.setAttribute("y2", (sy - 15).toFixed(1));
+    mast.setAttribute("x1", (sx - 5).toFixed(1)); mast.setAttribute("y1", (sy - 10).toFixed(1));
+    mast.setAttribute("x2", (sx - 5).toFixed(1)); mast.setAttribute("y2", (sy - 15).toFixed(1));
     mast.setAttribute("stroke", "#5a6675"); mast.setAttribute("stroke-width", "0.8"); mast.setAttribute("opacity", "0.82");
-    // mirror horizontally so the bow points to the right (same silhouette)
-    const shipG = mk("g");
-    shipG.setAttribute("transform", "translate(" + (2 * sx).toFixed(1) + " 0) scale(-1 1)");
-    shipG.appendChild(ship); shipG.appendChild(mast);
-    dyn.appendChild(shipG);
+    dyn.appendChild(ship); dyn.appendChild(mast);
     // seabed trace points (surface at top → this depth), left→right
     const tp = [];
     for (let j = 0; j < n; j++) tp.push([xOf(j), yOf(depthHistory[j])]);
@@ -851,6 +848,21 @@
     if (stripMode) stripMode.textContent = (lastHealth && lastHealth.mode) || (cfg && cfg.mode) || "—";
     const stripTime = $("strip-time");
     if (stripTime) stripTime.textContent = (lastHealth && lastHealth.time_source) ? String(lastHealth.time_source).toUpperCase() : "—";
+    updateStatusPills();
+  }
+  // per-section LIVE/SIM pills: green LIVE only when that role has valid live NMEA, else amber SIM
+  function setPill(id, live) {
+    const p = $(id);
+    if (!p) return;
+    p.textContent = live ? "LIVE" : "SIM";
+    p.className = "stat-pill " + (live ? "live" : "sim");
+  }
+  function updateStatusPills() {
+    setPill("pill-coords", parseSource(channelSourceByRole("gps")).tag === "LIVE");
+    setPill("pill-heading", parseSource(channelSourceByRole("heading")).tag === "LIVE");
+    // time is LIVE only when disciplined by a live NMEA source (not the SYSTEM clock / sim)
+    const ts = String((lastHealth && lastHealth.time_source) || "").toUpperCase();
+    setPill("pill-time", ts !== "" && ts !== "SYSTEM" && ts.indexOf("SIM") < 0 && ts !== "OFF");
   }
 
   /* =====================================================================
