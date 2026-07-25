@@ -390,7 +390,7 @@
     const NS = "http://www.w3.org/2000/svg";
     const TW = 30;
     const tracks = [
-      { kind: "rpm", x: 16, max: 3500, ticks: [0, 875, 1750, 2625, 3500], label: "RPM" },
+      { kind: "rpm", x: 16, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM" },
       { kind: "load", x: 64, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
     ];
     for (const t of tracks) {
@@ -410,7 +410,7 @@
         tx.setAttribute("x", String(t.x - 6)); tx.setAttribute("y", (y + 3).toFixed(1));
         tx.setAttribute("fill", "#7d8895"); tx.setAttribute("font-size", "7");
         tx.setAttribute("font-family", "monospace"); tx.setAttribute("text-anchor", "end");
-        tx.textContent = String(tv);
+        tx.textContent = tv.toLocaleString("en-US");
         svg.appendChild(tx);
       }
       const bar = document.createElementNS(NS, "rect");
@@ -639,9 +639,9 @@
     setEngineBar("prop-port-load-bar", sim.load_port_pct, 100);
     setEngineBar("prop-stbd-rpm-bar", sim.rpm_stbd, 3500);
     setEngineBar("prop-stbd-load-bar", sim.load_stbd_pct, 100);
-    setTxt("prop-port-rpm", num(sim.rpm_port, 0));
+    { const r = Number(sim.rpm_port); setTxt("prop-port-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
     setTxt("prop-port-load", num(sim.load_port_pct, 0));
-    setTxt("prop-stbd-rpm", num(sim.rpm_stbd, 0));
+    { const r = Number(sim.rpm_stbd); setTxt("prop-stbd-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
     setTxt("prop-stbd-load", num(sim.load_stbd_pct, 0));
 
     // autopilot — mode pill + synthetic track point + metrics + linear deviation (amber = display-only)

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=21">
+<link rel="stylesheet" href="/static/app.css?v=22">
 </head>
 <body>
 
@@ -100,7 +100,7 @@
             <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-port-rpm" class="v-sim">----</span></div></div>
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-port-load" class="v-sim">--</span>%</div></div>
           </div>
-          <svg id="prop-port" viewBox="0 0 110 230" aria-label="port engine"></svg>
+          <svg id="prop-port" viewBox="-16 0 126 230" aria-label="port engine"></svg>
         </div>
         <div class="prop-col">
           <div class="prop-title">Stbd Engine</div>
@@ -108,7 +108,7 @@
             <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-stbd-rpm" class="v-sim">----</span></div></div>
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-stbd-load" class="v-sim">--</span>%</div></div>
           </div>
-          <svg id="prop-stbd" viewBox="0 0 110 230" aria-label="starboard engine"></svg>
+          <svg id="prop-stbd" viewBox="-16 0 126 230" aria-label="starboard engine"></svg>
         </div>
       </div>
     </div>
@@ -168,16 +168,14 @@
             <circle cx="100" cy="100" r="93" fill="none" stroke="url(#bezelGrad)" stroke-width="4"/>
             <circle cx="100" cy="100" r="89" fill="url(#faceGrad)"/>
             <g clip-path="url(#wrdClip)">
-              <!-- filled red danger sector (top, ±32°) -->
-              <path d="M55.0,27.9 A85,85 0 0 1 145.0,27.9 L136.0,42.3 A68,68 0 0 0 64.0,42.3 Z" fill="#ff3b30" fill-opacity="0.9"/>
               <ellipse cx="100" cy="72" rx="70" ry="45" fill="url(#glassGrad)"/>
             </g>
             <g id="wind-ticks"></g>
             <!-- bow marker -->
             <polygon points="100,12 95,26 105,26" fill="#c3ccd4"/>
             <text x="100" y="46" fill="#8792a0" font-size="10" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">BOW</text>
-            <!-- centred ship glyph (bow up) -->
-            <path d="M100,80 C104,88 105,104 102,118 L98,118 C95,104 96,88 100,80 Z" fill="#182230" stroke="#8792a0" stroke-width="1"/>
+            <!-- centred ship glyph (bow up), enlarged for legibility -->
+            <path d="M100,64 C112,84 114,112 109,138 L91,138 C86,112 88,84 100,64 Z" fill="#3a4757" stroke="#9aa4b0" stroke-width="1.4"/>
             <!-- apparent wind (solid 3D needle) -->
             <g id="wind-app" filter="url(#needleShadow)">
               <polygon points="100,26 88,50 95,50 95,138 105,138 105,50 112,50" fill="#f4f7fa"/>
@@ -206,12 +204,12 @@
         </div>
       </div>
     </div>
-    <!-- WATER DEPTH: value + alert constant + taller 1 Hz history graph -->
+    <!-- DEPTH: water depth value + alert constant + taller 1 Hz history graph -->
     <div class="ins-panel p-depth">
-      <div class="ins-hdr"><span>Water Depth</span></div>
+      <div class="ins-hdr"><span>Depth</span></div>
       <div class="depth-vals">
         <div class="ro-item">
-          <div class="ins-label">Depth</div>
+          <div class="ins-label">Water Depth</div>
           <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
         </div>
         <div class="ro-item">
@@ -255,7 +253,7 @@
         <rect x="72" y="156" width="156" height="74" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
         <line x1="124" y1="156" x2="124" y2="230" stroke="#1c2530"/>
         <line x1="176" y1="156" x2="176" y2="230" stroke="#1c2530"/>
-        <text x="98" y="173" fill="#8792a0" font-size="7" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL/gal</text>
+        <text x="98" y="173" fill="#8792a0" font-size="7" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL/GAL</text>
         <text x="150" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/HR</text>
         <text x="202" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/NM</text>
         <text id="fuel-total" x="98" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
@@ -280,7 +278,7 @@
 
     <!-- AUTOPILOT: mode pill + synthetic track point + metrics + linear off-course/off-track (amber = display-only, s.sim) -->
     <div class="ins-panel p-autopilot">
-      <div class="ins-hdr"><span>Autopilot</span><span id="ap-mode" class="ap-pill v-sim">---</span></div>
+      <div class="ins-hdr"><span>Autopilot</span><span class="ap-mode-wrap"><span class="ap-mode-lbl">Mode</span><span id="ap-mode" class="ap-pill v-sim">---</span></span></div>
       <div class="ap-track">
         <div class="ins-label">Track waypoint</div>
         <div class="ins-val-row"><span id="ap-track-lat" class="ap-coord v-sim">---</span></div>
@@ -342,9 +340,9 @@
               <!-- level sea (static); the ship glyph heels over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-roll-glyph">
-                <!-- USS destroyer head-on (large, fills gauge): wide flared hull, stepped bridge + tall mast -->
-                <path d="M50,62 L110,62 L102,76 Q80,84 58,76 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M62,62 L62,54 L70,54 L72,46 L88,46 L90,54 L98,54 L98,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <!-- USS destroyer head-on (tall but narrower): flared hull, stepped bridge + tall mast -->
+                <path d="M58,62 L102,62 L96,77 Q80,84 64,77 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M66,62 L66,54 L72,54 L74,46 L86,46 L88,54 L94,54 L94,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <line x1="80" y1="46" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.5"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
@@ -630,6 +628,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=21"></script>
+<script src="/static/app.js?v=22"></script>
 </body>
 </html>

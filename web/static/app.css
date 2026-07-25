@@ -361,7 +361,7 @@
   }
   .p-primary { grid-area: primary; }
   /* override .ins-panel{overflow:auto} (defined later, same specificity) — kill stray scrollbars */
-  .ins-panel.p-primary, .ins-panel.p-coords, .ins-panel.p-time { overflow: hidden; }
+  .ins-panel.p-primary, .ins-panel.p-coords, .ins-panel.p-time, .ins-panel.p-propulsion { overflow: hidden; }
   /* left column: coords, time, env, depth stacked flush in one grid cell */
   .conn-col-left { grid-area: leftcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
   .conn-col-left .p-coords, .conn-col-left .p-time, .conn-col-left .p-env { flex: 0 0 auto; }
@@ -493,7 +493,7 @@
   .env-num { font-family: var(--mono); font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* depth panel — value + alert + history graph */
-  .depth-vals { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .depth-vals { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 26vh; margin: 4px 0 0; }
 
   /* primary panel — COG tape arc (wide, short); fill the primary cell prominently */
@@ -533,7 +533,9 @@
   .prop-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* autopilot panel — mode pill + track point + metrics + linear indicators */
-  /* NAV mode pill — solid green engaged indicator (JPG style) */
+  /* "Mode" caption + solid-green engaged NAV pill (JPG style) */
+  .ap-mode-wrap { display: flex; align-items: center; gap: 6px; }
+  .ap-mode-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   .ap-pill {
     font-family: var(--sans);
     font-size: 13px;
