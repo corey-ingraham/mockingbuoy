@@ -395,7 +395,7 @@
   // Twin-engine vertical bar gauge: an RPM track (0-3500) + a LOAD track (0-100) drawn once into
   // the 110x230 svg; each carries a bottom-anchored amber fill rect (y=BOT-h; height=h) whose id is
   // "<id>-rpm-bar" / "<id>-load-bar", updated by setEngineBar in the hot repaint. Amber = display-only.
-  const ENG_TOP = 10, ENG_BOT = 300, ENG_H = ENG_BOT - ENG_TOP; // tall track (viewBox 200x340) so bars fill
+  const ENG_TOP = 10, ENG_BOT = 200, ENG_H = ENG_BOT - ENG_TOP; // track (viewBox 200x210, no bottom labels)
   function buildEngineGauge(id) {
     const svg = $(id);
     if (!svg) return;
@@ -440,12 +440,6 @@
       mark.setAttribute("points", mx + "," + ENG_BOT + " " + (mx + 6) + "," + (ENG_BOT - 4) + " " + (mx + 6) + "," + (ENG_BOT + 4));
       mark.setAttribute("fill", "#dfe6ec");
       svg.appendChild(mark);
-      const lbl = document.createElementNS(NS, "text");
-      lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 18));
-      lbl.setAttribute("fill", "#c3ccd4"); lbl.setAttribute("font-size", "12"); lbl.setAttribute("font-weight", "700");
-      lbl.setAttribute("font-family", "Segoe UI, system-ui, sans-serif"); lbl.setAttribute("text-anchor", "middle");
-      lbl.textContent = t.label;
-      svg.appendChild(lbl);
     }
   }
   function setEngineBar(id, v, max) {
@@ -805,7 +799,7 @@
     for (let wx = x0; wx <= x1; wx += 4) wave += (wx > x0 ? " " : "") + wx.toFixed(1) + "," + surfY(wx).toFixed(1);
     const surf = mk("polyline");
     surf.setAttribute("points", wave); surf.setAttribute("fill", "none");
-    surf.setAttribute("stroke", "#f2f6fa"); surf.setAttribute("stroke-width", "1.6");
+    surf.setAttribute("stroke", "#3fa7ff"); surf.setAttribute("stroke-width", "1.8");
     dyn.appendChild(surf);
     // alert threshold hline (red dashed) when within the scaled window
     if (ALERT_DEPTH_M >= mn && ALERT_DEPTH_M <= mx) {

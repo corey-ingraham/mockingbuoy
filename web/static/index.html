@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=28">
+<link rel="stylesheet" href="/static/app.css?v=29">
 </head>
 <body>
 
@@ -186,12 +186,12 @@
       <div class="ins-hdr"><span>Depth</span></div>
       <div class="depth-vals">
         <div class="ro-item">
-          <div class="ins-label">Water Depth</div>
-          <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
-        </div>
-        <div class="ro-item">
           <div class="ins-label">Alert depth</div>
           <div class="ins-val-row"><span id="depth-alert" class="ins-bignum v-sim">--</span><span class="ins-unit">m</span></div>
+        </div>
+        <div class="ro-item ro-right">
+          <div class="ins-label">Water Depth</div>
+          <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
         </div>
       </div>
       <svg id="depth-graph" viewBox="0 0 320 180" aria-label="depth history">
@@ -209,7 +209,7 @@
       <svg id="ship-schem" viewBox="0 0 300 452" aria-label="ship schematic with derived vectors, fuel, and rudder">
         <text x="150" y="16" fill="#8792a0" font-size="11" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">BOW</text>
         <!-- hull (bow up), glossy gradient -->
-        <path d="M150,16 C207,60 236,150 230,255 L230,325 C230,358 198,376 150,376 C102,376 70,358 70,325 L70,255 C64,150 93,60 150,16 Z" fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
+        <path d="M150,10 C198,58 212,156 206,252 L206,320 C206,352 182,368 150,368 C118,368 92,352 92,320 L92,252 C86,156 100,58 150,10 Z" fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
         <!-- ground-track / set-drift vectors (green, derived) -->
         <g id="ship-vec-cur" opacity="0">
           <line x1="150" y1="195" x2="150" y2="195" stroke="#00e07a" stroke-width="2.5" stroke-dasharray="6 4"/>
@@ -226,16 +226,16 @@
         <rect x="106" y="96" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
         <text id="ship-vbow" x="146" y="118" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
         <polygon points="190,106 200,112 190,118" fill="#cfd6dd"/>
-        <!-- centre fuel table (orange = display-only sim) -->
-        <rect x="72" y="156" width="156" height="74" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
-        <line x1="124" y1="156" x2="124" y2="230" stroke="#1c2530"/>
-        <line x1="176" y1="156" x2="176" y2="230" stroke="#1c2530"/>
-        <text x="98" y="173" fill="#8792a0" font-size="7" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL/GAL</text>
-        <text x="150" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/HR</text>
-        <text x="202" y="173" fill="#8792a0" font-size="8" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/NM</text>
-        <text id="fuel-total" x="98" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
-        <text id="fuel-rate" x="150" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
-        <text id="fuel-pernm" x="202" y="207" fill="#ff9500" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <!-- centre fuel table (orange = display-only sim); compact, fits inside the slim hull -->
+        <rect x="100" y="170" width="100" height="52" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
+        <line x1="142" y1="170" x2="142" y2="222" stroke="#1c2530"/>
+        <line x1="171" y1="170" x2="171" y2="222" stroke="#1c2530"/>
+        <text x="121" y="183" fill="#8792a0" font-size="6" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL/GAL</text>
+        <text x="156" y="183" fill="#8792a0" font-size="6" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/HR</text>
+        <text x="185" y="183" fill="#8792a0" font-size="6" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL/NM</text>
+        <text id="fuel-total" x="121" y="208" fill="#ff9500" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
+        <text id="fuel-rate" x="156" y="208" fill="#ff9500" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
+        <text id="fuel-pernm" x="185" y="208" fill="#ff9500" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
         <!-- stern-walk readout box -->
         <rect x="106" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
         <text id="ship-vstern" x="146" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
@@ -265,7 +265,7 @@
             <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-port-rpm" class="v-sim">----</span></div></div>
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-port-load" class="v-sim">--</span>%</div></div>
           </div>
-          <svg id="prop-port" viewBox="0 0 200 340" aria-label="port engine"></svg>
+          <svg id="prop-port" viewBox="0 0 200 210" aria-label="port engine"></svg>
         </div>
         <div class="prop-col">
           <div class="prop-title">Stbd Engine</div>
@@ -273,7 +273,7 @@
             <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-stbd-rpm" class="v-sim">----</span></div></div>
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-stbd-load" class="v-sim">--</span>%</div></div>
           </div>
-          <svg id="prop-stbd" viewBox="0 0 200 340" aria-label="starboard engine"></svg>
+          <svg id="prop-stbd" viewBox="0 0 200 210" aria-label="starboard engine"></svg>
         </div>
       </div>
     </div>
@@ -633,6 +633,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=28"></script>
+<script src="/static/app.js?v=29"></script>
 </body>
 </html>

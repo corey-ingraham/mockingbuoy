@@ -374,8 +374,10 @@
   .p-ship { grid-area: ship; }
   /* right column: propulsion, attitude (grows to fill the space under propulsion), autopilot, alerts */
   .conn-col-right { grid-area: rightcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-  .conn-col-right .p-propulsion { flex: 1 1 auto; min-height: 0; }
-  .conn-col-right .p-helm, .conn-col-right .p-autopilot, .conn-col-right .p-alerts { flex: 0 0 auto; }
+  /* propulsion natural (no trailing dead space); attitude grows up into the freed space */
+  .conn-col-right .p-propulsion { flex: 0 0 auto; }
+  .conn-col-right .p-helm { flex: 1 1 auto; min-height: 0; }
+  .conn-col-right .p-autopilot, .conn-col-right .p-alerts { flex: 0 0 auto; }
   /* tight top/bottom on Attitude so propulsion above + autopilot below sit closer */
   .conn-col-right .p-helm { padding-top: 0; padding-bottom: 4px; }
   .conn-col-right .p-helm .incl-dials { margin: 0; }
@@ -493,12 +495,14 @@
   .env-readings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 12px; margin-top: 6px; }
   .env-cell { display: flex; flex-direction: column; gap: 1px; align-items: center; text-align: center; }
   .env-cell .ins-val-row { justify-content: center; }
-  .env-num { font-family: var(--sans); font-weight: 700; font-size: clamp(18px, 2.5vh, 28px); font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .env-num { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* depth panel — value + alert + history graph */
   .depth-vals { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-  /* depth + alert values match the LAT/LONG value size (titles stay as-is) */
-  .depth-vals .ins-bignum { font-size: clamp(20px, 2.9vh, 34px); }
+  /* depth + alert values match the wind true/relative value size (titles stay as-is) */
+  .depth-vals .ins-bignum { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); }
+  .depth-vals .ro-right { align-items: flex-end; text-align: right; }
+  .depth-vals .ro-right .ins-val-row { justify-content: flex-end; }
   #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 26vh; margin: 4px 0 0; }
 
   /* primary panel — COG tape arc (wide, short); fill the primary cell prominently */
