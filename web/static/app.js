@@ -252,7 +252,7 @@
     const n = $("depth-alert");
     if (n) n.textContent = ALERT_DEPTH_M.toFixed(1);
   })();
-  // Heading tape: a linear 0-360 scale (built -40..400 so the ±window never runs off the ends),
+  // Heading tape: a linear 0-360 scale (built -80..440 so the ±window never runs off the ends),
   // 6 px/deg, majors every 10deg with a 3-digit number. repaint translates #htape-scroll so the
   // current heading sits under the fixed centre caret; the big #heading-big shows the exact value.
   const HTAPE_PX = 6;
@@ -260,7 +260,7 @@
     const g = $("htape-scroll");
     if (!g) return;
     const NS = "http://www.w3.org/2000/svg";
-    for (let deg = -40; deg <= 400; deg += 2) {
+    for (let deg = -80; deg <= 440; deg += 2) {
       const x = (deg * HTAPE_PX).toFixed(1);
       const major = deg % 10 === 0;
       const ln = document.createElementNS(NS, "line");
@@ -485,7 +485,7 @@
     if (Number.isFinite(hdg)) {
       // heading tape: scroll the scale so the current heading sits under the centre caret
       const hdgScroll = $("htape-scroll");
-      if (hdgScroll) hdgScroll.setAttribute("transform", "translate(" + (230 - hdg * HTAPE_PX).toFixed(1) + " 0)");
+      if (hdgScroll) hdgScroll.setAttribute("transform", "translate(" + (350 - hdg * HTAPE_PX).toFixed(1) + " 0)");
       const headingBig = $("heading-big");
       if (headingBig) { const hv = ((Math.round(hdg) % 360) + 360) % 360; headingBig.textContent = (hv < 10 ? "00" : hv < 100 ? "0" : "") + hv; }
       const compassCard = $("compass-card");

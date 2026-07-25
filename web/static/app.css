@@ -359,9 +359,9 @@
       "env ship autopilot"
       "depth helm alerts";
   }
-  .p-primary { grid-area: primary; }
-  /* coordinates read as inline label→value rows (JPG style); never show a scrollbar */
-  .p-coords { grid-area: coords; overflow: hidden; justify-content: center; gap: 8px; }
+  .p-primary { grid-area: primary; overflow: hidden; }
+  /* coordinates read as inline label→value rows (JPG style); flush to the top, never scroll */
+  .p-coords { grid-area: coords; overflow: hidden; justify-content: flex-start; gap: 8px; }
   .coord-row { display: flex; align-items: baseline; gap: 10px; }
   .coord-label { flex: none; min-width: 46px; font-size: 11px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
   .coord-val { font-family: var(--sans); font-weight: 700; font-size: clamp(19px, 2.7vh, 32px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; }
@@ -456,7 +456,7 @@
   /* SOG/COG/STW values keep the standard bignum weight/size; only the small
      titles are tuned to match the in-SVG "HDG" caption format (11px/700/muted) */
   .p-primary .ins-bignum { font-size: clamp(32px, 5vh, 60px); }
-  .p-primary .ins-label { font-size: 11px; font-weight: 700; }
+  .p-primary .ins-label { font-size: 11px; font-weight: 800; }
   /* value encoding (JPG-style): live values render bold white; sim/display-only values
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
@@ -479,6 +479,10 @@
   .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; }
   .env-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 18vh; margin: 2px auto; }
   .env-dial-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 1px; text-align: center; }
+  /* per-gauge 2x2 stat block (SPEED KTS | DIRECTION over their values), JPG style */
+  .wind-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; width: 100%; margin: 1px 0 4px; }
+  .wind-stat-t { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  .wind-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .env-dial .g-sub { margin-top: 2px; text-align: center; }
   .env-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 4px; }
   .env-cell { display: flex; flex-direction: column; gap: 1px; }

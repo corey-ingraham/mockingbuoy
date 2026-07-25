@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=16">
+<link rel="stylesheet" href="/static/app.css?v=17">
 </head>
 <body>
 
@@ -70,14 +70,14 @@
     <div class="ins-panel p-primary">
       <div class="ins-hdr"><span>Primary</span></div>
       <!-- heading tape: POC-style linear scale, big centred heading, scrolls as she turns -->
-      <svg id="heading-tape" viewBox="0 0 460 140" aria-label="heading">
-        <rect x="0.5" y="0.5" width="459" height="139" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
+      <svg id="heading-tape" viewBox="0 0 700 140" aria-label="heading">
+        <rect x="0.5" y="0.5" width="699" height="139" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
         <text x="12" y="20" fill="#8792a0" font-size="11" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">HDG</text>
-        <text id="heading-big" x="230" y="56" fill="#f2f6fa" font-size="60" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
-        <clipPath id="htClip"><rect x="6" y="72" width="448" height="62"/></clipPath>
+        <text id="heading-big" x="350" y="56" fill="#f2f6fa" font-size="60" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <clipPath id="htClip"><rect x="6" y="72" width="688" height="62"/></clipPath>
         <g clip-path="url(#htClip)"><g id="htape-scroll"></g></g>
-        <polygon points="230,92 221,76 239,76" fill="#00e07a"/>
-        <line x1="230" y1="76" x2="230" y2="136" stroke="#00e07a" stroke-width="1.6" stroke-opacity="0.4"/>
+        <polygon points="350,92 341,76 359,76" fill="#00e07a"/>
+        <line x1="350" y1="76" x2="350" y2="136" stroke="#00e07a" stroke-width="1.6" stroke-opacity="0.4"/>
       </svg>
       <div class="g-read" style="text-align:center;">Rate of turn <span id="rot-val" class="v-live">--</span> <span class="g-sub">°/min</span></div>
       <div class="pri-row">
@@ -87,7 +87,7 @@
         </div>
         <div class="ro-item">
           <div class="ins-label">COG</div>
-          <div class="ins-val-row"><span id="pri-cog" class="ins-bignum v-live">---</span><span class="ins-unit">°</span></div>
+          <div class="ins-val-row"><span id="pri-cog" class="ins-bignum v-live">---</span><span class="ins-unit">deg</span></div>
         </div>
         <div class="ro-item">
           <div class="ins-label">STW</div>
@@ -118,6 +118,10 @@
         <!-- wind TRUE: north-up arrow dial -->
         <div class="env-dial">
           <div class="env-dial-label">Wind True</div>
+          <div class="wind-stats">
+            <div class="wind-stat"><div class="wind-stat-t">Speed kts</div><div class="wind-stat-v"><span id="wtd-spd" class="v-live">--</span></div></div>
+            <div class="wind-stat"><div class="wind-stat-t">Direction</div><div class="wind-stat-v"><span id="wtd-dir" class="v-live">--</span>°</div></div>
+          </div>
           <svg id="wind-true-dial" viewBox="0 0 160 160" aria-label="true wind">
             <circle cx="80" cy="80" r="78" fill="none" stroke="#05080c" stroke-width="4"/>
             <circle cx="80" cy="80" r="75" fill="none" stroke="url(#bezelGrad)" stroke-width="3"/>
@@ -130,11 +134,14 @@
             <circle cx="80" cy="80" r="7" fill="url(#hubGrad)"/>
             <circle cx="77.5" cy="77.5" r="1.8" fill="#ffffff" fill-opacity="0.9"/>
           </svg>
-          <div class="g-sub">TRUE <span id="wtd-spd" class="v-live">--</span>kn @ <span id="wtd-dir" class="v-live">--</span>°</div>
         </div>
         <!-- wind RELATIVE: apparent wind vs bow (danger sector + ship glyph) -->
         <div class="env-dial">
           <div class="env-dial-label">Wind Relative</div>
+          <div class="wind-stats">
+            <div class="wind-stat"><div class="wind-stat-t">Speed kts</div><div class="wind-stat-v"><span id="wrd-spd" class="v-live">--</span></div></div>
+            <div class="wind-stat"><div class="wind-stat-t">Direction</div><div class="wind-stat-v"><span id="wrd-ang" class="v-live">--</span>°</div></div>
+          </div>
           <svg id="wind-rel-dial" viewBox="0 0 200 200" aria-label="relative wind">
             <defs><clipPath id="wrdClip"><circle cx="100" cy="100" r="89"/></clipPath></defs>
             <circle cx="100" cy="100" r="97" fill="none" stroke="#05080c" stroke-width="5"/>
@@ -158,7 +165,6 @@
             <circle cx="100" cy="100" r="8" fill="url(#hubGrad)"/>
             <circle cx="97" cy="97" r="2" fill="#ffffff" fill-opacity="0.9"/>
           </svg>
-          <div class="g-sub">REL <span id="wrd-spd" class="v-live">--</span>kn @ <span id="wrd-ang" class="v-live">--</span>°</div>
         </div>
       </div>
       <div class="env-readings">
@@ -296,9 +302,10 @@
               <!-- level sea (static); the ship glyph pitches over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-pitch-glyph">
-                <!-- side-view hull, bow raised to the right -->
-                <path d="M40,63 L104,63 Q118,63 128,55 L126,65 Q123,71 110,72 L54,72 Q42,72 40,66 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <rect x="60" y="52" width="24" height="11" rx="1.5" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <!-- USS destroyer side profile: long low hull, raked sharp bow (right), stepped superstructure + mast -->
+                <path d="M36,60 L108,60 L134,55 L131,64 Q129,70 118,71 L46,71 Q38,71 36,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M56,60 L56,51 L70,51 L70,46 L86,46 L88,51 L96,51 L96,60 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="79" y1="46" x2="79" y2="34" stroke="#c3ccd4" stroke-width="1.4"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -319,10 +326,10 @@
               <!-- level sea (static); the ship glyph heels over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-roll-glyph">
-                <!-- front-view hull: flared sides + rounded keel -->
-                <path d="M54,61 L106,61 L99,73 Q80,81 61,73 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <rect x="69" y="50" width="22" height="11" rx="1.5" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <line x1="80" y1="50" x2="80" y2="37" stroke="#c3ccd4" stroke-width="1.6"/>
+                <!-- USS destroyer head-on: narrow flared hull, pyramidal superstructure + mast -->
+                <path d="M66,60 L94,60 L90,73 Q80,79 70,73 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M71,60 L71,52 L76,46 L84,46 L89,52 L89,60 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="80" y1="46" x2="80" y2="33" stroke="#c3ccd4" stroke-width="1.5"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -607,6 +614,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=16"></script>
+<script src="/static/app.js?v=17"></script>
 </body>
 </html>
