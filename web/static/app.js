@@ -162,7 +162,7 @@
       line.setAttribute("y1", (cy + r1 * Math.sin(a)).toFixed(1));
       line.setAttribute("x2", (cx + r2 * Math.cos(a)).toFixed(1));
       line.setAttribute("y2", (cy + r2 * Math.sin(a)).toFixed(1));
-      line.setAttribute("stroke", major ? "#8b949e" : "#3d444d");
+      line.setAttribute("stroke", major ? "#7d8895" : "#1a2330");
       line.setAttribute("stroke-width", major ? "1.5" : "1");
       group.appendChild(line);
       if (major && labels) {
@@ -170,7 +170,7 @@
         const rr = labels.r != null ? labels.r : 70;
         t.setAttribute("x", (cx + rr * Math.cos(a)).toFixed(1));
         t.setAttribute("y", (cy + rr * Math.sin(a) + 4).toFixed(1));
-        t.setAttribute("fill", "#c9d1d9");
+        t.setAttribute("fill", "#dde4ea");
         t.setAttribute("font-size", "10");
         t.setAttribute("font-family", "monospace");
         t.setAttribute("text-anchor", "middle");
@@ -261,21 +261,21 @@
       e.setAttribute("stroke", color); e.setAttribute("stroke-width", w);
       g.appendChild(e);
     };
-    poly(-45, 45, 92, "#30363d", "1.5");
-    poly(-45, -30, 92, "#f85149", "3");
-    poly(30, 45, 92, "#f85149", "3");
+    poly(-45, 45, 92, "#263140", "1.5");
+    poly(-45, -30, 92, "#ff4d4d", "3");
+    poly(30, 45, 92, "#ff4d4d", "3");
     for (let a = -45; a <= 45; a += 15) {
       const p1 = pt(a, 78), p2 = pt(a, 92);
       const ln = document.createElementNS(NS, "line");
       ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
       ln.setAttribute("x2", p2[0].toFixed(1)); ln.setAttribute("y2", p2[1].toFixed(1));
-      ln.setAttribute("stroke", Math.abs(a) >= 30 ? "#f85149" : "#8b949e");
+      ln.setAttribute("stroke", Math.abs(a) >= 30 ? "#ff4d4d" : "#7d8895");
       ln.setAttribute("stroke-width", a === 0 ? "2" : "1.2");
       g.appendChild(ln);
       const lp = pt(a, 66);
       const t = document.createElementNS(NS, "text");
       t.setAttribute("x", lp[0].toFixed(1)); t.setAttribute("y", (lp[1] + 3).toFixed(1));
-      t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "9");
+      t.setAttribute("fill", "#7d8895"); t.setAttribute("font-size", "9");
       t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", "middle");
       t.textContent = String(Math.abs(a));
       g.appendChild(t);
@@ -293,14 +293,14 @@
       for (let a = -30; a <= 30.001; a += 3) { const p = pt(a, 44); d += (d ? " " : "") + p[0].toFixed(1) + "," + p[1].toFixed(1); }
       const arc = document.createElementNS(NS, "polyline");
       arc.setAttribute("points", d); arc.setAttribute("fill", "none");
-      arc.setAttribute("stroke", "#30363d"); arc.setAttribute("stroke-width", "1.5");
+      arc.setAttribute("stroke", "#263140"); arc.setAttribute("stroke-width", "1.5");
       g.appendChild(arc);
       for (let a = -30; a <= 30; a += 10) {
         const p1 = pt(a, 40), p2 = pt(a, 48);
         const ln = document.createElementNS(NS, "line");
         ln.setAttribute("x1", p1[0].toFixed(1)); ln.setAttribute("y1", p1[1].toFixed(1));
         ln.setAttribute("x2", p2[0].toFixed(1)); ln.setAttribute("y2", p2[1].toFixed(1));
-        ln.setAttribute("stroke", a === 0 ? "#c9d1d9" : "#8b949e");
+        ln.setAttribute("stroke", a === 0 ? "#dde4ea" : "#7d8895");
         ln.setAttribute("stroke-width", a === 0 ? "1.6" : "1");
         g.appendChild(ln);
       }
@@ -324,18 +324,18 @@
       const bg = document.createElementNS(NS, "rect");
       bg.setAttribute("x", String(t.x)); bg.setAttribute("y", String(ENG_TOP));
       bg.setAttribute("width", String(TW)); bg.setAttribute("height", String(ENG_H));
-      bg.setAttribute("rx", "3"); bg.setAttribute("fill", "#0d1117"); bg.setAttribute("stroke", "#30363d");
+      bg.setAttribute("rx", "3"); bg.setAttribute("fill", "#060a0f"); bg.setAttribute("stroke", "#263140");
       svg.appendChild(bg);
       for (const tv of t.ticks) {
         const y = ENG_BOT - (tv / t.max) * ENG_H;
         const ln = document.createElementNS(NS, "line");
         ln.setAttribute("x1", String(t.x - 4)); ln.setAttribute("y1", y.toFixed(1));
         ln.setAttribute("x2", String(t.x)); ln.setAttribute("y2", y.toFixed(1));
-        ln.setAttribute("stroke", "#8b949e"); ln.setAttribute("stroke-width", "1");
+        ln.setAttribute("stroke", "#7d8895"); ln.setAttribute("stroke-width", "1");
         svg.appendChild(ln);
         const tx = document.createElementNS(NS, "text");
         tx.setAttribute("x", String(t.x - 6)); tx.setAttribute("y", (y + 3).toFixed(1));
-        tx.setAttribute("fill", "#8b949e"); tx.setAttribute("font-size", "7");
+        tx.setAttribute("fill", "#7d8895"); tx.setAttribute("font-size", "7");
         tx.setAttribute("font-family", "monospace"); tx.setAttribute("text-anchor", "end");
         tx.textContent = String(tv);
         svg.appendChild(tx);
@@ -344,11 +344,11 @@
       bar.setAttribute("id", id + "-" + t.kind + "-bar");
       bar.setAttribute("x", String(t.x + 1)); bar.setAttribute("y", String(ENG_BOT));
       bar.setAttribute("width", String(TW - 2)); bar.setAttribute("height", "0");
-      bar.setAttribute("fill", "#d29922");
+      bar.setAttribute("fill", "#ffb02e");
       svg.appendChild(bar);
       const lbl = document.createElementNS(NS, "text");
       lbl.setAttribute("x", String(t.x + TW / 2)); lbl.setAttribute("y", String(ENG_BOT + 16));
-      lbl.setAttribute("fill", "#8b949e"); lbl.setAttribute("font-size", "9");
+      lbl.setAttribute("fill", "#7d8895"); lbl.setAttribute("font-size", "9");
       lbl.setAttribute("font-family", "monospace"); lbl.setAttribute("text-anchor", "middle");
       lbl.textContent = t.label;
       svg.appendChild(lbl);
@@ -372,20 +372,20 @@
     const base = document.createElementNS(NS, "line");
     base.setAttribute("x1", String(x0)); base.setAttribute("y1", String(cy));
     base.setAttribute("x2", String(x1)); base.setAttribute("y2", String(cy));
-    base.setAttribute("stroke", "#30363d"); base.setAttribute("stroke-width", "2");
+    base.setAttribute("stroke", "#263140"); base.setAttribute("stroke-width", "2");
     svg.appendChild(base);
     [-1, -0.5, 0, 0.5, 1].forEach((f) => {
       const x = cx + f * 100, big = f === 0;
       const ln = document.createElementNS(NS, "line");
       ln.setAttribute("x1", x.toFixed(1)); ln.setAttribute("y1", String(cy - (big ? 8 : 5)));
       ln.setAttribute("x2", x.toFixed(1)); ln.setAttribute("y2", String(cy + (big ? 8 : 5)));
-      ln.setAttribute("stroke", big ? "#8b949e" : "#3d444d"); ln.setAttribute("stroke-width", big ? "1.5" : "1");
+      ln.setAttribute("stroke", big ? "#7d8895" : "#1a2330"); ln.setAttribute("stroke-width", big ? "1.5" : "1");
       svg.appendChild(ln);
     });
     const mklabel = (x, txt, anchor) => {
       const t = document.createElementNS(NS, "text");
       t.setAttribute("x", String(x)); t.setAttribute("y", String(cy + 18));
-      t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "8");
+      t.setAttribute("fill", "#7d8895"); t.setAttribute("font-size", "8");
       t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", anchor);
       t.textContent = txt; svg.appendChild(t);
     };
@@ -395,7 +395,7 @@
     const mk = document.createElementNS(NS, "polygon");
     mk.setAttribute("id", id + "-mark");
     mk.setAttribute("points", cx + "," + (cy - 7) + " " + (cx + 6) + "," + cy + " " + cx + "," + (cy + 7) + " " + (cx - 6) + "," + cy);
-    mk.setAttribute("fill", "#d29922");
+    mk.setAttribute("fill", "#ffb02e");
     svg.appendChild(mk);
   }
   function setLinearMarker(id, v, half) {
@@ -603,7 +603,7 @@
     const label = (x, y, txt, anchor) => {
       const t = mk("text");
       t.setAttribute("x", String(x)); t.setAttribute("y", String(y));
-      t.setAttribute("fill", "#8b949e"); t.setAttribute("font-size", "9");
+      t.setAttribute("fill", "#7d8895"); t.setAttribute("font-size", "9");
       t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", anchor || "end");
       t.textContent = txt; dyn.appendChild(t);
     };
@@ -621,26 +621,26 @@
     // seabed fill below the trace
     const fill = mk("polygon");
     fill.setAttribute("points", pts + " " + xOf(n - 1).toFixed(1) + "," + y1 + " " + xOf(0).toFixed(1) + "," + y1);
-    fill.setAttribute("fill", "#3a2a12"); fill.setAttribute("opacity", "0.55");
+    fill.setAttribute("fill", "#33280f"); fill.setAttribute("opacity", "0.55");
     dyn.appendChild(fill);
     // depth trace
     const line = mk("polyline");
     line.setAttribute("id", "depth-line");
     line.setAttribute("points", pts);
-    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#58a6ff"); line.setAttribute("stroke-width", "1.5");
+    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#3fa7ff"); line.setAttribute("stroke-width", "1.5");
     dyn.appendChild(line);
     // alert threshold hline (red dashed) when within the scaled window
     if (ALERT_DEPTH_M >= mn && ALERT_DEPTH_M <= mx) {
       const al = mk("line");
       al.setAttribute("x1", String(x0)); al.setAttribute("x2", String(x1));
       al.setAttribute("y1", yOf(ALERT_DEPTH_M).toFixed(1)); al.setAttribute("y2", yOf(ALERT_DEPTH_M).toFixed(1));
-      al.setAttribute("stroke", "#f85149"); al.setAttribute("stroke-width", "1"); al.setAttribute("stroke-dasharray", "4 3");
+      al.setAttribute("stroke", "#ff4d4d"); al.setAttribute("stroke-width", "1"); al.setAttribute("stroke-dasharray", "4 3");
       dyn.appendChild(al);
     }
     // ship marker at "Now"
     const shipDot = mk("circle");
     shipDot.setAttribute("cx", xOf(n - 1).toFixed(1)); shipDot.setAttribute("cy", yOf(depthHistory[n - 1]).toFixed(1));
-    shipDot.setAttribute("r", "3"); shipDot.setAttribute("fill", "#c9d1d9");
+    shipDot.setAttribute("r", "3"); shipDot.setAttribute("fill", "#dde4ea");
     dyn.appendChild(shipDot);
     // axis labels: shallow (top) / deep (bottom) + time span
     label(x0 - 3, y0 + 8, mn.toFixed(1));

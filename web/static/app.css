@@ -1,14 +1,23 @@
   :root {
-    --bg: #0d1117;
-    --panel: #161b22;
-    --panel-hdr: #1c2431;
-    --border: #30363d;
-    --text: #c9d1d9;
-    --muted: #8b949e;
-    --accent: #58a6ff;
-    --ok: #3fb950;
-    --down: #f85149;
-    --warn: #d29922;
+    /* marine-INS palette: dark blue-charcoal page, near-black instrument faces,
+       signal-green live / amber sim / red alarm, cyan-blue for course & track */
+    --bg: #0b0f14;
+    --panel: #11161d;
+    --panel-hdr: #161d26;
+    --border: #263140;
+    --text: #dde4ea;
+    --muted: #7d8895;
+    --accent: #3fa7ff;
+    --ok: #22dd77;
+    --down: #ff4d4d;
+    --warn: #ffb02e;
+    /* instrument-face tokens (also drive the conning SVG literals) */
+    --face: #060a0f;    /* dial/track face — "behind glass" near-black */
+    --hull: #0e141c;    /* ship / rudder body fill */
+    --bezel: #263140;   /* gauge bezel ring / outline (== border) */
+    --grid: #1a2330;    /* minor ticks / gridlines */
+    --tick: #7d8895;    /* major ticks (== muted) */
+    --seabed: #33280f;  /* depth-graph seabed fill */
     --mono: ui-monospace, "Cascadia Code", "Consolas", "SFMono-Regular", Menlo, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
@@ -393,20 +402,13 @@
   /* value source encoding: green = NMEA-backed, amber = display-only */
   .v-live { color: var(--ok); }
   .v-sim { color: var(--warn); }
+  /* Live/Sim encoding legend — folded into the status strip (no overlap) */
   .ins-legend {
-    position: absolute;
-    right: 16px;
-    bottom: 12px;
-    display: flex;
+    display: inline-flex;
     gap: 12px;
     align-items: center;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--muted);
-    background: rgba(13,17,23,.72);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 4px 10px;
-    pointer-events: none;
   }
   .ins-legend .lg { display: inline-flex; align-items: center; gap: 4px; }
   .ins-legend .dotc { font-size: 12px; line-height: 1; }
