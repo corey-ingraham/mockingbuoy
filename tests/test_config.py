@@ -112,7 +112,7 @@ def test_build_initial_state_populates_new_fields() -> None:
     utc = datetime(2024, 1, 1, tzinfo=UTC)
     state = cfg.build_initial_state(utc)
     # Example config sets these explicitly.
-    assert state.depth_m == pytest.approx(10.0)
+    assert state.depth_m == pytest.approx(125.0)
     assert state.sea_state == 1
     assert isinstance(state.sea_state, int)
     assert state.wind_speed_kn == pytest.approx(8.0)

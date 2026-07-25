@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=25">
+<link rel="stylesheet" href="/static/app.css?v=26">
 </head>
 <body>
 
@@ -265,7 +265,7 @@
             <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-port-rpm" class="v-sim">----</span></div></div>
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-port-load" class="v-sim">--</span>%</div></div>
           </div>
-          <svg id="prop-port" viewBox="-16 0 126 230" aria-label="port engine"></svg>
+          <svg id="prop-port" viewBox="0 0 200 230" aria-label="port engine"></svg>
         </div>
         <div class="prop-col">
           <div class="prop-title">Stbd Engine</div>
@@ -273,44 +273,14 @@
             <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-stbd-rpm" class="v-sim">----</span></div></div>
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-stbd-load" class="v-sim">--</span>%</div></div>
           </div>
-          <svg id="prop-stbd" viewBox="-16 0 126 230" aria-label="starboard engine"></svg>
+          <svg id="prop-stbd" viewBox="0 0 200 230" aria-label="starboard engine"></svg>
         </div>
       </div>
     </div>
 
-    <!-- AUTOPILOT: mode pill + synthetic track point + metrics + linear off-course/off-track (amber = display-only, s.sim) -->
-    <div class="ins-panel p-autopilot">
-      <div class="ins-hdr"><span>Autopilot</span><span class="ap-mode-wrap"><span class="ap-mode-lbl">Mode</span><span id="ap-mode" class="ap-pill v-sim">---</span></span></div>
-      <div class="ap-track">
-        <div class="ins-label">Track waypoint</div>
-        <div class="ins-val-row"><span id="ap-track-lat" class="ap-coord v-sim">---</span></div>
-        <div class="ins-val-row"><span id="ap-track-lon" class="ap-coord v-sim">---</span></div>
-      </div>
-      <div class="ap-metrics">
-        <div class="ap-cell"><div class="ins-label">Distance</div><div class="ins-val-row"><span id="ap-dist" class="ap-num v-sim">--</span><span class="ins-unit">NM</span></div></div>
-        <div class="ap-cell"><div class="ins-label">Course</div><div class="ins-val-row"><span id="ap-course" class="ap-num v-sim">---</span><span class="ins-unit">°</span></div></div>
-        <div class="ap-cell"><div class="ins-label">TTG</div><div class="ins-val-row"><span id="ap-ttg" class="ap-num v-sim">--:--</span></div></div>
-      </div>
-      <div class="ap-ind">
-        <div class="ins-label">Off-course (±5°)</div>
-        <svg id="ap-offcourse" viewBox="0 0 220 44" aria-label="off course"></svg>
-      </div>
-      <div class="ap-ind">
-        <div class="ins-label">Off-track (±50 m)</div>
-        <svg id="ap-xtd" viewBox="0 0 220 44" aria-label="cross-track error"></svg>
-      </div>
-    </div>
-    <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
-    <div class="ins-panel p-alerts">
-      <div class="ins-hdr"><span>Alerts</span><button id="alerts-silence" class="small">Silence</button></div>
-      <div id="alerts-list" class="alerts-list"><div class="hint">No active alerts</div></div>
-    </div>
-    </div><!-- /conn-col-right -->
-
-    <!-- ATTITUDE: twin marine inclinometers (pitch/trim + roll/heel) -->
+    <!-- ATTITUDE: twin marine inclinometers (pitch/trim + roll/heel) — sits under propulsion -->
     <div class="ins-panel p-helm">
       <div class="ins-hdr"><span>Attitude</span></div>
-      <!-- inclinometers: glossy dials, grey hull glyph over an orange heel/horizon fill -->
       <div class="incl-dials">
         <div class="incl-dial">
           <svg id="incl-pitch-dial" viewBox="0 0 160 132" aria-label="pitch inclinometer">
@@ -320,10 +290,8 @@
             <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
             <g clip-path="url(#ipClip)">
               <g id="incl-pitch-scale"></g>
-              <!-- level sea (static); the ship glyph pitches over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-pitch-glyph">
-                <!-- USS destroyer side profile (compact): long low hull, fine raked bow right, bridge + funnel + mast -->
                 <path d="M42,64 L112,64 L124,61 L122,69 Q120,70 114,70 L48,70 Q43,70 42,67 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <path d="M58,64 L58,57 L67,57 L67,52 L79,52 L79,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <path d="M84,64 L84,58 L91,58 L91,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
@@ -345,10 +313,8 @@
             <circle cx="80" cy="66" r="52" fill="url(#faceGrad)"/>
             <g clip-path="url(#irClip)">
               <g id="incl-roll-scale"></g>
-              <!-- level sea (static); the ship glyph heels over it -->
               <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
               <g id="incl-roll-glyph">
-                <!-- USS destroyer head-on (tall, narrower, V keel): flared hull, stepped bridge + tall mast -->
                 <path d="M58,62 L102,62 L94,74 L80,87 L66,74 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <path d="M66,62 L66,54 L72,54 L74,46 L86,46 L88,54 L94,54 L94,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
                 <line x1="80" y1="46" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.5"/>
@@ -363,6 +329,41 @@
         </div>
       </div>
     </div>
+
+    <!-- AUTOPILOT: mode pill + synthetic track point + metrics + linear off-course/off-track (amber = display-only, s.sim) -->
+    <div class="ins-panel p-autopilot">
+      <div class="ins-hdr"><span>Autopilot</span></div>
+      <div class="ap-top">
+        <div class="ap-mode-cell">
+          <div class="ins-label">Mode</div>
+          <span id="ap-mode" class="ap-pill v-sim">---</span>
+        </div>
+        <div class="ap-track">
+          <div class="ins-label">Track waypoint</div>
+          <div class="ins-val-row"><span id="ap-track-lat" class="ap-coord v-sim">---</span></div>
+          <div class="ins-val-row"><span id="ap-track-lon" class="ap-coord v-sim">---</span></div>
+        </div>
+      </div>
+      <div class="ap-metrics">
+        <div class="ap-cell"><div class="ins-label">Distance</div><div class="ins-val-row"><span id="ap-dist" class="ap-num v-sim">--</span><span class="ins-unit">NM</span></div></div>
+        <div class="ap-cell"><div class="ins-label">Course</div><div class="ins-val-row"><span id="ap-course" class="ap-num v-sim">---</span><span class="ins-unit">°</span></div></div>
+        <div class="ap-cell"><div class="ins-label">TTG</div><div class="ins-val-row"><span id="ap-ttg" class="ap-num v-sim">--:--</span></div></div>
+      </div>
+      <div class="ap-ind">
+        <div class="ins-label">Off-course (±5°)</div>
+        <svg id="ap-offcourse" viewBox="0 0 220 44" aria-label="off course"></svg>
+      </div>
+      <div class="ap-ind">
+        <div class="ins-label">Off-track (±50 m)</div>
+        <svg id="ap-xtd" viewBox="0 0 220 44" aria-label="cross-track error"></svg>
+      </div>
+    </div>
+    <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
+    <div class="ins-panel p-alerts">
+      <div class="ins-hdr"><span>Alerts</span><button id="alerts-silence" class="small">Silence</button></div>
+      <div id="alerts-list" class="alerts-list"><div class="hint">No active alerts</div></div>
+    </div>
+    </div><!-- /conn-col-right -->
 
   </div>
 
@@ -630,6 +631,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=25"></script>
+<script src="/static/app.js?v=26"></script>
 </body>
 </html>

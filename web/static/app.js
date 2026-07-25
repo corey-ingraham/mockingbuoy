@@ -3,7 +3,7 @@
   const MAX_LINES = 300;
   const STALE_MS = 3500;
   const DEPTH_CAP = 180;    // 1 Hz depth samples => 3-minute history window
-  const ALERT_DEPTH_M = 5;  // display-only shallow-water alert threshold (amber)
+  const ALERT_DEPTH_M = 50;  // display-only shallow-water alert threshold (amber)
 
   // Manual-field range table mirroring the server's _UPDATE_RANGES (client-side pre-check only).
   const RANGES = {
@@ -401,9 +401,11 @@
     if (!svg) return;
     const NS = "http://www.w3.org/2000/svg";
     const TW = 36;
+    // tracks centred at 25% / 75% of the 200-wide viewBox so each bar sits under its RPM/LOAD header;
+    // wide gap between them leaves room for the LOAD axis labels (no longer clipped by the RPM bar)
     const tracks = [
-      { kind: "rpm", x: 14, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM" },
-      { kind: "load", x: 62, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
+      { kind: "rpm", x: 32, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM" },
+      { kind: "load", x: 132, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
     ];
     for (const t of tracks) {
       const bg = document.createElementNS(NS, "rect");
