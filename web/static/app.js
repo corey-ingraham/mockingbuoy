@@ -168,13 +168,19 @@
       if (major && labels) {
         const t = document.createElementNS(NS, "text");
         const rr = labels.r != null ? labels.r : 70;
-        t.setAttribute("x", (cx + rr * Math.cos(a)).toFixed(1));
-        t.setAttribute("y", (cy + rr * Math.sin(a) + 4).toFixed(1));
+        const lx = (cx + rr * Math.cos(a)).toFixed(1);
+        const ly = (cy + rr * Math.sin(a) + 4).toFixed(1);
+        t.setAttribute("x", lx);
+        t.setAttribute("y", ly);
         t.setAttribute("fill", "#dde4ea");
         t.setAttribute("font-size", "10");
         t.setAttribute("font-family", "monospace");
         t.setAttribute("text-anchor", "middle");
         t.textContent = labels.fn(deg);
+        // "floating" labels: on a dial whose card rotates with heading, stash each label's
+        // anchor so repaint can counter-rotate it (rotate +hdg about its own point) → the
+        // numeral stays upright at every heading while still riding the card to its bearing.
+        if (labels.floating) { t.dataset.fx = lx; t.dataset.fy = ly; }
         group.appendChild(t);
       }
     }
@@ -209,14 +215,17 @@
   }
 
   // build compass rose ticks + wind rose ticks once
+  let compassLabels = [];
   (function buildCompassCard() {
     const card = $("compass-card");
     if (!card) return;
     const cards = { 0: "N", 90: "E", 180: "S", 270: "W" };
     buildDialTicks(card, 100, 100, 94, 87, 80, 10, 30, {
       r: 70,
+      floating: true,
       fn: (deg) => cards[deg] || ((deg < 100 ? "0" : "") + deg),
     });
+    compassLabels = card.querySelectorAll("text");
   })();
   (function buildWindTicks() {
     const g = $("wind-ticks");
@@ -439,6 +448,13 @@
     if (Number.isFinite(hdg)) {
       const compassCard = $("compass-card");
       if (compassCard) compassCard.setAttribute("transform", "rotate(" + (-hdg) + " 100 100)");
+      // counter-rotate each numeral by +hdg about its own anchor so it rides the card to its
+      // bearing but stays upright/readable at every heading (card rotates -hdg → net glyph 0).
+      const hr = hdg.toFixed(1);
+      for (let i = 0; i < compassLabels.length; i++) {
+        const lbl = compassLabels[i];
+        lbl.setAttribute("transform", "rotate(" + hr + " " + lbl.dataset.fx + " " + lbl.dataset.fy + ")");
+      }
       const cmpHdg = $("cmp-hdg");
       if (cmpHdg) cmpHdg.textContent = num(hdg, 0);
     }
