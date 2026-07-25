@@ -58,6 +58,16 @@ ${PIP} download ${HASH_FLAG} \
     --dest "${WHEELHOUSE}" \
     --requirement "${REQ_FILE}"
 
+# Also capture the PEP 517 build backend (setuptools + wheel). Modern venvs (Python 3.12+) no
+# longer seed setuptools, so an offline editable install of the app has no backend without
+# these. They are build-time only (not in requirements.txt), so fetch them separately and
+# un-hashed — universal pure-Python wheels. Non-fatal: the service imports via WorkingDirectory
+# regardless; only the console-script shims need the editable install.
+echo "Downloading build backend (setuptools, wheel) into ${WHEELHOUSE} ..."
+# shellcheck disable=SC2086  # PIP may be `python3 -m pip`; intentional word-split
+${PIP} download --only-binary=:all: --dest "${WHEELHOUSE}" setuptools wheel \
+    || echo "warn: could not download setuptools/wheel — offline editable install may lack a backend" >&2
+
 # Write a checksum manifest so wheelhouse rot (a truncated/corrupt/half-synced artifact) is
 # detectable before an offline install trusts it: verify with
 #   cd wheelhouse && sha256sum -c MANIFEST.sha256

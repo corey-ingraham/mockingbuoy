@@ -192,9 +192,23 @@ else
     "${PIP}" install --quiet ${HASH_FLAG} -r requirements.txt
 fi
 
-# Register the app so 'uvicorn web.app:app' imports cleanly. --no-build-isolation uses
-# the venv's setuptools (no index round-trip); --no-deps because deps are done above.
-# Non-fatal: the unit also runs with WorkingDirectory=${APP_DIR}, so 'web' imports anyway.
+# Python 3.12+ venvs no longer seed setuptools, so the PEP 517 editable build below has no
+# backend ("Cannot import 'setuptools.build_meta'"). Provide it — from the offline wheelhouse
+# when present, else the index. Best-effort: the app still imports via WorkingDirectory even if
+# this and the editable install are skipped, so an offline host lacking a setuptools wheel only
+# loses the console-script shims, not the service.
+if ls wheelhouse/setuptools-*.whl >/dev/null 2>&1; then
+    "${PIP}" install --quiet --no-index --find-links=wheelhouse setuptools wheel \
+        || warn "setuptools/wheel not installed from wheelhouse — editable console-scripts may be unavailable"
+else
+    "${PIP}" install --quiet setuptools wheel \
+        || warn "setuptools/wheel not installed (no index?) — editable console-scripts may be unavailable"
+fi
+
+# Register the app so 'uvicorn web.app:app' imports cleanly. --no-build-isolation uses the
+# venv's setuptools (installed just above; no index round-trip); --no-deps because deps are
+# done above. Non-fatal: the unit also runs with WorkingDirectory=${APP_DIR}, so 'web' imports
+# anyway.
 log "installing the mockingbuoy package (editable) ..."
 "${PIP}" install --quiet --no-build-isolation --no-deps -e . \
     || warn "editable install failed; app still importable via WorkingDirectory=${APP_DIR}"
@@ -295,7 +309,11 @@ else
     [ "${#_pw}" -eq 24 ] || die "failed to generate a 24-char password"
     # Feed the plaintext via stdin, never argv (argv is world-readable in /proc/<pid>/cmdline).
     # No --plaintext fallback: that would put the secret on the command line. Fail instead.
-    _hash="$(printf '%s' "${_pw}" | caddy hash-password 2>/dev/null || true)"
+    # caddy reads the password as a newline-TERMINATED line: a bare `printf '%s'` (no trailing
+    # newline) makes it hit EOF mid-read and abort ("Error: EOF"), so terminate the line. Pin
+    # --algorithm bcrypt: the Caddyfile basic_auth directive validates bcrypt and the detection
+    # above matches $2[aby]$ — don't depend on caddy's default staying bcrypt.
+    _hash="$(printf '%s\n' "${_pw}" | caddy hash-password --algorithm bcrypt 2>/dev/null || true)"
     [ -n "${_hash}" ] || die "caddy hash-password failed (need Caddy v2 with stdin support)"
     # Append the hash to the file (never echoed to the terminal/journal).
     printf 'MOCKINGBUOY_BASIC_HASH="%s"\n' "${_hash}" >> "${SVC_ENV}"
