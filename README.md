@@ -28,8 +28,9 @@ host) and needs no desktop.
 - **Three operating modes** — **simulate** (fully synthetic), **auto** (priority-routed *verbatim*
   passthrough of real NMEA on physical inputs with sentence-class cross-routing and seamless failover to
   generation on input loss), and **replay** (re-inject a captured NMEA file through the same writer path)
-- **Conning display** — glanceable SVG gauges (compass, rate-of-turn, inclinometer, wind rose) with
-  colourblind-safe **LIVE / SIM / OFF** provenance tagging on every value
+- **Conning display** — glanceable SVG gauges (compass, rate-of-turn, inclinometer, wind rose), with
+  colourblind-safe **LIVE / SIM / OFF** provenance tagging **per channel** (on the health event and the
+  NMEA Streams panes)
 - **Per-channel runtime toggle** — enable/disable any output channel live, no restart, with a persisted
   default
 - **Maintenance diagnostics** — a bench NMEA workbench (multi-port monitor, per-port stats, auto-baud
@@ -94,8 +95,10 @@ wheels; see the offline-redeploy steps in [docs/ref/deployment.md](docs/ref/depl
 
 ## Configure
 
-Edit `config.json` (or a git-ignored `config.local.json`). Channels are a generic list — GPS,
-heading, and AIS are just three configured instances. Set each channel's serial `path` to a stable
+Edit `config.json` (the tracked defaults) or a git-ignored `data/config.local.json` — the latter is what
+the service actually reads when present (`MOCKINGBUOY_CONFIG` overrides it; otherwise
+`data/config.local.json`, then `config.json`). Channels are a generic list — GPS, heading, and AIS are
+just three configured instances. Set each channel's serial `path` to a stable
 `/dev/serial/by-id/...` value. See [docs/ref/serial-hardware.md](docs/ref/serial-hardware.md) and
 [docs/ref/architecture.md](docs/ref/architecture.md).
 

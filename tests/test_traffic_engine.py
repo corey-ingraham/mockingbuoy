@@ -23,7 +23,7 @@ from nmea_sim.config import (
     TimeSourceSpec,
 )
 from nmea_sim.engine import AIS_POSITION, AIS_STATIC, Engine, _AisSource
-from nmea_sim.realism import CATEGORY_SHIP_TYPE, Region
+from nmea_sim.realism import RealismProfile, Region, TargetSpawner
 from nmea_sim.state import VesselState
 
 # A tight, area-neutral bounding box sitting in open water (no real locale).
@@ -174,13 +174,22 @@ def test_static_yields_ownship_static_then_target_statics(tmp_path: Path) -> Non
     assert own.msg_type == 5
     assert own.mmsi == 366000123  # own-ship static comes first
 
-    ship_types = set(CATEGORY_SHIP_TYPE.values())
+    # Reconstruct the exact per-target ship types the spawner produces for this seed/profile.
+    # For AIS_STATIC the engine does not advance targets, so this matches the emitted set 1:1.
+    expected_types = [
+        t.ship_type for t in TargetSpawner(RealismProfile.from_dict(data), 9).spawn(count)
+    ]
+    assert any(st != 0 for st in expected_types)  # fixture actually exercises non-'other' types
+    decoded_types = []
     target_mmsis = set()
     for i in range(2, len(lines), 2):
         d = decode(lines[i], lines[i + 1])
         assert d.msg_type == 5
-        assert d.ship_type in ship_types  # a recognised category ship type
+        decoded_types.append(d.ship_type)
         target_mmsis.add(d.mmsi)
+    # H3: the realism type_mix must reach the wire per target — NOT decode to a uniform 0
+    # (which the old `d.ship_type in ship_types` check accepted because 0 was in the set).
+    assert decoded_types == expected_types
     assert 366000123 not in target_mmsis  # targets are synthetic, never own-ship
     assert len(target_mmsis) == count
 

@@ -41,7 +41,8 @@ def test_ths_uses_true_heading_with_mode(gen: HeadingGenerator, sample_state: Ve
     parsed = pynmea2.parse(line)
     assert parsed.talker == "HE"
     assert float(parsed.heading) == pytest.approx(sample_state.heading_true_deg, abs=0.05)
-    assert parsed.mode_indicator == "A"
+    # A simulator self-identifies with mode 'S' (the standard's simulator flag), not 'A'.
+    assert parsed.mode_indicator == "S"
 
 
 def test_hdm_uses_magnetic_heading(gen: HeadingGenerator, sample_state: VesselState) -> None:

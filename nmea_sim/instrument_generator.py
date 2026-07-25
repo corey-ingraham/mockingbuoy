@@ -46,29 +46,33 @@ def _magnetic(true_deg: float, variation_deg: float) -> float:
 class InstrumentGenerator:
     """Builds instrument sentences for one talker (default ``II``) from a ``VesselState``."""
 
+    # Sentence name -> builder method name. Hoisted to the class so the dispatch table is
+    # built once at import, not rebuilt on every emission (this runs at each sentence's rate).
+    _BUILDERS = {
+        "VHW": "vhw",
+        "DPT": "dpt",
+        "DBT": "dbt",
+        "MWV": "mwv",
+        "MWD": "mwd",
+        "ROT": "rot",
+        "XDR": "xdr",
+        "RSA": "rsa",
+        "VDR": "vdr",
+        "PASHR": "pashr",
+    }
+
     def __init__(self, talker: str = "II") -> None:
         self.talker = talker
 
     def build(self, state: VesselState, sentences: tuple[str, ...] = SUPPORTED) -> list[str]:
         """Return the requested sentences (in order) as strings without CRLF."""
-        builders = {
-            "VHW": self.vhw,
-            "DPT": self.dpt,
-            "DBT": self.dbt,
-            "MWV": self.mwv,
-            "MWD": self.mwd,
-            "ROT": self.rot,
-            "XDR": self.xdr,
-            "RSA": self.rsa,
-            "VDR": self.vdr,
-            "PASHR": self.pashr,
-        }
         out: list[str] = []
         for name in sentences:
             try:
-                out.append(builders[name](state))
+                builder = getattr(self, self._BUILDERS[name])
             except KeyError:
                 raise ValueError(f"unsupported instrument sentence {name!r}") from None
+            out.append(builder(state))
         return out
 
     def vhw(self, s: VesselState) -> str:
@@ -220,16 +224,18 @@ class InstrumentGenerator:
     def pashr(self, s: VesselState) -> str:
         """Proprietary attitude sentence, hand-built (no reliable pynmea2 class).
 
-        Field layout (a widely-used inertial/attitude form)::
+        Field layout (a widely-used inertial/attitude form) — eleven fields after the
+        ``$PASHR`` address::
 
-            $PASHR,hhmmss.sss,HHH.HH,T,RRR.RR,PPP.PP,heave,rr.rrr,pp.ppp,hh.hhh,aH,aP*CS
+            $PASHR,hhmmss.sss,HHH.HH,T,RRR.RR,PPP.PP,heave,rr.rrr,pp.ppp,hh.hhh,qG,qI*CS
                     |          |     | |      |      |     |       |       |     |  |
-                    time       heading true  roll   pitch heave  roll-acc pitch  hdg  quality
-                                     flag                        (m)      acc     acc
+                    time       heading true  roll   pitch heave  roll-acc pitch  hdg  GPS  INS
+                                     flag                        (m)      acc     acc  qual status
 
         This sim populates time, true heading, roll, pitch, and a zero heave; the
-        accuracy/quality tail is left as fixed plausible values. The body is closed
-        with the shared XOR checksum so the line is a valid ``$PASHR,...*HH``.
+        accuracy tail and the two trailing quality flags (GPS update quality, INS
+        status) are fixed plausible values. The body is closed with the shared XOR
+        checksum so the line is a valid ``$PASHR,...*HH``.
         """
         hhmmss = f"{s.utc:%H%M%S}.{s.utc.microsecond // 1000:03d}"
         body = (
@@ -239,6 +245,7 @@ class InstrumentGenerator:
             f"{s.pitch_deg:.2f},"
             "0.00,"  # heave, metres
             "0.000,0.000,0.000,"  # roll / pitch / heading accuracy, degrees
-            "2"  # GPS/INS quality flag (2 = RTK-fixed-class)
+            "2,"  # GPS update quality flag (2 = RTK-fixed-class)
+            "0"  # INS status flag
         )
         return checksum.format_sentence(body)

@@ -27,19 +27,27 @@ control, (2) TLS for confidentiality/integrity on the wire, (3) minimize who can
   authenticate automatically from the browser's cached credentials — zero client code. Set
   `reverse_proxy … { flush_interval -1 }` so Caddy doesn't buffer the stream.
 
-Caddyfile essentials:
+Caddyfile essentials (user and hash come from the environment — see `secrets/service.env`):
 ```caddy
 {
     admin off
 }
 
-<LAN_IP> {
-    tls { issuer internal { ca lab_root } }
-    basic_auth { operator <BCRYPT_HASH> }
+{$MOCKINGBUOY_SITE:<LAN_IP>}:443 {
+    tls internal
+    basic_auth {
+        {$MOCKINGBUOY_BASIC_USER:<you>} {$MOCKINGBUOY_BASIC_HASH}
+    }
     header {
         X-Content-Type-Options nosniff
-        Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'none'"
         Referrer-Policy no-referrer
+        # Strict script-src: the UI's JS + CSS are served as same-origin files under /static
+        # (no inline <script>), so no 'unsafe-inline' for scripts. style-src keeps 'unsafe-inline'
+        # only for the page's inline style="" layout attributes.
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+        X-Frame-Options DENY
+        Strict-Transport-Security "max-age=31536000"
+        -Server
     }
     reverse_proxy unix//run/mockingbuoy/app.sock { flush_interval -1 }
 }
@@ -102,8 +110,10 @@ surface when absent.
 
 ## Secrets
 
-- Web credential = an argon2/bcrypt **hash** in `secrets/webauth.hash` (0600, git-ignored). The Caddy
-  root CA key lives in `secrets/` too. Nothing secret is ever committed.
+- Web credential = a bcrypt **hash** (from `caddy hash-password`) carried in the `MOCKINGBUOY_BASIC_HASH`
+  env var inside `secrets/service.env` (0600, git-ignored) — never a `webauth.hash` file, never a
+  plaintext password. `setup.sh` generates it on first run and writes it there. The Caddy internal root
+  CA is managed by Caddy in its own data dir. Nothing secret is ever committed.
 - **First-run password:** setup generates a random password, stores only its hash, and prints the
   plaintext **once**. `config.json` holds non-secret settings only.
 

@@ -59,8 +59,6 @@ class PortStats:
 def _serial_kwargs(framing: str) -> dict[str, object]:
     """Translate a framing string like ``8N1`` into pyserial bytesize/parity/stopbits."""
     f = framing.strip().upper()
-    if len(f) != 3 or f[1] not in ("N", "E", "O"):
-        raise ValueError(f"unsupported framing {framing!r} (expected e.g. 8N1)")
     bytesizes = {
         "5": serial.FIVEBITS,
         "6": serial.SIXBITS,
@@ -69,8 +67,11 @@ def _serial_kwargs(framing: str) -> dict[str, object]:
     }
     parities = {"N": serial.PARITY_NONE, "E": serial.PARITY_EVEN, "O": serial.PARITY_ODD}
     stopbits = {"1": serial.STOPBITS_ONE, "2": serial.STOPBITS_TWO}
-    if f[0] not in bytesizes or f[2] not in stopbits:
-        raise ValueError(f"unsupported framing {framing!r}")
+    # One consistent, clear rejection for every malformed framing (bad length, data bits,
+    # parity, or stop bits) so validate() can catch it instead of the engine tracebacking at
+    # port-open time. Never emit a raw int()/lookup error out of here.
+    if len(f) != 3 or f[0] not in bytesizes or f[1] not in parities or f[2] not in stopbits:
+        raise ValueError(f"unsupported framing {framing!r} (expected e.g. 8N1)")
     return {
         "bytesize": bytesizes[f[0]],
         "parity": parities[f[1]],
@@ -255,7 +256,10 @@ class SerialPort:
             return
         try:
             accepted = rx.accepted_changes(line, self._rx_accept)
-        except pynmea2.ParseError:
+        except (pynmea2.ParseError, ValueError, TypeError, AttributeError):
+            # rx.parse_line is total per-field, but a structurally-unparseable body still raises
+            # ParseError; belt-and-suspenders on the value/type/attribute family keeps one bad
+            # line from ever killing the reader thread.
             self.stats.rx_parse_errors += 1
             return
         if accepted:

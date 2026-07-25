@@ -18,11 +18,13 @@ Anything unrecognised, malformed, or empty is ``None`` so the router simply drop
 from __future__ import annotations
 
 # Formatters that carry position/time — these feed the GPS channel.
-_GNSS_FORMATTERS = frozenset({"RMC", "GGA", "GLL", "VTG", "ZDA"})
+_GNSS_FORMATTERS = frozenset({"RMC", "GGA", "GLL", "GNS", "VTG", "ZDA"})
 # Formatters that carry heading/rate-of-turn — these feed the heading channel.
 _HEADING_FORMATTERS = frozenset({"HDT", "HDG", "HDM", "THS", "ROT"})
 # AIS is matched on the whole 5-char address, not a 3-char formatter (see module docstring).
-_AIS_ADDRESSES = frozenset({"AIVDM", "AIVDO"})
+# VDM/VDO is emitted by more than the AI mobile talker: base stations (BS) and AIS base/aid
+# talkers (AB) are common on real feeds, so the known non-AI talkers are recognised too.
+_AIS_ADDRESSES = frozenset({"AIVDM", "AIVDO", "ABVDM", "ABVDO", "BSVDM", "BSVDO"})
 
 # The router maps a sentence class to the output channel role that consumes it.
 CLASS_TO_ROLE = {"gnss": "gps", "heading": "heading", "ais": "ais"}
@@ -49,8 +51,11 @@ def sentence_class(line: str) -> str | None:
     if start == "!":
         return "ais" if address in _AIS_ADDRESSES else None
 
-    # "$" sentences: talker is 2 chars, formatter is the next 3.
-    if len(address) < 5:
+    # "$" sentences: a standard address is exactly a 2-char talker + a 3-char formatter.
+    # Anything longer is not a standard address, and a proprietary "$P..." sentence has a
+    # variable-length manufacturer address with no talker/formatter split — neither may be
+    # sliced at [2:5] and mistaken for a real formatter (e.g. "$PGRMC" is NOT GNSS).
+    if len(address) != 5 or address[0] == "P":
         return None
     formatter = address[2:5]
     if formatter in _GNSS_FORMATTERS:

@@ -21,6 +21,7 @@ channel is over budget. It never imports the web/serial layers — those plug in
 from __future__ import annotations
 
 import contextlib
+import math
 import queue
 import threading
 import time
@@ -70,6 +71,33 @@ _STOP = object()
 # WGS-84 geodesic, shared for the route driver's bearing/distance to the active waypoint (the same
 # model ``navigation.dead_reckon`` uses to step along that bearing, so steer and step stay in sync).
 _GEOD = Geodesic.WGS84
+
+# A worker with no scheduled emitters (an all-disabled emit list, or a receive-only channel) has
+# nothing to fire, so it blocks on its inbox with this fixed timeout instead of computing ``min()``
+# over an empty sequence (H2) — the thread stays alive to inject replay/passthrough lines and to
+# observe ``_STOP``, and the timeout just bounds how often it re-checks ``stop_event``.
+_IDLE_POLL_S = 1.0
+
+# pynmea2 converts fields lazily, so a *checksum-valid* line carrying a garbage field raises a plain
+# ``ValueError``/``TypeError``/``AttributeError`` right past a ``ParseError``-only guard
+# (``pynmea2.ParseError`` subclasses ``ValueError``, but ``suppress(ParseError)`` never catches the
+# parent). Every ``rx.parse_*`` call site widens to this tuple (belt-and-suspenders alongside the
+# total ``rx`` contract) so one bad wire line degrades to skip-and-continue, never killing the
+# channel worker, input reader, or replay thread (H1).
+_RX_PARSE_ERRORS = (pynmea2.ParseError, ValueError, TypeError, AttributeError)
+
+# Formatters that carry a full wall-clock (``parse_time``) and, respectively, own-ship state fields
+# (``parse_line``). Gating the parse on the cheap ``_formatter_of`` slice skips a full pynmea2 parse
+# on every line that could not contribute — most importantly every high-rate ``!AIVDM``/heading line
+# that ``parse_time`` would otherwise parse-and-discard (EFF1). Behaviour is unchanged: the parse
+# functions already return ``None``/``{}`` for these sentences.
+_TIME_FORMATTERS = frozenset({"RMC", "ZDA"})
+_STATE_FORMATTERS = frozenset({"RMC", "GGA", "VTG", "HDT", "HDG"})
+
+# A device may emit ZDA only transiently. If the winning GNSS source falls silent on ZDA for longer
+# than this, the "source sends its own ZDA" latch expires so synthesis resumes (DOM10) — otherwise a
+# transiently-ZDA device loses its ZDA on the wire forever.
+_ZDA_LATCH_EXPIRY_S = 10.0
 
 
 def _bearing_and_distance(
@@ -192,7 +220,7 @@ class _AisSource:
                 callsign=self._own.call_sign,
                 imo=self._own.imo,
             )
-            lines = self._gen.static(own)
+            lines = self._gen.static(own, own_ship=True)
             if self._spawner is not None:
                 for target in self._targets:
                     lines.extend(self._gen.static(target))
@@ -231,7 +259,10 @@ def emitters_for(spec: ChannelSpec) -> list[_Emitter]:
             return []
         pos_rate = active[0].rate_hz if active else 0.2
         out = [_Emitter(AIS_POSITION, 1.0 / pos_rate)]
-        if spec.ais is not None and spec.ais.include_type5:
+        # A non-positive ``type5_period_s`` is rejected by validate; defensively skip it here so a
+        # hand-edited config cannot flood the wire (period<=0 fires every tick) or divide by zero in
+        # the budget guard (M6). No static reports is a safe degradation from a bad period.
+        if spec.ais is not None and spec.ais.include_type5 and spec.ais.type5_period_s > 0:
             out.append(_Emitter(AIS_STATIC, spec.ais.type5_period_s))
         return out
     return [_Emitter(e.sentence, 1.0 / e.rate_hz) for e in spec.emit if e.enabled]
@@ -328,6 +359,12 @@ class HealthReport:
     ok: bool
     physics_alive: bool
     channels: list[ChannelHealth]
+    # Aliveness of the background threads that can go silently dark (H6). ``True`` when the mode has
+    # no such thread (no replay thread; no input readers), so they only ever subtract from ``ok``.
+    # A replay/reader thread that died while it should still be running flips these — and ``ok`` —
+    # to False, so a dead-but-green report is impossible.
+    replay_alive: bool = True
+    inputs_alive: bool = True
 
 
 # --- physics ----------------------------------------------------------------------
@@ -491,6 +528,10 @@ class _PhysicsThread(threading.Thread):
         # case, in which case ``run`` is byte-identical to the pre-feature tick (see guards below).
         self._route = route
         self._replay_mode = replay_mode
+        # Set if a tick raises (e.g. a non-numeric ``time_source.rate``); the thread then ends
+        # cleanly so ``is_alive()`` — and therefore ``HealthReport.physics_alive`` and ``ok`` — goes
+        # False, surfacing the stall instead of freezing every channel behind a bare traceback (M7).
+        self._error: str | None = None
 
     def run(self) -> None:
         prev = time.monotonic()
@@ -502,30 +543,39 @@ class _PhysicsThread(threading.Thread):
             now = time.monotonic()
             dt = now - prev
             prev = now
-            snap = self._shared.snapshot()
-            state = snap
-            route_changes: dict[str, object] = {}
-            if self._route is not None:
-                # Route playback steers cog/sog toward the active waypoint; advance dead-reckons
-                # with those values. Kept OUT of advance so it stays pure (no cursor, no globals).
-                steer = self._route.step(snap.lat, snap.lon, dt)
-                if steer is not None:
-                    cog, sog = steer
-                    route_changes = {"cog_deg": cog, "sog_kn": sog}
-                    state = replace(snap, cog_deg=cog, sog_kn=sog)
-                else:  # paused/finished/too-few-waypoints -> hold position (sog 0, no dead-reckon)
-                    route_changes = {"sog_kn": 0.0}
-                    state = replace(snap, sog_kn=0.0)
-            changes = self._physics.advance(state, dt)
-            if self._replay_mode:
-                # Replay owns own-ship position and the clock (from the capture); physics adds
-                # only cosmetic sea-state motion, so a replayed track is never double-integrated.
-                for owned in ("utc", "lat", "lon"):
-                    changes.pop(owned, None)
-            if route_changes:
-                changes = {**route_changes, **changes}
-            self._shared.update(**changes)
+            try:
+                self._tick(dt)
+            except Exception as exc:
+                # A bad clock model must not kill physics silently and freeze every channel (M7).
+                # Record it for health and stop advancing; the thread ends cleanly (see _error).
+                self._error = f"physics_error: {exc!r}"
+                return
             next_tick = advance_next_fire(next_tick, self._period, now)
+
+    def _tick(self, dt: float) -> None:
+        snap = self._shared.snapshot()
+        state = snap
+        route_changes: dict[str, object] = {}
+        if self._route is not None:
+            # Route playback steers cog/sog toward the active waypoint; advance dead-reckons
+            # with those values. Kept OUT of advance so it stays pure (no cursor, no globals).
+            steer = self._route.step(snap.lat, snap.lon, dt)
+            if steer is not None:
+                cog, sog = steer
+                route_changes = {"cog_deg": cog, "sog_kn": sog}
+                state = replace(snap, cog_deg=cog, sog_kn=sog)
+            else:  # paused/finished/too-few-waypoints -> hold position (sog 0, no dead-reckon)
+                route_changes = {"sog_kn": 0.0}
+                state = replace(snap, sog_kn=0.0)
+        changes = self._physics.advance(state, dt)
+        if self._replay_mode:
+            # Replay owns own-ship position and the clock (from the capture); physics adds
+            # only cosmetic sea-state motion, so a replayed track is never double-integrated.
+            for owned in ("utc", "lat", "lon"):
+                changes.pop(owned, None)
+        if route_changes:
+            changes = {**route_changes, **changes}
+        self._shared.update(**changes)
 
 
 # --- single-source ZDA carve-out (auto mode, GPS channel only) --------------------
@@ -541,6 +591,46 @@ def _formatter_of(line: str) -> str:
         return ""
     address = line[1:].partition(",")[0]
     return address[2:5] if len(address) >= 5 else ""
+
+
+def _finite_in_range(value: object, lo: float, hi: float | None) -> bool:
+    """True when ``value`` is a finite real number in ``[lo, hi]`` (``hi=None`` = unbounded)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    if not math.isfinite(value):
+        return False
+    if value < lo:
+        return False
+    return hi is None or value <= hi
+
+
+def _sanitize_state_changes(changes: dict[str, float]) -> dict[str, float]:
+    """Drop state changes that would poison own-ship position/motion before they are applied (H9).
+
+    A checksum-valid line can still carry a non-finite or out-of-range value: a ``NaN`` sog survives
+    failover (``state.sog_kn != 0.0`` is True for ``NaN``) and a bad lat/lon propagates into
+    dead-reckoning and then crashes every GGA/RMC build. This gate runs right before
+    ``SharedState.update`` on the RX and replay seams and skips only the offending field(s) — a good
+    field on the same line still applies (degrade by count+skip, never crash). Hemisphere-present
+    handling lives in ``rx`` (the parser omits a blank-hemisphere fix); here we range/finite-gate.
+    """
+    clean = dict(changes)
+    if "lat" in clean or "lon" in clean:
+        lat_ok = _finite_in_range(clean.get("lat"), -90.0, 90.0)
+        lon_ok = _finite_in_range(clean.get("lon"), -180.0, 180.0)
+        if not (lat_ok and lon_ok):
+            # lat/lon are a pair; a bad half invalidates the fix, so drop both.
+            clean.pop("lat", None)
+            clean.pop("lon", None)
+    if "sog_kn" in clean and not _finite_in_range(clean.get("sog_kn"), 0.0, None):
+        clean.pop("sog_kn", None)
+    # Defensive sweep: any remaining non-finite numeric value is dropped so it can never
+    # reach state.
+    for key in list(clean):
+        value = clean[key]
+        if isinstance(value, float) and not math.isfinite(value):
+            clean.pop(key, None)
+    return clean
 
 
 class ZdaCarveout:
@@ -561,22 +651,35 @@ class ZdaCarveout:
         self._talker = talker
         self._seen_zda = False
         self._winner: str | None = None
+        # time.monotonic() of the last ZDA the winning source sent, so the latch below can expire.
+        self._last_zda_at = 0.0
 
-    def on_forward(self, input_id: str, line: str) -> list[str]:
+    def on_forward(self, input_id: str, line: str, now: float | None = None) -> list[str]:
         """Return synthesized ZDA line(s) to inject after ``line`` (a winning gnss line)."""
+        if now is None:
+            now = time.monotonic()
         # A change of winning source resets the "has this source sent a ZDA?" memory, so a new
         # source that does send its own ZDA is never shadowed by the previous source's history.
         if input_id != self._winner:
             self._winner = input_id
+            self._seen_zda = False
+        # Expire the latch (DOM10): a device that once sent a ZDA but has since gone quiet on
+        # ZDA for longer than the window resumes synthesis, instead of losing ZDA on the wire
+        # permanently.
+        if self._seen_zda and now - self._last_zda_at > _ZDA_LATCH_EXPIRY_S:
             self._seen_zda = False
         formatter = _formatter_of(line)
         if formatter == "ZDA":
             # The source sends its own ZDA -> the caller already forwarded it; add nothing so we
             # never double up on the wire, and remember not to synthesize for this source.
             self._seen_zda = True
+            self._last_zda_at = now
             return []
         if formatter == "RMC" and not self._seen_zda:
-            utc = rx.parse_time(line)
+            # A checksum-valid RMC with a garbage time field must not kill the worker (H1).
+            utc: datetime | None = None
+            with contextlib.suppress(*_RX_PARSE_ERRORS):
+                utc = rx.parse_time(line)
             if utc is not None:
                 return [zda_from_datetime(self._talker, utc)]
         return []
@@ -679,9 +782,16 @@ class _ChannelWorker(threading.Thread):
         for em, off in zip(self._emitters, offsets, strict=True):
             em.next_fire = start + off
         while not self._stop_event.is_set():
-            now = time.monotonic()
-            soonest = min(em.next_fire for em in self._emitters)
-            wait = max(0.0, soonest - now)
+            if self._emitters:
+                now = time.monotonic()
+                soonest = min(em.next_fire for em in self._emitters)
+                wait = max(0.0, soonest - now)
+            else:
+                # No scheduled emitters (all-disabled emit list, or an rx-only channel): there is
+                # nothing to fire, so block on the inbox with a fixed timeout instead of computing
+                # min() over an empty sequence (H2). The worker stays alive to inject replay/
+                # passthrough lines and to observe _STOP; the due-emitter loop below is a no-op.
+                wait = _IDLE_POLL_S
             try:
                 msg: object | None = self._inbox.get(timeout=wait)
             except queue.Empty:
@@ -756,7 +866,7 @@ class _ChannelWorker(threading.Thread):
             # no ZDA, synthesize one from the RMC's exact time and inject it here on the WORKER
             # thread, so time and position never split and the single-writer invariant holds.
             if self._zda_carveout is not None:
-                for synth in self._zda_carveout.on_forward(input_id, line):
+                for synth in self._zda_carveout.on_forward(input_id, line, now):
                     self._inject(synth)
         # else: a higher-priority source is currently live -> drop this line.
 
@@ -784,8 +894,12 @@ class _ChannelWorker(threading.Thread):
         # from the last real values (seamless failover). NO rx_accept whitelist here: in auto the
         # router is the trust boundary and the line is already checksum-verified. Unparseable lines
         # are simply not seeded (they still went out verbatim above).
-        with contextlib.suppress(pynmea2.ParseError):
-            changes = rx.parse_line(line)
+        if _formatter_of(line) not in _STATE_FORMATTERS:
+            return  # non-state sentence (e.g. AIVDM) never seeds state; skip the parse (EFF1)
+        # Widen past ParseError (H1): a checksum-valid line with a garbage field raises plain
+        # ValueError/TypeError/AttributeError and would otherwise kill this channel's only writer.
+        with contextlib.suppress(*_RX_PARSE_ERRORS):
+            changes = _sanitize_state_changes(rx.parse_line(line))  # H9 finite/range gate
             if changes:
                 self._shared.update(**changes)
 
@@ -861,6 +975,7 @@ class _ReplayThread(threading.Thread):
         worker_by_class: dict[str, _ChannelWorker],
         shared: SharedState,
         stop: threading.Event,
+        status_q: queue.Queue[StatusMsg] | None = None,
     ) -> None:
         super().__init__(name="replay", daemon=True)
         self._file = file
@@ -870,15 +985,46 @@ class _ReplayThread(threading.Thread):
         self._worker_by_class = worker_by_class
         self._shared = shared
         self._stop_event = stop
+        self._status = status_q
+        # Health surface (H6): distinguish a thread that finished a non-loop capture cleanly from
+        # one that died on an I/O error. ``_error`` set == the wire went silent and health
+        # must fail.
+        self._error: str | None = None
+        self._finished = False
 
     def run(self) -> None:
-        # A vanished/again-unreadable file just ends the thread quietly (validate proved it existed
-        # at start; nothing else the reader can do mid-run). Emission on other paths is unaffected.
-        with contextlib.suppress(OSError):
+        # Per-iteration OSError handling (H6): a vanished/again-unreadable file mid-run records a
+        # replay_error and stops reporting healthy, instead of silently dying under a whole-loop
+        # suppress while the health tile stays green (the replay thread is the sole producer in full
+        # replay). Emission on other paths is unaffected.
+        try:
             while not self._stop_event.is_set():
-                self._play_once()
-                if not self._loop:
+                try:
+                    self._play_once()
+                except OSError as exc:
+                    self._fail(f"replay_error: {exc!r}")
                     return
+                if not self._loop:
+                    self._finished = True
+                    return
+        except Exception as exc:  # never a bare traceback out of the replay thread; surface it
+            self._fail(f"replay_error: {exc!r}")
+
+    def _fail(self, detail: str) -> None:
+        self._error = detail
+        if self._status is not None:
+            with contextlib.suppress(queue.Full):
+                self._status.put_nowait(
+                    StatusMsg("replay", "replay_error", detail, time.monotonic())
+                )
+
+    def healthy(self) -> bool:
+        """True while replay is working: running, or a non-loop capture finished cleanly.
+
+        A thread that died on an I/O error (``_error`` set) is NOT healthy — that is the dead-but-
+        green case H6 makes disqualifying. A clean EOF on a non-loop capture is healthy.
+        """
+        return self._error is None and (self.is_alive() or self._finished)
 
     def _play_once(self) -> None:
         prev_ts: datetime | None = None
@@ -902,8 +1048,9 @@ class _ReplayThread(threading.Thread):
         parseable time leaves ``prev_ts`` unchanged (its burst rides with the preceding timestamp).
         """
         ts: datetime | None = None
-        with contextlib.suppress(pynmea2.ParseError):
-            ts = rx.parse_time(line)
+        if _formatter_of(line) in _TIME_FORMATTERS:  # skip a full parse on non-time lines (EFF1)
+            with contextlib.suppress(*_RX_PARSE_ERRORS):  # one bad field must not kill replay (H1)
+                ts = rx.parse_time(line)
         if ts is None:
             return prev_ts
         if prev_ts is not None:
@@ -926,14 +1073,21 @@ class _ReplayThread(threading.Thread):
         worker = self._worker_by_class.get(cls)
         if worker is None:
             return
-        with contextlib.suppress(pynmea2.ParseError):
-            changes = rx.parse_line(line)
-            if changes:
-                self._shared.update(**changes)
-        with contextlib.suppress(pynmea2.ParseError):
-            utc = rx.parse_time(line)
-            if utc is not None:
-                self._shared.update(utc=utc)  # replayed clock: exempt from monotonic clamp (R51)
+        # Gate each parse on the cheap formatter slice (EFF1) and widen past ParseError so one bad
+        # field in a real capture can't kill replay mid-file (H1).
+        fmt = _formatter_of(line)
+        if fmt in _STATE_FORMATTERS:
+            with contextlib.suppress(*_RX_PARSE_ERRORS):
+                changes = _sanitize_state_changes(rx.parse_line(line))  # H9 finite/range gate
+                if changes:
+                    self._shared.update(**changes)
+        if fmt in _TIME_FORMATTERS:
+            with contextlib.suppress(*_RX_PARSE_ERRORS):
+                utc = rx.parse_time(line)
+                if utc is not None:
+                    self._shared.update(
+                        utc=utc
+                    )  # replayed clock: exempt from monotonic clamp (R51)
         worker.enqueue(_ReplayLine(line))
 
 
@@ -970,6 +1124,18 @@ def port_is_operational(config: EngineConfig, slot: str) -> bool:
         if inp.id == slot:
             return inp.function != "unused" or inp.id in referenced
     return False
+
+
+def _reader_alive(reader: SerialPort) -> bool:
+    """Whether an input reader's RX thread is still running (H6).
+
+    A receive-only :class:`SerialPort` runs its checksum/dispatch loop on an internal daemon thread;
+    if that thread dies the slot goes silent while the port object lingers, and health must see it.
+    The port exposes no thread-liveness flag, so we read its reader thread directly; a reader that
+    has not been started yet (``None``) counts as alive-enough (it cannot be dead).
+    """
+    thread = reader._reader  # noqa: SLF001 - no public aliveness accessor on SerialPort
+    return thread is None or thread.is_alive()
 
 
 # --- the engine -------------------------------------------------------------------
@@ -1117,6 +1283,7 @@ class Engine:
                 worker_by_class,
                 self._shared,
                 self._stop_event,
+                self._status,
             )
 
         # AUTO mode: one input reader per InputSpec. Each is a receive-only serial port whose
@@ -1174,7 +1341,9 @@ class Engine:
 
     def _feed_state(self, changes: dict[str, float]) -> None:
         """RX state seam: apply whitelisted, checksum-verified fields to shared state."""
-        self._shared.update(**changes)
+        clean = _sanitize_state_changes(changes)  # H9: never let a non-finite/out-of-range field in
+        if clean:
+            self._shared.update(**clean)
 
     def _make_dispatch(self, input_id: str) -> Callable[[str], None]:
         """Bind an input id to the RX dispatcher so a reader's lines route to the right channel."""
@@ -1202,12 +1371,14 @@ class Engine:
             if worker is not None:
                 worker.enqueue((input_id, cls, routed_line))
         # ALSO feed the single-source Time Authority: parse the wall-clock instant off a
-        # time-bearing GNSS sentence (RMC/ZDA) and stamp a fix. note_time ignores non-GNSS inputs,
-        # and parse_time returns None for sentences without a full date+time, so this is safe to run
-        # on every line. A genuine ParseError is suppressed exactly as the RX path already does.
-        if self._time_authority is not None:
+        # time-bearing GNSS sentence (RMC/ZDA) and stamp a fix. Gate on the cheap formatter
+        # slice so a full pynmea2 parse is skipped on every non-time line (every high-rate
+        # AIVDM/heading line) — the single biggest CPU win (EFF1); behaviour is unchanged since
+        # parse_time returns None for those anyway. The guard is widened past ParseError so a
+        # garbage field can't kill the reader thread (H1).
+        if self._time_authority is not None and _formatter_of(line) in _TIME_FORMATTERS:
             utc: datetime | None = None
-            with contextlib.suppress(pynmea2.ParseError):
+            with contextlib.suppress(*_RX_PARSE_ERRORS):
                 utc = rx.parse_time(line)
             if utc is not None:
                 self._time_authority.note_time(input_id, utc, now)
@@ -1284,6 +1455,8 @@ class Engine:
         state = self._shared.snapshot()
         emissions: list[tuple[float, list[str]]] = []
         for em in emitters_for(spec):
+            if em.period <= 0.0:
+                continue  # a non-positive period can't be rate-budgeted (validate rejects it) — M6
             try:
                 lines = source.build(em.sentence, state)
             except Exception:
@@ -1496,9 +1669,22 @@ class Engine:
     def health(self) -> HealthReport:
         channels = [w.health() for w in self._workers]
         physics_alive = self._physics.is_alive()
+        # Fold the background threads that can go silently dark into ``ok`` (H6). ``replay_alive``
+        # is True when there is no replay thread or it is doing its job; ``inputs_alive`` is True
+        # when every configured input reader's RX thread is still running (or not yet started).
+        replay_alive = self._replay_thread is None or self._replay_thread.healthy()
+        inputs_alive = all(_reader_alive(r) for r in self._input_readers)
         ok = (
             physics_alive
+            and replay_alive
+            and inputs_alive
             and all(c.alive for c in channels)
             and all(not s.down for c in channels for s in c.sinks)
         )
-        return HealthReport(ok=ok, physics_alive=physics_alive, channels=channels)
+        return HealthReport(
+            ok=ok,
+            physics_alive=physics_alive,
+            channels=channels,
+            replay_alive=replay_alive,
+            inputs_alive=inputs_alive,
+        )

@@ -83,6 +83,36 @@ def test_junk_classifies_as_none(line: str) -> None:
 # --- coupling: every class maps to a role -----------------------------------------
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "!ABVDM,1,1,,A,15M6nP0P00G@J?jE`k4pW?v00<0M,0*7C",  # AIS base-station talker
+        "!BSVDM,1,1,,B,15M6nP0P00G@J?jE`k4pW?v00<0M,0*7C",  # AIS base talker
+    ],
+)
+def test_non_ai_vdm_talkers_classify_as_ais(line: str) -> None:
+    """DOM7: VDM/VDO from base-station talkers (AB/BS) is real AIS, not dropped."""
+    assert sentence_class(line) == "ais"
+
+
+def test_gns_classifies_as_gnss() -> None:
+    """DOM7: GNS (multi-constellation fix) feeds the GPS channel."""
+    assert sentence_class("$GNGNS,123519.00,4807.038,N,01131.000,E,AA,08,1.0,0.0,,,*4C") == "gnss"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "$PGRMC,1,2,3",  # proprietary $P... must NOT be sliced to formatter 'RMC'
+        "$PASHR,123519,280.0,T",  # proprietary attitude
+        "$GPRMCX,1,2,3",  # over-length address must NOT slice to 'RMC'
+    ],
+)
+def test_proprietary_and_overlength_never_gnss(line: str) -> None:
+    """M2: a $P... or an over-length address must never be misclassified as gnss."""
+    assert sentence_class(line) is None
+
+
 def test_every_class_has_a_role() -> None:
     assert set(CLASS_TO_ROLE) == {"gnss", "heading", "ais"}
     assert CLASS_TO_ROLE == {"gnss": "gps", "heading": "heading", "ais": "ais"}

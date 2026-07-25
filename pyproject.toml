@@ -12,7 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "pyserial>=3.5",
     "pynmea2>=1.19.0",
-    "pyais>=2.6",
+    "pyais>=3.1",
     "geographiclib>=2.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -38,6 +38,19 @@ mockingbuoy-ais-profile = "nmea_sim.aisprofile.__main__:main"
 [tool.setuptools]
 packages = ["nmea_sim", "nmea_sim.aisprofile", "web"]
 py-modules = ["main"]
+
+[tool.setuptools.package-data]
+# Ship the single-page web UI inside the wheel/sdist so a plain `pip install mockingbuoy`
+# can serve `GET /`. Without this the build omits web/static/* and the root route 500s
+# (the app resolves the UI from `web/static/` relative to the package). Use a glob, not a
+# filename, so renamed or added static assets ship too.
+web = ["static/*"]
+# NOTE (M21, partial): the tracked `config.json` baseline is a repo-root file, not part of
+# any package, so it cannot be shipped via package-data. Shipping it in the wheel needs it
+# moved into a package + loaded via importlib.resources (web/app.py), or a MANIFEST.in for
+# the sdist — both outside this group's file ownership. Deployed installs are unaffected
+# (setup.sh syncs config.json into WorkingDirectory=/opt/mockingbuoy); only a bare
+# `pip install mockingbuoy` used as a library lacks the baseline. Tracked as deferred.
 
 [tool.ruff]
 line-length = 100

@@ -23,7 +23,10 @@ DEFAULT_THRESHOLD = 0.80
 def framing_bits(framing: str) -> int:
     """Bits per character for a framing string like ``8N1`` (start + data + parity + stop)."""
     f = framing.strip().upper()
-    if len(f) != 3 or f[1] not in ("N", "E", "O"):
+    # Validate every position before any int() so a malformed framing yields ONE clear,
+    # catchable error at validate() time rather than a raw int() ValueError out of the budget
+    # calc (which would traceback --validate-only). Data 5-8, parity N/E/O, stop 1-2.
+    if len(f) != 3 or f[0] not in "5678" or f[1] not in ("N", "E", "O") or f[2] not in ("1", "2"):
         raise ValueError(f"unsupported framing {framing!r} (expected e.g. 8N1)")
     data_bits = int(f[0])
     parity_bits = 0 if f[1] == "N" else 1

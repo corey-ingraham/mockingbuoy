@@ -4,9 +4,14 @@
 # and installed in the image with:  pip install --require-hashes -r requirements.txt
 pyserial>=3.5
 pynmea2>=1.19.0
-pyais>=2.6
+pyais>=3.1
 geographiclib>=2.0
 fastapi>=0.110
 uvicorn[standard]>=0.29
+# The uvicorn `standard` extra pulls uvloop on non-Windows platforms only, so a lock
+# compiled on Windows silently omits it and `pip install --require-hashes` then aborts on
+# the Linux/aarch64 target ("uvloop must be pinned with hashes"). Pin it explicitly, with a
+# marker, so every recompile — Windows or Linux — records it and the target install succeeds.
+uvloop>=0.19 ; sys_platform != "win32"
 janus>=1.0
 passlib[argon2]>=1.7.4

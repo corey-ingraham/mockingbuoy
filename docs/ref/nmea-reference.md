@@ -87,17 +87,29 @@ never disagree:
 
 ## AIS (via `pyais`)
 
-Encode with `pyais.encode.encode_dict(data, radio_channel="A"|"B", talker_id="AIVDM"|"AIVDO")` →
-returns a **list** of `!AIVDM,...` lines (multi-fragment auto-split; index `[0]` for single). Pass
-coordinates/speed/course in **real units** (deg, knots, deg) — pyais scales internally.
+Encode with the **pyais 3.x** API (the pinned `pyais==3.1.0` rejects the older 2.x kwargs):
+
+```python
+pyais.encode.encode_dict(
+    data,
+    talker_id="AI",            # the two-letter talker, NOT the sentence formatter
+    sentence_type="VDM"|"VDO", # VDM = other vessels, VDO = own-ship
+    radio_channel="A"|"B",
+    seq_id=<0-9>,              # only for multi-fragment (Type 5) — the sequential message id
+)
+```
+
+It returns a **list** of `!AIVDM`/`!AIVDO` lines (multi-fragment auto-split; index `[0]` for a single
+fragment). Pass coordinates/speed/course in **real units** (deg, knots, deg) — pyais scales internally.
 
 - **Class A** targets/own-ship → **Type 1/2/3** position report. **Class B** → **Type 18**.
 - **Type 5** (static & voyage) — send about **every 6 minutes**, staggered so it doesn't crowd position
-  reports; it is a 2-fragment burst (emit both).
-- `talker_id="AIVDO"` = own-ship; `"AIVDM"` = other vessels/targets.
+  reports; it is a 2-fragment burst (emit both) and takes a `seq_id`.
+- `sentence_type="VDO"` = own-ship; `"VDM"` = other vessels/targets. `talker_id` stays `"AI"` either way.
 - **Radio channel A/B** should alternate (`radio_channel`).
-- **"Not available" sentinels:** heading `511`, course `360.0`, speed `1023`, rate-of-turn `-128`,
-  lat `91`, lon `181`.
+- **"Not available" sentinels** (in the **engineering units** pyais expects on encode, so they hand
+  straight to `encode_dict` — NOT raw six-bit wire units): heading `511`, course `360.0`, speed `102.3`,
+  rate-of-turn `-128`, lat `91.0`, lon `181.0` (see `nmea_sim/state.py`).
 
 Type 1 dict:
 ```python

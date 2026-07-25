@@ -19,13 +19,31 @@ Nothing here reads or writes real vessel identities: MMSIs are synthetic.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
 from typing import Any
 
 from .navigation import dead_reckon
-from .state import AisTarget
+from .state import AIS_HEADING_NA, AisTarget
+
+
+def _reflect_axis(value: float, lo: float, hi: float) -> tuple[float, bool]:
+    """Fold ``value`` back into ``[lo, hi]`` by reflection; return ``(folded, reversed)``.
+
+    ``reversed`` is True when an odd number of reflections occurred on this axis — i.e. the
+    velocity component along it has flipped direction (a bounce off the boundary). Handles an
+    arbitrarily large overshoot (a multi-hour dead-reckon step) via a single triangle-wave fold.
+    """
+    span = hi - lo
+    if span <= 0.0:
+        return lo, False
+    offset = (value - lo) % (2.0 * span)
+    if offset <= span:
+        return lo + offset, False
+    return hi - (offset - span), True
+
 
 # Generic category -> representative AIS ship-type code. Categories are deliberately
 # broad and area-neutral; the code is what goes on the wire (Type 5 / Type 24).
@@ -40,6 +58,14 @@ CATEGORY_SHIP_TYPE: dict[str, int] = {
 
 MOTION_MODELS = ("anchored", "transiting", "drifting")
 
+# Synthetic MMSI block for spawned targets. Real ship-station MMSIs carry an ITU-assigned
+# MID (first three digits, 2xx-7xx); MID 8xx is unassigned to any nation, so an ``8xxxxxxxx``
+# MMSI keeps valid ship-station format (pyais encodes it, class semantics hold) while never
+# colliding with a real registered vessel. Drawing from the full 2e8-8e8 range instead could
+# reproduce a real vessel's identity on the wire — never do that.
+SYNTHETIC_MMSI_MIN = 800_000_000
+SYNTHETIC_MMSI_MAX = 899_999_999
+
 
 @dataclass(frozen=True)
 class Region:
@@ -49,6 +75,24 @@ class Region:
     max_lat: float = 0.5
     min_lon: float = -0.5
     max_lon: float = 0.5
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("min_lat", self.min_lat),
+            ("max_lat", self.max_lat),
+            ("min_lon", self.min_lon),
+            ("max_lon", self.max_lon),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"region {name} must be finite, got {value!r}")
+        if not (-90.0 <= self.min_lat <= 90.0 and -90.0 <= self.max_lat <= 90.0):
+            raise ValueError("region latitudes must be within [-90, 90]")
+        if not (-180.0 <= self.min_lon <= 180.0 and -180.0 <= self.max_lon <= 180.0):
+            raise ValueError("region longitudes must be within [-180, 180]")
+        if self.min_lat > self.max_lat:
+            raise ValueError(f"region min_lat {self.min_lat} exceeds max_lat {self.max_lat}")
+        if self.min_lon > self.max_lon:
+            raise ValueError(f"region min_lon {self.min_lon} exceeds max_lon {self.max_lon}")
 
     def contains(self, lat: float, lon: float) -> bool:
         return self.min_lat <= lat <= self.max_lat and self.min_lon <= lon <= self.max_lon
@@ -95,6 +139,10 @@ class RealismProfile:
             raise ValueError("type_mix must be non-empty with non-negative weights")
         if sum(self.type_mix.values()) <= 0:
             raise ValueError("type_mix weights must sum to a positive value")
+        if self.target_count <= 0:
+            raise ValueError(f"target_count must be positive, got {self.target_count}")
+        if not 0.0 <= self.class_a_fraction <= 1.0:
+            raise ValueError(f"class_a_fraction must be within [0, 1], got {self.class_a_fraction}")
 
     def speed_for(self, category: str) -> SpeedProfile:
         """The speed profile for a category, or a neutral default."""
@@ -159,8 +207,8 @@ class TargetSpawner:
         speed = self.profile.speed_for(category).sample(self._rng)
         cog = self._rng.uniform(0.0, 360.0)
         class_type = "A" if self._rng.random() < self.profile.class_a_fraction else "B"
-        # Synthetic 9-digit MMSI; never a real registered identity.
-        mmsi = self._rng.randint(200_000_000, 799_999_999)
+        # Synthetic MMSI from an unassigned-MID block; never a real registered identity.
+        mmsi = self._rng.randint(SYNTHETIC_MMSI_MIN, SYNTHETIC_MMSI_MAX)
         return AisTarget(
             mmsi=mmsi,
             lat=lat,
@@ -183,7 +231,10 @@ class TargetSpawner:
         * ``transiting`` — dead-reckon along COG at current speed.
         * ``drifting`` — slow set/drift: dead-reckon at a small random speed.
 
-        The result is clamped back inside ``region`` so contacts never wander out.
+        A target that would leave ``region`` **reflects** off the boundary — its position folds
+        back inside and its COG/heading reverse across the crossed edge — instead of pinning to
+        the perimeter. So a multi-hour run keeps contacts moving with COG consistent with their
+        motion, rather than piling the whole fleet against the bounding box.
         """
         from dataclasses import replace
 
@@ -195,5 +246,16 @@ class TargetSpawner:
             lat, lon = dead_reckon(target.lat, target.lon, drift_kn, target.cog_deg, dt_s)
         else:  # transiting
             lat, lon = dead_reckon(target.lat, target.lon, target.sog_kn, target.cog_deg, dt_s)
-        lat, lon = self.profile.region.clamp(lat, lon)
-        return replace(target, lat=lat, lon=lon)
+
+        region = self.profile.region
+        lat, lat_flip = _reflect_axis(lat, region.min_lat, region.max_lat)
+        lon, lon_flip = _reflect_axis(lon, region.min_lon, region.max_lon)
+        cog = target.cog_deg
+        if lat_flip:  # north/south velocity reverses: reflect COG about the E-W axis
+            cog = (180.0 - cog) % 360.0
+        if lon_flip:  # east/west velocity reverses: reflect COG about the N-S axis
+            cog = (-cog) % 360.0
+        heading = target.heading_deg
+        if (lat_flip or lon_flip) and heading != AIS_HEADING_NA:
+            heading = int(round(cog)) % 360
+        return replace(target, lat=lat, lon=lon, cog_deg=cog, heading_deg=heading)

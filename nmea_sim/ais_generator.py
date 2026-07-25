@@ -97,12 +97,18 @@ class AisGenerator:
 
     # -- static / voyage reports ------------------------------------------------
 
-    def static(self, t: AisTarget) -> list[str]:
+    def static(self, t: AisTarget, *, own_ship: bool = False) -> list[str]:
         """Build the static report: Type 5 (Class A) or Type 24 (Class B).
 
         Multi-fragment (Type 5 spans two sentences) so it consumes a sequential
-        message-ID; Type 24 parts A/B are single-fragment each.
+        message-ID; Type 24 parts A/B are single-fragment each. ``own_ship`` mirrors
+        :meth:`position` — own-ship static goes out as ``!AIVDO``, targets as ``!AIVDM`` —
+        so a consumer keying on VDO associates name/callsign/destination with own ship.
+
+        The ship-type key is ``ship_type`` (pyais 3.x): ``encode_dict`` silently drops an
+        unknown key, so a misspelling would zero the type on the wire and defeat the mix.
         """
+        sentence_type = "VDO" if own_ship else "VDM"
         if t.class_type.upper() == "B":
             data_a: dict[str, AisField] = {
                 "type": 24,
@@ -114,14 +120,14 @@ class AisGenerator:
                 "type": 24,
                 "partno": 1,
                 "mmsi": t.mmsi,
-                "shiptype": t.ship_type,
+                "ship_type": t.ship_type,
                 "callsign": t.callsign,
             }
             channel = self._next_channel()
             return encode_dict(
-                data_a, talker_id=self.talker, sentence_type="VDM", radio_channel=channel
+                data_a, talker_id=self.talker, sentence_type=sentence_type, radio_channel=channel
             ) + encode_dict(
-                data_b, talker_id=self.talker, sentence_type="VDM", radio_channel=channel
+                data_b, talker_id=self.talker, sentence_type=sentence_type, radio_channel=channel
             )
         data: dict[str, AisField] = {
             "type": 5,
@@ -129,13 +135,13 @@ class AisGenerator:
             "imo": t.imo,
             "callsign": t.callsign,
             "shipname": t.name,
-            "shiptype": t.ship_type,
+            "ship_type": t.ship_type,
             "destination": t.destination,
         }
         return encode_dict(
             data,
             talker_id=self.talker,
-            sentence_type="VDM",
+            sentence_type=sentence_type,
             radio_channel=self._next_channel(),
             seq_id=self._next_seq_id(),
         )

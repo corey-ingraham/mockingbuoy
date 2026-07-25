@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import secrets
 import time
@@ -45,18 +46,27 @@ from nmea_sim.wind import apparent_wind
 
 # --- constants --------------------------------------------------------------------
 
+#: Module logger. The SSE background tasks log here so an iteration error is surfaced
+#: (fail loud) rather than silently killing the loop.
+logger = logging.getLogger(__name__)
+
 #: Directory holding the static single-page UI, resolved relative to this file so it
 #: works regardless of the process working directory.
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _INDEX_HTML = _STATIC_DIR / "index.html"
+#: The UI's externalized stylesheet + script (kept out of the HTML so a strict CSP with
+#: no ``'unsafe-inline'`` for scripts still loads them — they are same-origin ``'self'``).
+_APP_CSS = _STATIC_DIR / "app.css"
+_APP_JS = _STATIC_DIR / "app.js"
 
 #: Per-subscriber SSE queue depth. On overflow the oldest frame is dropped so a slow
 #: browser can never apply back-pressure to the engine threads.
 _SUBSCRIBER_MAXSIZE = 1000
 
 #: Hard cap on concurrent SSE subscribers. Bounds total memory (each subscriber holds up
-#: to ``_SUBSCRIBER_MAXSIZE`` frames) and the per-frame fan-out cost. Caddy's per-IP
-#: connection limits are the outer guard; this is the in-app backstop (over-limit -> 503).
+#: to ``_SUBSCRIBER_MAXSIZE`` frames) and the per-frame fan-out cost. This in-app cap is the
+#: ONLY subscriber bound: the shipped reverse proxy enforces no per-IP connection limit, so a
+#: single authenticated client can legitimately occupy all of these slots (over-limit -> 503).
 _MAX_SUBSCRIBERS = 64
 
 #: Bridge queue depth between engine threads and the event loop. On overflow
@@ -240,6 +250,24 @@ def _health_to_dict(
     return out
 
 
+def _redacted_config_dict(config: EngineConfig) -> dict[str, Any]:
+    """``config.to_dict()`` with every device ``path`` dropped (R19 / M9).
+
+    ``GET /api/config`` returns this instead of the raw dict: the channel + input ``path`` fields
+    are ``/dev/serial/by-id/...`` links that carry the adapter brand + serial (and full fs paths),
+    exactly the info ``/api/inputs`` and ``/api/profiles`` deliberately withhold. The UI never reads
+    a device path (it uses ``/api/inputs`` for slot state and the tap host/port for taps), so the
+    key is removed outright. ``to_dict`` builds fresh nested dicts, so this never mutates the live
+    config. The AIS ``profile_path`` (a repo-relative profile filename the dropdown pre-selects on)
+    is left intact — it is not a device path and the UI basenames it for display."""
+    data = config.to_dict()
+    for channel in data.get("channels", []):
+        channel.pop("path", None)
+    for inp in data.get("inputs", []):
+        inp.pop("path", None)
+    return data
+
+
 def _input_mismatch(function: str, detected_class: str | None) -> bool:
     """Whether a slot's detected sentence class contradicts its declared ``function``.
 
@@ -358,6 +386,8 @@ class ControlRequest(BaseModel):
     apply only to ``action == "channel"``. The two groups are kept in one model because
     :meth:`state_changes` reads *only* the keys in :data:`_UPDATE_RANGES`, so a channel
     toggle can never leak into a vessel-state update."""
+
+    model_config = ConfigDict(extra="forbid")
 
     action: str
     channel_id: str | None = None
@@ -592,7 +622,9 @@ class Broker:
 
     def __init__(self) -> None:
         self._queue: janus.Queue[dict[str, Any]] | None = None
-        self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        # Subscribers hold PRE-RENDERED SSE text: :meth:`pump` serializes each frame ONCE and
+        # fans the finished string out, so N viewers cost one ``json.dumps``, not N (EFF2).
+        self._subscribers: set[asyncio.Queue[str]] = set()
 
     def bind(self, queue: janus.Queue[dict[str, Any]]) -> None:
         """Attach the janus queue (built inside the running loop during lifespan startup)."""
@@ -626,28 +658,37 @@ class Broker:
     # -- consumer side (event loop) ------------------------------------------
 
     async def pump(self) -> None:
-        """Drain the bridge and fan every frame out to subscribers (drop-oldest on full)."""
+        """Drain the bridge, RENDER each frame once, and fan the text out (drop-oldest on full).
+
+        The loop body is wrapped so a single bad frame degrades gracefully (count + skip via the
+        log) instead of killing the task forever; the ``await get()`` stays outside so shutdown's
+        ``CancelledError`` still tears the task down cleanly.
+        """
         queue = self._queue
         if queue is None:
             return
         while True:
             frame = await queue.async_q.get()
-            for sub in list(self._subscribers):
-                _put_drop_oldest(sub, frame)
+            try:
+                rendered = _render_frame(frame)
+                for sub in list(self._subscribers):
+                    _put_drop_oldest(sub, rendered)
+            except Exception:
+                logger.exception("SSE pump: dropping a frame after a fan-out error")
 
-    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
-        """Register a new SSE client and return its bounded frame queue.
+    def subscribe(self) -> asyncio.Queue[str]:
+        """Register a new SSE client and return its bounded (pre-rendered) frame queue.
 
         Raises :class:`SubscriberLimitError` when :data:`_MAX_SUBSCRIBERS` is reached so the
         caller can reject the connection (503) rather than grow unbounded.
         """
         if len(self._subscribers) >= _MAX_SUBSCRIBERS:
             raise SubscriberLimitError(f"subscriber limit reached ({_MAX_SUBSCRIBERS})")
-        sub: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_SUBSCRIBER_MAXSIZE)
+        sub: asyncio.Queue[str] = asyncio.Queue(maxsize=_SUBSCRIBER_MAXSIZE)
         self._subscribers.add(sub)
         return sub
 
-    def unsubscribe(self, sub: asyncio.Queue[dict[str, Any]]) -> None:
+    def unsubscribe(self, sub: asyncio.Queue[str]) -> None:
         """Deregister an SSE client (idempotent)."""
         self._subscribers.discard(sub)
 
@@ -662,7 +703,12 @@ class Broker:
             self._queue.close()
 
 
-def _put_drop_oldest(sub: asyncio.Queue[dict[str, Any]], frame: dict[str, Any]) -> None:
+def _render_frame(frame: dict[str, Any]) -> str:
+    """Serialize one broker frame to its final SSE wire text ONCE (shared across subscribers)."""
+    return f"event: {frame['event']}\ndata: {json.dumps(frame['data'])}\n\n"
+
+
+def _put_drop_oldest(sub: asyncio.Queue[str], frame: str) -> None:
     """Enqueue ``frame`` into ``sub``; if full, drop the oldest frame to make room."""
     try:
         sub.put_nowait(frame)
@@ -694,6 +740,16 @@ class EngineManager:
     def config(self) -> EngineConfig:
         return self._config
 
+    def set_config(self, config: EngineConfig) -> None:
+        """Replace the config the NEXT :meth:`start` builds its Engine from.
+
+        Does not touch a running engine (structural changes take effect on the next (re)start,
+        consistent with how ``writer_backend`` and other structural fields are treated). Called
+        under ``control_lock`` after a successful Save-as-defaults so a subsequent in-app Start
+        picks up the saved values, and so the next save merges onto the just-saved config rather
+        than the stale boot config (H4)."""
+        self._config = config
+
     @property
     def running(self) -> bool:
         return self._engine is not None
@@ -721,7 +777,10 @@ class EngineManager:
         return time.monotonic() - self._started_at if self._started_at is not None else 0.0
 
     def snapshot(self) -> VesselState | None:
-        return self._engine.snapshot() if self._engine is not None else None
+        # Capture the engine into a local ONCE: a concurrent stop() (from a to_thread worker)
+        # nulls self._engine, so re-reading it mid-method would race to AttributeError (H10).
+        engine = self._engine
+        return engine.snapshot() if engine is not None else None
 
     def update_state(self, **changes: float) -> VesselState:
         if self._engine is None:
@@ -749,7 +808,10 @@ class EngineManager:
     def route_status(self) -> dict[str, Any] | None:
         """Current route-playback progress (active waypoint / count / fraction / flags), or ``None``
         when no route is active or the engine is stopped — the read side of the F1 progress."""
-        return self._engine.route_status() if self._engine is not None else None
+        # Capture-once for the same reason as snapshot(): a concurrent stop() must not race
+        # this into an AttributeError on a re-read of self._engine (H10).
+        engine = self._engine
+        return engine.route_status() if engine is not None else None
 
     def gps_channel_id(self) -> str | None:
         """Config id of the channel whose role is ``gps`` (or ``None``) — the target the
@@ -838,7 +900,12 @@ class EngineManager:
         ``mode``; when stopped only ``mode`` (from config) is reported and ``time_source`` is
         omitted — there is no live clock to name.
         """
-        if self._engine is None:
+        # Capture the engine ONCE. The 1 Hz health broadcast loop calls this while a control
+        # request's stop() may null self._engine from a to_thread worker; re-reading it three
+        # times (the old None-check + two field reads) raced to AttributeError and killed the
+        # broadcast loop forever while the app kept serving 200s (H10).
+        engine = self._engine
+        if engine is None:
             return {
                 "status": "stopped",
                 "ok": False,
@@ -847,9 +914,9 @@ class EngineManager:
                 "mode": self._config.mode,
             }
         return _health_to_dict(
-            self._engine.health(),
+            engine.health(),
             mode=self._config.mode,
-            time_source=self._engine.time_source(),
+            time_source=engine.time_source(),
         )
 
 
@@ -933,6 +1000,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
         or ("data/config.local.json" if Path("data/config.local.json").exists() else "config.json")
     )
     config = EngineConfig.load(resolved_path)
+    # H5: deep-validate on the production entrypoint too. ``main.py`` validates before building
+    # the engine, but the web path (``uvicorn web.app:app``) went straight to ``Engine()``, which
+    # runs only the baud-budget check — a hand-edited local config could skip every deep rule
+    # (duplicate paths, tap collisions, auto-mode preconditions, replay-file existence, NaN /
+    # out-of-range initial state). Raise loudly here so systemd surfaces the validator's message
+    # instead of booting a subtly-broken engine.
+    config.validate_or_raise()
 
     #: Where Save-as-defaults writes. Deliberately does NOT fall back to ``config.json``: that file
     #: is the tracked baseline and, under a strict sandbox, its directory is read-only.
@@ -966,9 +1040,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
         async with control_lock:
             await asyncio.to_thread(manager.start)
 
-        pump_task = asyncio.create_task(broker.pump())
-        health_task = asyncio.create_task(_health_broadcast_loop(manager, broker))
-        state_task = asyncio.create_task(_state_broadcast_loop(manager, broker))
+        pump_task = asyncio.create_task(broker.pump(), name="sse-pump")
+        health_task = asyncio.create_task(
+            _health_broadcast_loop(manager, broker), name="sse-health"
+        )
+        state_task = asyncio.create_task(_state_broadcast_loop(manager, broker), name="sse-state")
+        # Fail loud if any SSE task ends unexpectedly (i.e. not via shutdown cancellation): a
+        # bare ``while True`` that dies would otherwise leave the app serving 200s with a dead
+        # stream and no signal (H10).
+        for task in (pump_task, health_task, state_task):
+            task.add_done_callback(_log_task_done)
         try:
             yield
         finally:
@@ -988,6 +1069,18 @@ def create_app(config_path: str | None = None) -> FastAPI:
     async def index(_: None = Depends(auth)) -> HTMLResponse:
         return HTMLResponse(_INDEX_HTML.read_text(encoding="utf-8"))
 
+    # C2: the UI's CSS + JS are served as their own same-origin ``'self'`` files (not inlined),
+    # so a strict CSP with no ``script-src 'unsafe-inline'`` still loads them behind the proxy.
+    # Served through explicit routes (not a StaticFiles mount) so the optional in-app Basic layer
+    # gates them exactly like ``/`` and no directory listing is ever exposed.
+    @app.get("/static/app.css")
+    async def static_app_css(_: None = Depends(auth)) -> Response:
+        return Response(_APP_CSS.read_text(encoding="utf-8"), media_type="text/css")
+
+    @app.get("/static/app.js")
+    async def static_app_js(_: None = Depends(auth)) -> Response:
+        return Response(_APP_JS.read_text(encoding="utf-8"), media_type="application/javascript")
+
     @app.get("/healthz")
     async def healthz(_: None = Depends(auth)) -> Response:
         health = manager.health()
@@ -997,7 +1090,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/api/config")
     async def api_config(_: None = Depends(auth)) -> dict[str, Any]:
-        return manager.config.to_dict()
+        # M9: device paths (channel + input ``path``) are stripped so this endpoint can't leak the
+        # adapter brand/serial + fs paths that /api/inputs and /api/profiles withhold.
+        return _redacted_config_dict(manager.config)
 
     @app.get("/api/state")
     async def api_state(_: None = Depends(auth)) -> dict[str, Any]:
@@ -1030,6 +1125,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
             if not manager.running:
                 raise HTTPException(status_code=409, detail="engine is not running")
             changes = body.state_changes()
+            if not changes:
+                raise HTTPException(
+                    status_code=400, detail="update requires at least one state field"
+                )
             for field, value in changes.items():
                 low, high = _UPDATE_RANGES[field]
                 if (low is not None and value < low) or (high is not None and value > high):
@@ -1128,8 +1227,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
             # own disconnect listener uses and deadlocks the stream.
             try:
                 while True:
-                    frame = await sub.get()
-                    yield f"event: {frame['event']}\ndata: {json.dumps(frame['data'])}\n\n"
+                    # Frames arrive PRE-RENDERED from pump() (serialized once, EFF2) — yield as-is.
+                    chunk = await sub.get()
+                    yield chunk
             finally:
                 broker.unsubscribe(sub)
 
@@ -1275,7 +1375,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
             #    writer, off the event loop (it fsyncs). save() mkdirs the parent if needed.
             await asyncio.to_thread(merged_config.save, persist_path)
 
-        # 5. Echo the saved defaults. This does NOT hot-reload the running engine: mode / input /
+            # 5. H4: swap the manager's config to the just-saved one under ``control_lock`` so the
+            #    NEXT in-app Start builds its Engine from the saved values (not the stale boot
+            #    config), and so a subsequent save merges onto THIS config rather than the boot
+            #    config (which silently erased earlier saved blocks). Nesting control_lock inside
+            #    persist_lock is safe: no path ever takes them in the opposite order. This does NOT
+            #    hot-reload a running engine — structural changes still apply on the next (re)start.
+            async with control_lock:
+                manager.set_config(merged_config)
+
+        # 6. Echo the saved defaults. This does NOT hot-reload the running engine: mode / input /
         #    channel-default changes take effect on the next engine (re)start, consistent with how
         #    writer_backend and other structural fields are treated.
         return {
@@ -1462,29 +1571,55 @@ def create_app(config_path: str | None = None) -> FastAPI:
     return app
 
 
+def _log_task_done(task: asyncio.Task[None]) -> None:
+    """Done-callback for the SSE background tasks: stay quiet on shutdown cancellation, but log
+    loudly if a task ever finishes on its own (a ``while True`` loop ending is always a defect)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("SSE task %r exited with an error", task.get_name(), exc_info=exc)
+    else:
+        logger.error("SSE task %r exited unexpectedly (loop should never return)", task.get_name())
+
+
 async def _health_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
-    """Publish a ``health`` SSE frame roughly every :data:`_HEALTH_INTERVAL_S` seconds."""
+    """Publish a ``health`` SSE frame roughly every :data:`_HEALTH_INTERVAL_S` seconds.
+
+    Skips the (health-snapshot) work entirely when there are no subscribers (EFF2), and wraps each
+    iteration so a transient error degrades gracefully instead of killing the loop forever (H10).
+    """
     while True:
-        broker.publish_health(manager.health())
+        try:
+            if broker.subscriber_count > 0:
+                broker.publish_health(manager.health())
+        except Exception:
+            logger.exception("health broadcast loop: skipping a tick after an error")
         await asyncio.sleep(_HEALTH_INTERVAL_S)
 
 
 async def _state_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
     """Publish a ``state`` SSE frame roughly every :data:`_STATE_INTERVAL_S` seconds (~4 Hz).
 
-    Skips a tick when the engine is stopped (no snapshot). The drop-oldest subscriber queue keeps
-    the NEWEST frames, so this fast conning stream is never starved by the nmea flood under normal
-    load; a latest-wins / interest-filtered broker (a separate diag stream) is deferred to C3.
+    Skips a tick when there are no subscribers (EFF2) or the engine is stopped (no snapshot). The
+    drop-oldest subscriber queue keeps the NEWEST frames, so this fast conning stream is never
+    starved by the nmea flood under normal load; a latest-wins / interest-filtered broker (a
+    separate diag stream) is deferred to C3. Each iteration is wrapped so a transient error
+    degrades gracefully instead of killing the loop forever (H10).
     """
     while True:
-        snapshot = manager.snapshot()
-        if snapshot is not None:
-            frame = _state_to_dict(snapshot)
-            # F1: carry route progress on the stream too (additive; absent when no route is active).
-            route = manager.route_status()
-            if route is not None:
-                frame["route"] = route
-            broker.publish_state(frame)
+        try:
+            if broker.subscriber_count > 0:
+                snapshot = manager.snapshot()
+                if snapshot is not None:
+                    frame = _state_to_dict(snapshot)
+                    # F1: carry route progress on the stream too (additive; absent with no route).
+                    route = manager.route_status()
+                    if route is not None:
+                        frame["route"] = route
+                    broker.publish_state(frame)
+        except Exception:
+            logger.exception("state broadcast loop: skipping a tick after an error")
         await asyncio.sleep(_STATE_INTERVAL_S)
 
 

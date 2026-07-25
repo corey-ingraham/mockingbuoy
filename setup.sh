@@ -96,8 +96,22 @@ if command -v caddy >/dev/null 2>&1; then
 else
     log "adding Caddy official apt repo (key + source) ..."
     install -d -m 0755 /usr/share/keyrings
+    # Pin the Caddy repo signing key by FINGERPRINT. Fetching a key over TLS still trusts
+    # whatever the CDN (or a MITM / upstream compromise) serves; verifying the fingerprint
+    # makes the trust anchor explicit and fails CLOSED on any key substitution.
+    CADDY_GPG_FPR="65760C51EDEA2017CEA2CA15155B6D79CA56EA34"
+    _caddy_key="$(mktemp)"
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        | gpg --dearmor > "${_caddy_key}"
+    _got_fpr="$(gpg --show-keys --with-colons "${_caddy_key}" 2>/dev/null \
+        | awk -F: '/^fpr:/ {print $10; exit}')"
+    if [ "${_got_fpr}" != "${CADDY_GPG_FPR}" ]; then
+        rm -f "${_caddy_key}"
+        die "Caddy apt key fingerprint mismatch (got '${_got_fpr:-none}', expected '${CADDY_GPG_FPR}') — refusing to trust the repo"
+    fi
+    install -m 0644 "${_caddy_key}" /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    rm -f "${_caddy_key}"
+    log "Caddy apt key fingerprint verified (${CADDY_GPG_FPR})"
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
         > /etc/apt/sources.list.d/caddy-stable.list
     log "apt-get update (caddy repo) ..."
@@ -140,6 +154,7 @@ else
         --exclude '.pytest_cache' \
         --exclude 'private/' \
         --exclude 'data/' \
+        --exclude 'secrets/' \
         --exclude 'setup.env' \
         "${SRC_DIR}/" "${APP_DIR}/"
 fi
@@ -153,7 +168,12 @@ else
     python3 -m venv "${VENV_DIR}"
 fi
 PIP="${VENV_DIR}/bin/pip"
-"${PIP}" install --quiet --upgrade pip
+# Best-effort pip self-upgrade. An OFFLINE redeploy (venv rebuilt from the on-device
+# wheelhouse) has no package index, and the wheelhouse never carries pip itself — so this
+# must NEVER be fatal, or set -e aborts the whole install before systemd units are placed.
+# The venv's bundled pip is sufficient to install from the wheelhouse.
+"${PIP}" install --quiet --upgrade pip \
+    || warn "pip self-upgrade skipped (no index reachable?) — using the venv's bundled pip"
 
 # A hash-locked requirements.txt (pip-compile --generate-hashes) enables --require-hashes;
 # the plain convenience lock does not (hash mode rejects un-hashed reqs). Detect it.
@@ -179,8 +199,15 @@ log "installing the mockingbuoy package (editable) ..."
 "${PIP}" install --quiet --no-build-isolation --no-deps -e . \
     || warn "editable install failed; app still importable via WorkingDirectory=${APP_DIR}"
 
-log "fixing ownership of ${APP_DIR} to ${APP_USER}:${APP_GROUP} ..."
-chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
+# Privilege separation: the app user must NOT own the code, the systemd unit SOURCES under
+# ops/, or the live Caddyfile — an app-writable copy of those is a root-escalation path on
+# the next converge (the app runs the unit/proxy config). Root owns the tree; the app user
+# owns ONLY the paths it legitimately writes: data/ (runtime state), wheelhouse/ (built as
+# the app user), and secrets/ (its own 0600 service.env).
+log "setting ownership: root owns code/ops/Caddyfile; ${APP_USER} owns only data/ + wheelhouse/ + secrets/ ..."
+chown -R root:root "${APP_DIR}"
+install -d -m 0755 -o "${APP_USER}" -g "${APP_GROUP}" "${APP_DIR}/wheelhouse"
+chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}/data" "${APP_DIR}/wheelhouse" "${APP_DIR}/secrets"
 
 # --------------------------------------------------------------------------- #
 # 5. Host config: udev, brltty, time sync, optional firewall                  #
@@ -323,7 +350,10 @@ if env MOCKINGBUOY_SITE="${MOCKINGBUOY_SITE}" \
        caddy validate --config "${APP_DIR}/Caddyfile" --adapter caddyfile >/dev/null 2>&1; then
     log "Caddyfile is valid"
 else
-    warn "caddy validate reported problems — inspect: caddy validate --config ${APP_DIR}/Caddyfile"
+    # FATAL: never restart Caddy into a config it rejected — that takes down TLS + Basic
+    # auth for the whole UI. Fail loudly here, before the restart below.
+    unset _val_hash
+    die "Caddyfile validation FAILED — refusing to restart Caddy into a broken config. Inspect: caddy validate --config ${APP_DIR}/Caddyfile --adapter caddyfile"
 fi
 unset _val_hash
 
@@ -332,12 +362,16 @@ systemctl enable mockingbuoy.service caddy >/dev/null 2>&1 || true
 systemctl restart mockingbuoy.service
 systemctl restart caddy
 
+# Host backup timer is DISABLED pending the C3 redesign: the old backup staged the Caddy CA
+# PRIVATE key into the app-writable data/ dir (RCE -> mint trusted certs), and neither
+# documented rsync destination actually worked. The unit ships de-activated (the timer has
+# no [Install] target), so setup.sh deliberately does NOT enable it here. Re-enable only
+# after the redesign (root-owned CA staging outside data/ or re-mint on restore, provisioned
+# transport, encrypted dated generations) lands.
 if [ -n "${BACKUP_DEST}" ]; then
-    log "BACKUP_DEST set — enabling the daily host backup timer ..."
-    systemctl enable --now mockingbuoy-backup.timer >/dev/null 2>&1 \
-        || warn "could not enable mockingbuoy-backup.timer"
+    warn "BACKUP_DEST is set, but the host backup timer is DISABLED pending redesign (C3) — NOT enabling"
 else
-    log "BACKUP_DEST empty — backup timer NOT enabled (set BACKUP_DEST to enable)"
+    log "host backup timer not enabled (disabled pending C3 redesign)"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -353,8 +387,11 @@ fi
 # --------------------------------------------------------------------------- #
 # 9. Final summary                                                            #
 # --------------------------------------------------------------------------- #
+# Standardize on data/config.local.json — the ONLY local override the running app reads
+# (web/app.py); the tracked config.json is just the baseline. Report from whichever the
+# app would actually load.
 CONFIG_FILE="${APP_DIR}/config.json"
-[ -f "${APP_DIR}/config.local.json" ] && CONFIG_FILE="${APP_DIR}/config.local.json"
+[ -f "${APP_DIR}/data/config.local.json" ] && CONFIG_FILE="${APP_DIR}/data/config.local.json"
 
 printf '\n'
 log "==================== install complete ===================="
@@ -380,7 +417,9 @@ taps = []
 for ch in cfg.get("channels", []):
     tap = ch.get("tcp_tap")
     if isinstance(tap, dict) and tap.get("enabled"):
-        host = tap.get("host") or site
+        # tcp_tap has no 'host' key in the schema; the tap binds on this appliance and is
+        # addressed via MOCKINGBUOY_SITE. (The old tap.get("host") read a phantom key.)
+        host = site
         port = tap.get("port")
         if port:
             taps.append((ch.get("id", "?"), host, port))

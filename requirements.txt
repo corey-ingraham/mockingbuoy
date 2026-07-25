@@ -4,6 +4,18 @@
 #
 #    pip-compile --generate-hashes --output-file=requirements.txt requirements.in
 #
+# !! BLOCKER — THIS LOCK MUST BE REGENERATED ON LINUX/py3.11 BEFORE IT INSTALLS ON THE Pi !!
+#   This lock was compiled on Windows/py3.13, so (a) its wheel hashes are py3.13/win-tagged
+#   and (b) it has NO `uvloop` entry — uvicorn's `standard` extra requires uvloop on Linux,
+#   and `pip install --require-hashes` aborts when a required transitive dep is unpinned.
+#   uvloop hashes CANNOT be added from Windows. Regenerate on a Linux/py3.11 host (or an
+#   aarch64 container) with:
+#     uv pip compile requirements.in --python-version 3.11 \
+#       --python-platform aarch64-unknown-linux-gnu --generate-hashes -o requirements.txt
+#   The CI `lock-install` job (.github/workflows/ci.yml) fails until this is done — that
+#   red job IS the gate that catches C1. The `; sys_platform == "win32"` marker added to
+#   colorama below is the only safe in-place edit possible from Windows.
+#
 annotated-doc==0.0.4 \
     --hash=sha256:571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320 \
     --hash=sha256:fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4
@@ -160,7 +172,7 @@ click==8.4.2 \
     --hash=sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6 \
     --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
     # via uvicorn
-colorama==0.4.6 \
+colorama==0.4.6 ; sys_platform == "win32" \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
     # via click

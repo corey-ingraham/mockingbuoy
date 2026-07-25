@@ -18,8 +18,20 @@ Four layers, cheapest first:
 ## Automated (CI)
 
 `.github/workflows/ci.yml` runs on push/PR to `main`: install `-e ".[dev]"`, then **ruff → black →
-mypy → pytest**. Any failure fails the build. CI is **Linux** (ubuntu, Python 3.12); local dev is
-typically **Windows** — see the platform split below.
+mypy → pytest**. Any failure fails the build. The `lint-and-test` job runs on **Linux** (ubuntu) across a
+**Python 3.11 + 3.13** matrix — the two versions the project actually runs on (the Pi appliance ships
+3.11, the dev workstation runs 3.13); local dev is typically **Windows** — see the platform split below.
+
+Alongside `lint-and-test`, the workflow runs separate **build-failing** gate jobs:
+- **`scrub-scan` (R39 public-artifact gate)** — `git grep` over **tracked** files for banned tokens
+  (assistant/tooling references, a stray codename, and offline-framing phrases); any match fails the
+  build. Keep repo content on placeholders and synthetic values. (The workflow file itself is excluded,
+  since it necessarily embeds the token list.)
+- **`lock-install`** — installs the hash-locked `requirements.txt` with `--require-hashes` exactly as the
+  Pi does (catches a broken/OS-mismatched lock that `-e .[dev]` would never surface).
+- **`pip-audit`** — a real CVE gate over the **locked** runtime deps (`requirements.txt`), not the
+  unpinned dev env.
+- **`shellcheck`** — lints the root-run `setup.sh`/`bootstrap.sh` bash.
 
 ### The four checks
 
@@ -155,7 +167,8 @@ Run on the real host with adapters attached, after `setup.sh`. Tick each box.
 **Serial output — three captures.**
 - [ ] `ls -l /dev/nmea-*` (or `/dev/serial/by-id/...`) resolves to the intended adapters.
 - [ ] GPS channel: a serial terminal shows `GP` sentences (`GGA`/`RMC`/`VTG`/`ZDA`) at the configured rates.
-- [ ] Heading channel: shows `HE` sentences (`HDT` + `HDG`/`HDM`) at the configured rate.
+- [ ] Heading channel: shows `HE` sentences (`HDT` + `HDG`/`HDM`/`THS`) at the configured rate.
+- [ ] Instrument channel: shows `II` sentences (`VHW`/`DPT`/`DBT`/`MWV`/`MWD`/`ROT`/`XDR`/`RSA`/`VDR`/`$PASHR`) at the configured rates.
 - [ ] AIS channel: shows `!AIVDM`/`!AIVDO` at the configured rate; every `$` sentence has a valid checksum.
 
 **Channel isolation.**
@@ -163,8 +176,8 @@ Run on the real host with adapters attached, after `setup.sh`. Tick each box.
 - [ ] Replug the same adapter → its stable `by-id` node returns and the tolerant open recovers the channel.
 
 **Web UI + auth.**
-- [ ] `https://<LAN_IP>/` prompts for HTTP **Basic** auth and, once authenticated, serves the live
-      **3-pane SSE monitor** with sentences streaming per channel.
+- [ ] `https://<LAN_IP>/` prompts for HTTP **Basic** auth and, once authenticated, serves the tabbed UI
+      with the **NMEA Streams** tab showing live per-channel sentence panes streaming over SSE.
 - [ ] An **unauthenticated** request returns **401** (e.g. `curl -k https://<LAN_IP>/` with no creds).
 - [ ] A control edit (position/course/speed/heading/AIS) is reflected live in all channels without a restart.
 

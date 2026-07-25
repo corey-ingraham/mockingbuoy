@@ -11,7 +11,8 @@ web/ (FastAPI, uvicorn, SSE)
         ├─ gps_generator.py / heading_generator.py / ais_generator.py
         ├─ serialport.py   SerialPort (tx/rx/both), writers backends
         ├─ writers.py      Writer ABC: SerialWriter / LogWriter / NullWriter / PtyWriter
-        ├─ engine.py       PeriodicSender, PhysicsThread, Engine, StatusMsg
+        ├─ engine.py       Engine, _ChannelWorker (per-channel sender), _PhysicsThread,
+        │                  _ReplayThread, ZdaCarveout, StatusMsg
         └─ config.py       load/save/validate channels JSON
 ```
 
@@ -39,11 +40,15 @@ sea-state motion model driven by `sea_state` (0–9). One selector scales the wh
 amplitude and period grow together with the scale. The hull is **always gently in motion — even at sea
 state 0** — so inclinometer / `XDR` / `$PASHR` consumers see a live, plausibly-moving attitude rather
 than a dead-flat value that reads as a frozen or failed sensor.
-- `@dataclass(frozen=True) AisTarget`: `mmsi, name, call_sign, ship_type, lat, lon, sog_kn, cog_deg,
-  heading_true_deg, nav_status, turn_rate, dims..., ais_class ("A"|"B"), moving`.
+- `@dataclass AisTarget`: `mmsi, lat, lon, sog_kn, cog_deg, heading_deg, nav_status, rot,
+  class_type ("A"|"B"), ship_type, name, callsign, destination, imo`.
 - `SharedState`: one `threading.Lock`. `snapshot() -> VesselState` (copy out under lock, release).
-  `update(**changes)` = `dataclasses.replace` under lock. Targets held as an immutable tuple; upsert /
-  remove / update by mmsi. **Never hold the lock across a blocking `serial.write`** — snapshot, release, format, write.
+  `update(**changes)` = `dataclasses.replace` under lock. **Never hold the lock across a blocking
+  `serial.write`** — snapshot, release, format, write.
+
+Per-field valid ranges are defined **canonically in `nmea_sim/validate.py`**; the web API bounds
+(`web/app.py`) and the UI form min/max (`web/static/app.js`) mirror it. Treat `validate.py` as the source
+of truth and keep the three in sync.
 
 ## Hardware-agnostic `SerialPort` + channels model
 
@@ -163,7 +168,8 @@ transcoder of real data.
 
 On loss of an output's highest-priority live source, that output **falls back to generation** from vessel
 state with no restart and no gap; when the source returns, it resumes passthrough. Consumers never see a
-dead bus. Provenance (LIVE vs SIM) is surfaced per value on the web `state` event.
+dead bus. Provenance (LIVE / SIM / OFF) is surfaced **per channel** — as each channel's `source` badge on
+the web `health` event and the NMEA Streams pane, not per value on the `state` event.
 
 ### Unified Time Authority (single-source position + time)
 
@@ -177,12 +183,15 @@ passthrough it does not inject its own NTP-derived `ZDA`. Rationale (no marine d
 
 ## Threading topology
 
-- **PhysicsThread** — commits new position (`dead_reckon`) + `utc` at `physics_hz`, so all senders read
+- **`_PhysicsThread`** — commits new position (`dead_reckon`) + `utc` at `physics_hz`, so all senders read
   one authoritative snapshot and never diverge. Static mode only refreshes `utc`.
-- **PeriodicSender** (one per channel) — drift-free scheduling on `time.monotonic`: compute
+- **`_ChannelWorker`** (one per channel) — drift-free scheduling on `time.monotonic`: compute
   `next_tick += period` **before** doing work; sleep via `stop_event.wait(next_tick - now)`; if behind,
   resync to `now` (drop missed ticks, no burst). Per-port failure isolation: `WriterError` → mark down +
-  reopen with backoff + continue; any other exception → log + continue. The thread never dies.
+  reopen with backoff + continue. It is built to survive degraded input: a checksum-valid line with
+  garbage fields is counted and skipped (not fatal), and a channel with no scheduled emitters blocks on
+  its inbox rather than crashing — bad wire data never silently kills the worker.
+- **`_ReplayThread`** (replay mode) — re-injects a captured file through the same single-writer path.
 - **RX readers** (duplex channels) — see above.
 - All threads share one `stop_event` and push `StatusMsg` + emitted lines onto a `janus` queue.
 
@@ -191,7 +200,7 @@ passthrough it does not inject its own NTP-derived `ZDA`. Rationale (no marine d
 The engine (threads) pushes to `janus.sync_q`; a single async `Broker.pump()` task drains
 `janus.async_q` and fans out to per-client bounded `asyncio.Queue`s (drop-oldest, so a slow browser
 can't stall the engine). SSE (`/api/stream`) streams to `EventSource`. Shutdown: FastAPI `lifespan`
-`finally` → `engine.request_stop()` → `join()` → `close_ports()`.
+`finally` → `engine.stop()` (joins worker threads within its timeout, then closes ports).
 
 The app binds a **unix socket** (Caddy reaches it over that socket); no host TCP port is published.
 
@@ -202,20 +211,27 @@ The stream carries three named event types:
 - **`nmea`** — every emitted sentence line, per channel (feeds the NMEA Streams tab).
 - **`health`** — per-channel/port health + status transitions.
 - **`state`** — a snapshot of the synchronized vessel state at **~4 Hz** (feeds the Conning gauges),
-  each value carrying its LIVE/SIM/OFF provenance.
+  as flat JSON values. Provenance (LIVE/SIM/OFF) is **not** carried per value here — it is per channel on
+  the `health` event (per-value state provenance is a planned enhancement, not yet shipped).
 
 ### HTTP endpoints
 
 | Method + path | Purpose |
 |---|---|
+| `GET /healthz` | liveness/health probe (200 ok / 503 degraded) — no auth needed by systemd |
+| `GET /api/config` | the running config (as loaded at boot) |
+| `GET /api/state` | current vessel-state snapshot (flat values) |
 | `GET /api/stream` | SSE: `nmea` / `health` / `state` events |
-| `POST /api/control` | actions: `start` / `stop` / `update` (vessel params) / `channel` (enable) / `route` (mode + source routing) / `fault` (GPS-fault injection, simulate-only) |
+| `POST /api/control` | actions: `start` / `stop` / `update` (vessel params) / `channel` (enable) / `route` (route-playback: `start`/`pause`/`reset` the route cursor) / `fault` (GPS-fault injection, simulate-only) |
 | `POST /api/config/initial-state` | allow-listed **Save-as-defaults** → `data/config.local.json` |
+| `GET /api/profiles` | discovered AIS realism-profile basenames |
 | `GET /api/inputs` | discovered/assigned input slots + their function |
 | `GET /api/security` | posture **booleans only** — never a secret value |
 | `GET /api/diag` | Maintenance diagnostics snapshot (per-port analyzer, fault verdicts) |
 | `POST /api/diag/decode` | decode a pasted/selected sentence to its field map |
 | `POST /api/diag/baud-sweep` \| `send` \| `loopback` \| `capture` | **gated** diagnostic actions (opt-in, confirmed, non-operational port only) |
+
+(The UI's static assets are served at `GET /static/app.js` and `GET /static/app.css`.)
 
 ## Diagnostics core + `mockingbuoy-mon` (web-free peer)
 

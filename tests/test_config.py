@@ -348,6 +348,46 @@ def test_replay_scope_ais_only_round_trips() -> None:
     assert reloaded.to_dict() == d
 
 
+# --- unknown-key handling (M8) ----------------------------------------------------
+
+
+def test_unknown_top_level_key_rejected() -> None:
+    # A typo'd top-level key used to be silently dropped on load and deleted on save; it now
+    # fails loud with a ValueError naming the key (caught by main._load's (ValueError, KeyError)).
+    with pytest.raises(ValueError, match="unknown key"):
+        EngineConfig.from_dict({"writer_backen": "log", "channels": []})
+
+
+def test_comment_prefixed_top_level_key_tolerated() -> None:
+    # The shipped config carries a "$schema_note"; comment-prefixed keys must be tolerated and
+    # dropped, never rejected as unknown (and never round-tripped into the saved config).
+    cfg = EngineConfig.from_dict({"$schema_note": "hi", "_note": "x", "writer_backend": "null"})
+    assert cfg.writer_backend == "null"
+    assert "$schema_note" not in cfg.to_dict()
+
+
+def test_unknown_movement_key_raises_value_error_not_type_error() -> None:
+    # The old MovementSpec(**data) splat raised a raw TypeError that escaped main._load's catch;
+    # it must now surface as a ValueError naming the offending key.
+    with pytest.raises(ValueError, match="unknown key"):
+        EngineConfig.from_dict({"movement": {"physics_hz": 5.0, "bogus": 1}})
+
+
+def test_unknown_time_source_key_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="unknown key"):
+        EngineConfig.from_dict({"time_source": {"mode": "system_utc", "typo": 2}})
+
+
+def test_save_rejects_nan_field(tmp_path: Path) -> None:
+    # A NaN own-ship value must not round-trip through a saved config (allow_nan=False), and the
+    # atomic writer must leave no partial temp file behind on the rejection.
+    cfg = EngineConfig(initial_state_raw={"lat": float("nan"), "lon": 0.0})
+    out = tmp_path / "nan.json"
+    with pytest.raises(ValueError):
+        cfg.save(out)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_movement_rejects_bad_hz() -> None:
     with pytest.raises(ValueError):
         MovementSpec(physics_hz=0)

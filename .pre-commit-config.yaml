@@ -22,5 +22,11 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
+        # Parity with CI mypy (`mypy` with no args reads [tool.mypy] in pyproject.toml:
+        # disallow_untyped_defs, warn_unused_ignores, python 3.11, files=nmea_sim/web/main).
+        # The old `--ignore-missing-imports` override left the hook far weaker than CI, so a
+        # commit passed the hook then failed the CI type gate. pass_filenames:false + no args
+        # makes the hook type-check the SAME configured file set the CI job does.
+        pass_filenames: false
+        args: []
         additional_dependencies: []
-        args: [--ignore-missing-imports]

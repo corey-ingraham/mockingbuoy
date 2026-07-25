@@ -108,6 +108,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     fmt = _sniff_format(args.input) if args.format == "auto" else args.format
+
+    # The CSV-only filters have no meaning for a decoded AIVDM capture; fail loud rather than
+    # silently ignoring them (a bbox would also drop static-only records and lose ship types).
+    if fmt == "aivdm":
+        if any(p is not None for p in (args.min_lat, args.max_lat, args.min_lon, args.max_lon)):
+            sys.stderr.write(
+                "aisprofile: --min/max-lat/lon is a CSV-only filter, "
+                "unsupported for aivdm captures\n"
+            )
+            return 2
+        if args.columns:
+            sys.stderr.write(
+                "aisprofile: --columns applies only to CSV inputs, not aivdm captures\n"
+            )
+            return 2
+
     try:
         profile = build_profile(_records(args, fmt), motion_model=args.motion_model)
     except (ValueError, FileNotFoundError) as exc:

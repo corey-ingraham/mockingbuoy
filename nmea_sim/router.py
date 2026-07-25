@@ -40,8 +40,10 @@ class Router:
 
     def __init__(self, config: EngineConfig) -> None:
         # role -> channel id, so a sentence class (via CLASS_TO_ROLE) maps to its output channel.
-        # We assume at most one channel per role; a config that violates that is rejected upstream
-        # in validation, so here we simply take the last one and don't police it.
+        # Deep validation rejects a config with two channels sharing an arbitrated gps/heading/ais
+        # role (validate._validate_cross_channel), so at most one channel per class-bearing role
+        # reaches here. This dict-comprehension keeps the LAST channel for a role; that only matters
+        # for un-arbitrated roles (e.g. instrument) the router never looks up by class anyway.
         self._channel_by_role: dict[str, str] = {ch.role: ch.id for ch in config.channels}
         # input id -> how long without a valid sentence before that input counts as dead.
         self._timeout_by_input: dict[str, float] = {

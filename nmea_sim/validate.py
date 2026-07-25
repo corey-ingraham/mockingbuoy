@@ -13,6 +13,7 @@ exceptions. :func:`validate_or_raise` is the throwing convenience wrapper.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from . import budget
@@ -34,6 +35,26 @@ _ROLE_SENTENCES: dict[str, tuple[str, ...]] = {
 }
 _VALID_ROLES = tuple(_ROLE_SENTENCES)
 _VALID_DIRECTIONS = ("tx", "rx", "both")
+
+# Writer backends the engine can construct (see ``Engine._make_backend_writer``). A backend
+# outside this set has no sink and would fail at engine build, so reject it at validate time.
+_VALID_WRITER_BACKENDS = ("log", "null", "pty", "serial")
+
+# Roles arbitrated by the AUTO-mode router / TimeAuthority. At most one channel may own each: the
+# router maps role->channel and (defensively) keeps the last, while other consumers keep the
+# first, so two channels sharing a role make them disagree on the winner. Instrument channels
+# consume no live class and are not arbitrated, so duplicates of them are harmless and allowed.
+_ARBITRATED_ROLES = ("gps", "heading", "ais")
+
+# AIS own-ship identity bounds. Values outside these are silently corrupted by pyais on the wire
+# (MMSI wraps at 30 bits, ship_type truncates to 0, over-long name/call_sign are clipped).
+_MAX_MMSI = 999_999_999
+_MAX_SHIP_TYPE = 99
+_MAX_AIS_NAME = 20
+_MAX_AIS_CALLSIGN = 7
+# AIS 6-bit ASCII character set (ITU-R M.1371): the 64 characters payload text is armored into.
+# name/call_sign characters outside it are mangled on the wire, so reject them at validate time.
+_AIS_SIXBIT_CHARS = frozenset("@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_ !\"#$%&'()*+,-./0123456789:;<=>?")
 
 # Operating modes the engine can honour. "simulate" emits synthetic sentences; "auto" passes
 # through live NMEA and falls back to simulating; "replay" re-injects a recorded capture. A mode
@@ -114,6 +135,18 @@ def _is_placeholder(path: str) -> bool:
     return p == "" or any(marker in p for marker in _PLACEHOLDER_MARKERS)
 
 
+def _is_valid_framing(framing: str) -> bool:
+    """True iff ``framing`` is a buildable serial framing string (e.g. ``8N1``).
+
+    Mirrors the strict parser the engine uses at build time (``serialport._serial_kwargs``):
+    5-8 data bits, N/E/O parity, 1-2 stop bits. The looser budget parser accepts ``9N1``/``8N3``
+    and then either raises a raw ``ValueError`` out of ``validate()`` (``8X1``) or crashes at
+    engine build, so validation rejects every unbuildable framing here instead.
+    """
+    f = framing.strip().upper()
+    return len(f) == 3 and f[0] in "5678" and f[1] in "NEO" and f[2] in "12"
+
+
 def _budget_samples(spec: ChannelSpec) -> list[tuple[float, list[str]]]:
     """Build representative NMEA lines for each emission so the wire load can be estimated.
 
@@ -170,6 +203,14 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
     if spec.baud <= 0:
         errors.append(f"{where}: baud must be > 0, got {spec.baud}")
 
+    # Framing must be buildable, or the engine crashes at start; reject it loudly (M5). Checked
+    # before the budget estimate below, which would otherwise raise a raw ValueError on bad framing.
+    if not _is_valid_framing(spec.framing):
+        errors.append(
+            f"{where}: framing {spec.framing!r} is not buildable "
+            "(expected e.g. 8N1: 5-8 data bits, N/E/O parity, 1-2 stop bits)"
+        )
+
     # Talker is required for the roles whose sentences carry one (AIS uses !AI* directly).
     if spec.role in ("gps", "heading") and not spec.talker:
         errors.append(f"{where}: role {spec.role!r} requires a 'talker' (e.g. GP, HE)")
@@ -183,9 +224,16 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
                 f"(supported: {', '.join(legal) or 'none'})"
             )
 
-    # A transmitting channel needs something to transmit; a pure-RX channel must not.
+    # A transmitting channel needs something to transmit; a pure-RX channel must not. "Something"
+    # means at least one ENABLED emit entry — an all-disabled list schedules no emitters and its
+    # worker crashes on an empty min() at start (H2), so it is rejected the same as an empty list.
     if spec.direction in ("tx", "both") and not spec.emit:
         errors.append(f"{where}: direction {spec.direction!r} but no 'emit' entries")
+    elif spec.direction in ("tx", "both") and not any(em.enabled for em in spec.emit):
+        errors.append(
+            f"{where}: direction {spec.direction!r} but every 'emit' entry is disabled "
+            "(a transmitting channel needs at least one enabled sentence to schedule)"
+        )
     if spec.direction == "rx" and spec.emit:
         errors.append(f"{where}: direction 'rx' cannot have 'emit' entries")
 
@@ -199,6 +247,7 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
     if spec.role == "ais" and spec.ais is None:
         errors.append(f"{where}: role 'ais' requires an 'ais' block")
 
+    _validate_ais_identity(spec, errors)
     _validate_ais_traffic(spec, errors)
 
     if spec.tcp_tap is not None and spec.tcp_tap.enabled:
@@ -206,15 +255,63 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
         if not (_MIN_PORT <= port <= _MAX_PORT):
             errors.append(f"{where}: tcp_tap.port {port} out of range {_MIN_PORT}-{_MAX_PORT}")
 
-    # Baud budget: does the offered load fit the wire?
-    samples = _budget_samples(spec)
-    if samples:
-        result = budget.evaluate(spec.baud, spec.framing, samples)
-        if result.over:
+    # Baud budget: does the offered load fit the wire? Skipped on unbuildable framing (reported
+    # above), which would otherwise raise a raw ValueError out of budget.evaluate.
+    if _is_valid_framing(spec.framing):
+        samples = _budget_samples(spec)
+        if samples:
+            result = budget.evaluate(spec.baud, spec.framing, samples)
+            if result.over:
+                errors.append(
+                    f"{where}: over baud budget — {result.utilization * 100:.0f}% of "
+                    f"{spec.baud} {spec.framing} (limit {result.threshold * 100:.0f}%)"
+                )
+
+
+def _validate_ais_identity(spec: ChannelSpec, errors: list[str]) -> None:
+    """Reject AIS own-ship identity values pyais would silently corrupt on the wire (H8).
+
+    The config dataclass coerces these to int/str with no range or charset check, so an
+    out-of-range MMSI wraps (30-bit), an oversized ship_type truncates to 0, and a name or
+    call_sign outside the AIS 6-bit ASCII set is mangled by the payload armor — all from a config
+    that would otherwise validate clean. Also rejects a non-positive Type-5 period, which either
+    divides by zero (0) or floods the wire (<0) after validation (M6).
+    """
+    if spec.ais is None:
+        return
+    where = f"channel {spec.id!r}"
+    own = spec.ais.own_ship
+
+    if not (0 < own.mmsi <= _MAX_MMSI):
+        errors.append(
+            f"{where}: ais.own_ship.mmsi {own.mmsi} out of range "
+            f"(expected 1-{_MAX_MMSI}, a 9-digit MMSI)"
+        )
+    if not (0 <= own.ship_type <= _MAX_SHIP_TYPE):
+        errors.append(
+            f"{where}: ais.own_ship.ship_type {own.ship_type} out of range "
+            f"(expected 0-{_MAX_SHIP_TYPE})"
+        )
+    if len(own.name) > _MAX_AIS_NAME:
+        errors.append(
+            f"{where}: ais.own_ship.name {own.name!r} is too long "
+            f"({len(own.name)} chars, AIS allows at most {_MAX_AIS_NAME})"
+        )
+    if len(own.call_sign) > _MAX_AIS_CALLSIGN:
+        errors.append(
+            f"{where}: ais.own_ship.call_sign {own.call_sign!r} is too long "
+            f"({len(own.call_sign)} chars, AIS allows at most {_MAX_AIS_CALLSIGN})"
+        )
+    for label, text in (("name", own.name), ("call_sign", own.call_sign)):
+        bad = sorted({ch for ch in text if ch not in _AIS_SIXBIT_CHARS})
+        if bad:
             errors.append(
-                f"{where}: over baud budget — {result.utilization * 100:.0f}% of "
-                f"{spec.baud} {spec.framing} (limit {result.threshold * 100:.0f}%)"
+                f"{where}: ais.own_ship.{label} {text!r} has character(s) {bad} outside the "
+                "AIS 6-bit ASCII set (upper-case A-Z, 0-9, space and @[\\]^_!\"#$%&'()*+,-./:;<=>?)"
             )
+
+    if spec.ais.type5_period_s <= 0:
+        errors.append(f"{where}: ais.type5_period_s must be > 0, got {spec.ais.type5_period_s}")
 
 
 def _validate_ais_traffic(spec: ChannelSpec, errors: list[str]) -> None:
@@ -268,6 +365,11 @@ def _validate_input(spec: InputSpec, errors: list[str]) -> None:
         )
     if spec.baud <= 0:
         errors.append(f"{where}: baud must be > 0, got {spec.baud}")
+    if not _is_valid_framing(spec.framing):
+        errors.append(
+            f"{where}: framing {spec.framing!r} is not buildable "
+            "(expected e.g. 8N1: 5-8 data bits, N/E/O parity, 1-2 stop bits)"
+        )
     if spec.liveness_timeout_s <= 0:
         errors.append(f"{where}: liveness_timeout_s must be > 0, got {spec.liveness_timeout_s}")
     if spec.read_timeout_s <= 0:
@@ -364,6 +466,20 @@ def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:
         if count > 1:
             errors.append(f"duplicate input id {iid!r} appears {count} times")
 
+    # M1: at most one channel may own each arbitrated role. The router keeps the last such channel
+    # and other consumers keep the first, so a duplicate role makes them disagree over the winner
+    # and silently strands the losing channel — reject it here instead.
+    role_owners: dict[str, list[str]] = {}
+    for spec in config.channels:
+        if spec.role in _ARBITRATED_ROLES:
+            role_owners.setdefault(spec.role, []).append(spec.id)
+    for role, owners in role_owners.items():
+        if len(owners) > 1:
+            errors.append(
+                f"duplicate role {role!r}: channels {owners} all claim it "
+                "(at most one channel may own an arbitrated gps/heading/ais role)"
+            )
+
 
 def _validate_initial_state(config: EngineConfig, errors: list[str]) -> None:
     raw = config.initial_state_raw
@@ -378,6 +494,11 @@ def _validate_initial_state(config: EngineConfig, errors: list[str]) -> None:
             value = float(raw[name])
         except (TypeError, ValueError):
             errors.append(f"initial_state.{name}: {raw[name]!r} is not a number")
+            continue
+        # NaN/Infinity slip past both bound comparisons below (both are False for NaN), so gate on
+        # finiteness first — a NaN own-ship field poisons position on every channel (H9).
+        if not math.isfinite(value):
+            errors.append(f"initial_state.{name}: {raw[name]!r} is not a finite number")
             continue
         if lo is not None and value < lo:
             errors.append(f"initial_state.{name}: {value} below minimum {lo}")
@@ -411,6 +532,21 @@ def _validate_route_replay(config: EngineConfig, errors: list[str]) -> None:
             errors.append(
                 f"route.enabled requires at least 2 waypoints, got {len(route.waypoints)}"
             )
+        if route.speed_kn <= 0:
+            errors.append(
+                f"route.enabled requires speed_kn > 0 to advance along the route, got "
+                f"{route.speed_kn}"
+            )
+        # A non-finite or out-of-range waypoint makes Geodesic.Inverse return NaN, poisoning
+        # own-ship position on every channel (H9) — reject each one loudly.
+        for idx, (lat, lon) in enumerate(route.waypoints):
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                errors.append(f"route.waypoints[{idx}] ({lat}, {lon}) is not finite")
+            elif not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                errors.append(
+                    f"route.waypoints[{idx}] ({lat}, {lon}) out of range "
+                    "(lat -90..90, lon -180..180)"
+                )
 
     # F2 (R54): replay mode needs an enabled replay block naming a capture that exists.
     if config.mode == "replay":
@@ -461,6 +597,22 @@ def _validate_globals(config: EngineConfig, errors: list[str]) -> None:
             f"tcp_tap_host {config.tcp_tap_host!r} is not allowed — bind taps to a specific "
             "LAN IP (or 127.0.0.1), never the 0.0.0.0 wildcard"
         )
+
+    if config.writer_backend not in _VALID_WRITER_BACKENDS:
+        errors.append(
+            f"writer_backend {config.writer_backend!r} invalid "
+            f"(expected {'|'.join(_VALID_WRITER_BACKENDS)})"
+        )
+
+    # time_source.rate is uncoerced by the dataclass, so a string (or NaN) rate reaches here and
+    # would kill the physics thread at run time — reject anything non-finite or non-positive (M7).
+    rate = config.time_source.rate
+    try:
+        rate_ok = math.isfinite(rate) and rate > 0
+    except TypeError:
+        rate_ok = False
+    if not rate_ok:
+        errors.append(f"time_source.rate must be a finite number > 0, got {rate!r}")
 
     if config.time_source.mode == "simulated" and not config.time_source.epoch:
         errors.append("time_source.mode 'simulated' requires an 'epoch' (ISO 8601)")

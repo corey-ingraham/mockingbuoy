@@ -8,10 +8,15 @@ from datetime import UTC, datetime
 import pynmea2
 import pytest
 
-from nmea_sim import rx
+from nmea_sim import checksum, rx
 from nmea_sim.gps_generator import GpsGenerator
 from nmea_sim.heading_generator import HeadingGenerator
 from nmea_sim.state import VesselState
+
+
+def _mk(body: str) -> str:
+    """Wrap an NMEA body in ``$…*HH`` with a VALID checksum, so the garbage is in the fields."""
+    return "$" + body + "*" + checksum.compute(body)
 
 
 def test_rmc_round_trips_cog_not_heading(sample_state: VesselState) -> None:
@@ -126,3 +131,107 @@ def test_accepted_changes_keeps_only_whitelisted(sample_state: VesselState) -> N
 def test_empty_whitelist_accepts_nothing(sample_state: VesselState) -> None:
     line = GpsGenerator("GP").rmc(sample_state)
     assert rx.accepted_changes(line, []) == {}
+
+
+# --- H1: total per-field parsing on a checksum-valid line ------------------------
+# A checksum-valid sentence with one garbage field must skip that field and keep the rest,
+# never raising — one bad wire line can never kill the reader/worker thread.
+
+
+def test_bad_speed_field_is_skipped_not_raised() -> None:
+    """RMC speed '1.2.3' -> float() ValueError on the field; sog_kn is dropped, the rest stays."""
+    line = _mk("GPRMC,123519.42,A,4807.038,N,01131.000,E,1.2.3,084.4,210624,003.1,W,A")
+    changes = rx.parse_line(line)  # must not raise
+    assert "sog_kn" not in changes
+    assert changes["cog_deg"] == pytest.approx(84.4, abs=0.05)
+    assert changes["lat"] == pytest.approx(48.1173, abs=1e-3)
+
+
+def test_garbage_lat_field_is_skipped_not_raised() -> None:
+    """An unparseable coordinate raises AttributeError/ValueError on access; lat/lon are dropped."""
+    line = _mk("GPRMC,123519.42,A,ABCD,N,01131.000,E,022.4,084.4,210624,003.1,W,A")
+    changes = rx.parse_line(line)  # must not raise
+    assert "lat" not in changes and "lon" not in changes
+    assert changes["sog_kn"] == pytest.approx(22.4, abs=0.05)
+
+
+def test_non_finite_speed_field_is_skipped() -> None:
+    """A checksum-valid NaN speed must never poison state -> the field is dropped (finite gate)."""
+    line = _mk("GPRMC,123519.42,A,4807.038,N,01131.000,E,NaN,084.4,210624,003.1,W,A")
+    changes = rx.parse_line(line)  # must not raise
+    assert "sog_kn" not in changes
+    assert changes["lat"] == pytest.approx(48.1173, abs=1e-3)
+
+
+def test_non_numeric_zda_int_field_does_not_raise() -> None:
+    """A non-numeric ZDA day would raise int() ValueError; parse_line must stay total."""
+    line = _mk("GPZDA,123519.00,AB,07,2024,00,00")
+    assert rx.parse_line(line) == {}  # ZDA maps no state fields, and must not raise
+
+
+# --- H9: hemisphere-present + finite gates ---------------------------------------
+
+
+def test_blank_hemisphere_position_is_absent_not_zero_zero() -> None:
+    """pynmea2 yields latitude/longitude 0.0 when the hemisphere is blank; a blank-hemisphere
+    RMC must be treated as ABSENT position, never seeding a spurious (0, 0) fix."""
+    line = _mk("GPRMC,123519.42,A,4807.038,,01131.000,,022.4,084.4,210624,003.1,W,A")
+    changes = rx.parse_line(line)
+    assert "lat" not in changes and "lon" not in changes
+    assert changes["sog_kn"] == pytest.approx(22.4, abs=0.05)  # non-position fields still map
+
+
+# --- parse_time totality + DOM4 status gate --------------------------------------
+
+
+def test_parse_time_bad_datestamp_is_none_not_raised() -> None:
+    """A '990013' datestamp makes datetime.combine raise TypeError; parse_time must return None."""
+    line = _mk("GPRMC,123519.42,A,4807.038,N,01131.000,E,022.4,084.4,990013,003.1,W,A")
+    assert rx.parse_time(line) is None  # must not raise
+
+
+def test_parse_time_leap_second_time_is_none_not_raised() -> None:
+    """A documented leap-second '235960' time is unparseable; parse_time returns None, no raise."""
+    line = _mk("GPRMC,235960,A,4807.038,N,01131.000,E,022.4,084.4,210624,003.1,W,A")
+    assert rx.parse_time(line) is None
+
+
+def test_parse_time_non_numeric_zda_is_none_not_raised() -> None:
+    line = _mk("GPZDA,123519.00,AB,07,2024,00,00")
+    assert rx.parse_time(line) is None
+
+
+def test_parse_time_rmc_status_void_is_none(sample_state: VesselState) -> None:
+    """RMC status V (void/no-fix) is a free-running RTC, not a GNSS-tier time -> None even with a
+    valid datestamp/timestamp, so it can never outrank a real time source."""
+    line = _mk("GPRMC,123519.42,V,4807.038,N,01131.000,E,022.4,084.4,210624,003.1,W,N")
+    assert rx.parse_time(line) is None
+
+
+# --- DOM7: THS / HDM / GLL / ROT now seed failover state -------------------------
+
+
+def test_ths_maps_true_heading(sample_state: VesselState) -> None:
+    """A THS-only satellite compass must seed heading_true_deg for failover."""
+    line = HeadingGenerator("HE").ths(sample_state)
+    changes = rx.parse_line(line)
+    assert changes["heading_true_deg"] == pytest.approx(sample_state.heading_true_deg, abs=0.05)
+
+
+def test_hdm_maps_magnetic_heading(sample_state: VesselState) -> None:
+    line = HeadingGenerator("HE").hdm(sample_state)
+    changes = rx.parse_line(line)
+    assert changes["heading_mag_deg"] == pytest.approx(sample_state.heading_mag_deg, abs=0.05)
+
+
+def test_gll_maps_position(sample_state: VesselState) -> None:
+    line = GpsGenerator("GP").gll(sample_state)
+    changes = rx.parse_line(line)
+    assert changes["lat"] == pytest.approx(sample_state.lat, abs=1e-4)
+    assert changes["lon"] == pytest.approx(sample_state.lon, abs=1e-4)
+
+
+def test_rot_maps_rate_of_turn() -> None:
+    line = _mk("TIROT,-15.0,A")
+    changes = rx.parse_line(line)
+    assert changes["rot_dpm"] == pytest.approx(-15.0, abs=0.05)

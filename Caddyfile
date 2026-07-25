@@ -43,7 +43,11 @@
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
-		Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+		# The UI's script + stylesheet are served as same-origin ('self') files under /static, so
+		# script-src stays strict (no 'unsafe-inline') — the real XSS guard. style-src keeps
+		# 'unsafe-inline' only because the page still uses inline style="" layout attributes (no
+		# inline <script> or on* handlers remain, so scripts can never be injected inline).
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
 		X-Frame-Options DENY
 		# Measured HSTS: 1 year, this host only. No preload / no includeSubDomains
 		# because this is an IP/LAN host that may share a parent domain with others.

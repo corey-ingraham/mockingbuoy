@@ -40,18 +40,22 @@ SUPPORTED = ("HDT", "HDG", "HDM", "THS")
 class HeadingGenerator:
     """Builds heading sentences for one talker (default ``HE``) from a ``VesselState``."""
 
+    # Sentence name -> builder method name. Hoisted to the class so the dispatch table is
+    # built once at import, not rebuilt on every emission (this runs at each sentence's rate).
+    _BUILDERS = {"HDT": "hdt", "HDG": "hdg", "HDM": "hdm", "THS": "ths"}
+
     def __init__(self, talker: str = "HE") -> None:
         self.talker = talker
 
     def build(self, state: VesselState, sentences: tuple[str, ...] = SUPPORTED) -> list[str]:
         """Return the requested sentences (in order) as strings without CRLF."""
-        builders = {"HDT": self.hdt, "HDG": self.hdg, "HDM": self.hdm, "THS": self.ths}
         out: list[str] = []
         for name in sentences:
             try:
-                out.append(builders[name](state))
+                builder = getattr(self, self._BUILDERS[name])
             except KeyError:
                 raise ValueError(f"unsupported heading sentence {name!r}") from None
+            out.append(builder(state))
         return out
 
     def hdt(self, s: VesselState) -> str:
@@ -65,8 +69,8 @@ class HeadingGenerator:
         return str(msg)
 
     def ths(self, s: VesselState) -> str:
-        """True heading with mode status (``A`` = autonomous/valid)."""
-        msg = THS(self.talker, "THS", (f"{s.heading_true_deg:.1f}", "A"))
+        """True heading with mode status (``S`` = simulator, the standard self-identification)."""
+        msg = THS(self.talker, "THS", (f"{s.heading_true_deg:.1f}", "S"))
         return str(msg)
 
     def hdg(self, s: VesselState) -> str:

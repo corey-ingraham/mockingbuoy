@@ -39,6 +39,12 @@ DEFAULT_COLUMNS: dict[str, str] = {
 # Logical fields whose column must be present in the header or the file cannot be ingested.
 _REQUIRED = ("mmsi", "lat", "lon")
 
+# A valid ship-station MMSI is nine digits. Values outside this range (notably 0, and
+# coast/base-station identifiers) are not individual vessels and would merge many distinct
+# contacts into one bucket, so they are skipped as unusable data.
+_MIN_MMSI = 100_000_000
+_MAX_MMSI = 999_999_999
+
 # A lat/lon bounding box: ``(min_lat, max_lat, min_lon, max_lon)``.
 BBox = tuple[float, float, float, float]
 
@@ -89,6 +95,8 @@ def _one_file(
             try:
                 mmsi = int(mmsi_s)
             except ValueError:
+                continue
+            if not (_MIN_MMSI <= mmsi <= _MAX_MMSI):
                 continue
             if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
                 continue

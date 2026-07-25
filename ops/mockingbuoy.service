@@ -150,29 +150,25 @@ IOWeight=50
 # the serial adapters vanish from the service's mount namespace. Instead we keep the
 # dialout group AND grant the specific char devices explicitly.
 #
-# ops/99-mockingbuoy.rules creates stable /dev/nmea-* symlinks for the USB-serial
-# adapters and tags them TAG+="systemd", so systemd tracks them as device units and
-# DeviceAllow can reference the friendly name (or the underlying char-major class).
-# Adjust these to the symlinks your udev rules actually create:
-DeviceAllow=/dev/nmea-gps rw
-DeviceAllow=/dev/nmea-heading rw
-DeviceAllow=/dev/nmea-ais rw
+# ops/99-mockingbuoy.rules creates stable /dev/nmea-* symlinks for the USB-serial adapters.
 #
-# INPUT / diagnostic slots (from the same udev rules): the six LISTEN-ONLY RX
-# adapters that feed Auto-mode inputs and the Maintenance multi-port view. Granted
-# 'rw' (not 'r') because a Maintenance diagnostic — auto-baud probe, loopback, or
-# test-send — may reconfigure/write a NON-operational slot; day-to-day read-only
-# behaviour is enforced in SOFTWARE (the app opens them read-only), not by this line.
-DeviceAllow=/dev/nmea-in-1 rw
-DeviceAllow=/dev/nmea-in-2 rw
-DeviceAllow=/dev/nmea-in-3 rw
-DeviceAllow=/dev/nmea-in-4 rw
-DeviceAllow=/dev/nmea-in-5 rw
-DeviceAllow=/dev/nmea-in-6 rw
-# Broader fallback if you prefer class-based grants for all USB TTYs (kept tight by
-# default — the per-symlink grants above are narrower than a whole char-major class):
-# DeviceAllow=char-ttyUSB rw
-# DeviceAllow=char-ttyACM rw
+# HOTPLUG GOTCHA (M19): a per-SYMLINK grant like `DeviceAllow=/dev/nmea-gps rw` is resolved
+# to a fixed major:minor ONCE, at unit start. When an adapter is unplugged/replugged it
+# re-enumerates to a NEW minor (ttyUSB0 -> ttyUSB1), which no longer matches the cached
+# grant -> open() returns EPERM. That silently breaks the very auto-mode failover this
+# appliance exists for (a replug looks like flaky hardware). So we grant by CHAR-MAJOR
+# CLASS instead — the class covers every current and future minor in that class, so a
+# replug stays permitted with no unit restart. This is broader than the per-symlink form,
+# but the app still opens only its configured paths, and PrivateDevices stays off so the
+# ttys remain visible in the service's mount namespace.
+#
+# Covers the TX outputs (nmea-gps/heading/ais) AND the six LISTEN-ONLY RX input/diagnostic
+# slots (nmea-in-1 .. nmea-in-6). Granted 'rw' (not 'r') because a Maintenance diagnostic —
+# auto-baud probe, loopback, or test-send — may reconfigure/write a NON-operational slot;
+# day-to-day read-only behaviour is enforced in SOFTWARE (the app opens RX slots read-only).
+# FT232/FT-X and CH34x adapters enumerate as ttyUSB; CDC-ACM adapters as ttyACM.
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
 
 [Install]
 WantedBy=multi-user.target

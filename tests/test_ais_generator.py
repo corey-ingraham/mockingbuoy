@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from pyais import decode
@@ -116,6 +117,84 @@ def test_class_b_static_is_type24_parts() -> None:
     assert len(fragments) == 2  # Type 24 part A + part B
     types = {decode(f).msg_type for f in fragments}
     assert types == {24}
+
+
+def test_class_a_static_full_roundtrip() -> None:
+    """Every static field must survive the wire — the H3 regression: ``ship_type`` (formerly the
+    dropped ``shiptype`` key), plus imo/destination/shipname/callsign."""
+    gen = AisGenerator()
+    t = _class_a()
+    d = decode(*gen.static(t))
+    assert d.msg_type == 5
+    assert d.ship_type == t.ship_type  # was silently 0 under the shiptype-key bug
+    assert d.imo == t.imo
+    assert d.destination.strip() == t.destination
+    assert d.shipname.strip() == t.name
+    assert d.callsign.strip() == t.callsign
+
+
+def test_class_b_static_partb_full_roundtrip() -> None:
+    """Type 24 Part B carries ship_type (second H3 call site) + callsign; Part A the name."""
+    gen = AisGenerator()
+    t = _class_b()
+    part_a, part_b = gen.static(t)
+    da = decode(part_a)
+    db = decode(part_b)
+    assert da.msg_type == 24 and da.partno == 0
+    assert db.msg_type == 24 and db.partno == 1
+    assert db.ship_type == t.ship_type  # was silently 0 under the shiptype-key bug
+    assert db.callsign.strip() == t.callsign
+    assert da.shipname.strip() == t.name
+
+
+def test_own_ship_static_uses_vdo() -> None:
+    """Own-ship static mirrors own-ship position: it goes out as ``!AIVDO``, not ``!AIVDM``."""
+    gen = AisGenerator()
+    fragments = gen.static(_class_a(), own_ship=True)
+    assert all(f.startswith("!AIVDO") for f in fragments)
+    d = decode(*fragments)
+    assert d.msg_type == 5
+    assert d.ship_type == 70
+
+
+def test_static_payload_keys_conform_to_pyais_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every key handed to ``encode_dict`` must be a real field of the target pyais message.
+
+    ``encode_dict`` silently drops unknown keys, so a misspelling (``shiptype`` vs ``ship_type``)
+    zeroes the field on the wire with no error. Asserting payload keys against ``.fields()``
+    kills that whole bug class permanently, across every message the generator emits.
+    """
+    from pyais.encode import MSG_CLASS
+    from pyais.messages import MessageType24PartA, MessageType24PartB
+
+    import nmea_sim.ais_generator as agmod
+
+    captured: list[dict[str, Any]] = []
+    real_encode = agmod.encode_dict
+
+    def spy(data: dict[str, Any], **kwargs: Any) -> Any:
+        captured.append(dict(data))
+        return real_encode(data, **kwargs)
+
+    monkeypatch.setattr(agmod, "encode_dict", spy)
+
+    gen = agmod.AisGenerator()
+    gen.position(_class_a())
+    gen.position(_class_b())
+    gen.static(_class_a())
+    gen.static(_class_b())
+    gen.own_ship(_sample_vessel(), mmsi=366000123)
+    gen.static(_class_a(), own_ship=True)
+
+    assert captured
+    type24_fields = {f.name for f in MessageType24PartA.fields()} | {
+        f.name for f in MessageType24PartB.fields()
+    }
+    for data in captured:
+        msg_type = data["type"]
+        valid = type24_fields if msg_type == 24 else {f.name for f in MSG_CLASS[msg_type].fields()}
+        unknown = (set(data) - {"type"}) - valid  # 'type' is the encode selector -> msg_type
+        assert not unknown, (msg_type, unknown)
 
 
 def test_heading_sentinel_survives_roundtrip() -> None:

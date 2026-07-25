@@ -12,6 +12,7 @@ and a fully-valid stream is never mislabelled a reversed pair.
 from __future__ import annotations
 
 import random
+import threading
 from typing import Any
 
 from nmea_sim.checksum import format_sentence
@@ -76,8 +77,10 @@ def test_port_diagnostics_counts_valid_bad_and_malformed() -> None:
         assert entry["rate_hz"] > 0.0
         assert entry["last_seen_s"] is not None
 
-    # Six lines over a 10 s window; bytes are attributed immediately, so bus load is non-zero.
-    assert snap["sentences_per_s"] == 0.6
+    # Rates divide by the OBSERVED span, not the full window (EFF7). Fed and snapshotted at the
+    # same instant, the span floors at 1 s, so six lines read as 6/s -- an honest warm-up rate
+    # rather than the ~0.6/s a full-10-s-window divisor would understate it to.
+    assert snap["sentences_per_s"] == 6.0
     assert snap["bytes"] > 0
     assert snap["bytes_per_s"] > 0.0
     assert snap["bus_load_pct"] > 0.0
@@ -95,6 +98,68 @@ def test_port_diagnostics_ages_old_bytes_out_of_window() -> None:
     assert later["bytes"] == 0
     assert later["valid"] == 0
     assert later["verdict"] == "no-data"
+
+
+def test_warmup_rates_use_observed_span_not_full_window() -> None:
+    """EFF7: during warm-up the rates divide by the observed span, not the full window. ~1 s of an
+    ~80%-loaded 4800-baud bus must report ~80% load, not the ~8% a full-10-s divisor would give
+    (which would suppress the collision rule exactly when the operator is watching)."""
+    port = PortDiagnostics("p1", 4800, window_s=10.0)
+    # 480 bytes/s == 100% at 4800 baud / 10 bits per char; 384 bytes in ~1 s is ~80% load.
+    port.feed_bytes(b"x" * 384, 1000.0)
+    snap = port.snapshot(1001.0)
+    assert snap["bus_load_pct"] > 50.0  # ~80 with observed span; would be ~8 against full window
+
+
+def test_proprietary_talker_is_not_fabricated() -> None:
+    """DOM10: a proprietary ``$P`` sentence has no standard 2-char talker / 3-char formatter, so the
+    inventory must not fabricate talker 'PG' / formatter 'RME' from ``$PGRME`` — it is talker 'P'
+    with the manufacturer id as the formatter."""
+    port = PortDiagnostics("p1", 4800)
+    port.feed_bytes(_joined([format_sentence("PGRME,15.0,M,45.0,M,25.0,M")]), 1000.0)
+    snap = port.snapshot(1000.0)
+    assert snap["valid"] == 1
+    assert "PG" not in snap["talkers"]
+    assert "P" in snap["talkers"]
+    assert "RME" not in snap["inventory"]
+    assert "GRM" in snap["inventory"]
+
+
+def test_concurrent_feed_and_snapshot_never_raise() -> None:
+    """H7: feed_bytes (reader thread) and snapshot (web/CLI thread) run concurrently under one lock.
+    Without it, snapshot iterating _buckets while a feed inserts/prunes raises 'dictionary changed
+    size during iteration'. A short window forces active pruning to maximise the race."""
+    port = PortDiagnostics("stress", 4800, window_s=2.0)
+    blob = _joined([_RMC, _GGA, _HDT] * 4)
+    errors: list[BaseException] = []
+
+    def feeder() -> None:
+        try:
+            for i in range(3000):
+                port.feed_bytes(blob, 1000.0 + i * 0.001)
+        except (
+            BaseException
+        ) as exc:  # noqa: BLE001 - the whole point is to catch a race RuntimeError
+            errors.append(exc)
+
+    def snapper() -> None:
+        try:
+            for i in range(3000):
+                port.snapshot(1000.0 + i * 0.001)
+        except BaseException as exc:  # noqa: BLE001 - ditto
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=feeder),
+        threading.Thread(target=snapper),
+        threading.Thread(target=feeder),
+        threading.Thread(target=snapper),
+    ]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert not errors, errors
 
 
 # --- classify_fault: one verdict per R29 rule --------------------------------------
@@ -211,6 +276,38 @@ def test_classify_valid_on_clean_stream() -> None:
     assert snap["advice"] == "valid NMEA at this baud"
 
 
+def test_classify_printable_non_nmea_is_not_blessed_valid() -> None:
+    """M13: a 100%-printable stream that never frames a checksum-valid sentence (plain ASCII, wrong
+    protocol) must NOT be reported green as 'valid NMEA at this baud'. Zero valid lines -> not-nmea,
+    not healthy."""
+    port = PortDiagnostics("p1", 4800)
+    port.feed_bytes(
+        _joined(["hello world this is not nmea", "plain ascii, no dollar frame"] * 6), 1000.0
+    )
+    snap = port.snapshot(1000.0)
+    assert snap["valid"] == 0
+    assert snap["malformed"] > 0
+    assert snap["verdict"] == "not-nmea"
+    assert snap["verdict"] != "valid"
+
+
+def test_classify_not_nmea_on_sparse_bad_checksums() -> None:
+    """A handful of bad-checksum lines (below the wrong-baud threshold) with zero valid lines is
+    still not a healthy port: it falls through to not-nmea rather than the green 'valid' verdict."""
+    verdict, _ = classify_fault(
+        {
+            "bytes": 200,
+            "printable_ratio": 1.0,
+            "valid": 0,
+            "bad_checksum": 2,
+            "malformed": 0,
+            "bus_load_pct": 5.0,
+            "talkers": ["GP"],
+        }
+    )
+    assert verdict == "not-nmea"
+
+
 # --- score_baud --------------------------------------------------------------------
 
 
@@ -232,6 +329,16 @@ def test_score_baud_winner_none_when_no_rate_is_printable() -> None:
     result = score_baud({4800: bytes([0x00, 0x01, 0x02]), 9600: b""})
     assert result["winner"] is None
     assert all(ratio == 0.0 for ratio in result["ratios"].values())
+
+
+def test_score_baud_ignores_trailing_partial_fragment() -> None:
+    """M14: a capture cut at the dwell boundary ends mid-sentence. That trailing fragment (no
+    closing newline) must not count as a failed line and drag the valid ratio below 1.0."""
+    # Two whole valid sentences, then a truncated third with no terminating newline.
+    raw = (_RMC + "\n" + _GGA + "\n" + _RMC[:20]).encode("latin-1")
+    result = score_baud({4800: raw})
+    assert result["ratios"][4800] == 1.0  # 2/2, the fragment is dropped rather than scored as bad
+    assert result["winner"] == 4800
 
 
 # --- decode_line -------------------------------------------------------------------

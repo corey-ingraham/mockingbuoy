@@ -25,6 +25,7 @@ must never be flagged (R37).
 from __future__ import annotations
 
 import contextlib
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -71,17 +72,24 @@ def _is_hex2(token: str) -> bool:
     return len(token) == 2 and all(c in "0123456789abcdefABCDEF" for c in token)
 
 
-def _formatter_of(line: str) -> str | None:
-    """Slice the formatter out of a line's address (``$GPRMC`` -> ``RMC``, ``!AIVDM`` -> ``VDM``).
+def _talker_formatter(line: str) -> tuple[str | None, str | None]:
+    """Split a well-framed line's address into ``(talker, formatter)`` without a full parse.
 
-    Mirrors ``classify.sentence_class``'s slicing rather than paying for a parse: the address is
-    the token before the first comma, talker is 2 chars, formatter the next 3. ``None`` when the
-    address is too short to carry a formatter.
+    Standard addresses are ``<2-char talker><3-char formatter>`` (``$GPRMC`` -> ``GP``/``RMC``,
+    ``!AIVDM`` -> ``AI``/``VDM``), mirroring ``classify.sentence_class``'s slicing. Proprietary
+    ``$P`` sentences have NO standard talker/formatter pair — they are ``$P<mmm>...`` where ``mmm``
+    is a manufacturer mnemonic — so they are represented faithfully as talker ``"P"`` with the
+    manufacturer id as the formatter, never fabricated into a bogus standard pair (e.g. ``$PGRME``
+    must not read as talker ``PG`` / formatter ``RME``). ``formatter`` is ``None`` when the address
+    is too short to carry one.
     """
     address = line[1:].partition(",")[0]
+    if address[:1] == "P":
+        # Proprietary: the talker is the lone 'P'; the next up-to-3 chars are the manufacturer id.
+        return "P", (address[1:4] or None)
     if len(address) < 5:
-        return None
-    return address[2:5]
+        return (address[:2] or None), None
+    return address[:2], address[2:5]
 
 
 def _classify_line(line: str) -> tuple[str, str | None, str | None]:
@@ -98,8 +106,7 @@ def _classify_line(line: str) -> tuple[str, str | None, str | None]:
     _, _, tail = line[1:].partition("*")
     if not _is_hex2(tail[:2]):
         return "malformed", None, None
-    talker = line[1:3]
-    formatter = _formatter_of(line)
+    talker, formatter = _talker_formatter(line)
     kind = "valid" if verify(line) else "bad_checksum"
     return kind, talker, formatter
 
@@ -134,6 +141,10 @@ class PortDiagnostics:
         self._buckets: dict[int, _Bucket] = {}
         self._last_seen: dict[str, float] = {}
         self._residual = b""
+        # One lock guards feed_bytes (reader thread) and snapshot (web/CLI thread): snapshot
+        # prunes + iterates _buckets while a concurrent feed inserts/deletes, so without this the
+        # generator passes raise ``dictionary changed size during iteration``. Both are sub-ms.
+        self._lock = threading.Lock()
 
     # -- ingest ------------------------------------------------------------------
 
@@ -160,22 +171,23 @@ class PortDiagnostics:
         line, so a chunk that splits a sentence carries only the tail forward (bounded). Never
         raises: garbage decodes to malformed, a newline-less runaway is flushed and dropped.
         """
-        self._prune(now)
-        if not chunk:
-            return
-        bucket = self._bucket(now)
-        bucket.total_bytes += len(chunk)
-        bucket.printable += sum(1 for b in chunk if _is_printable(b))
+        with self._lock:
+            self._prune(now)
+            if not chunk:
+                return
+            bucket = self._bucket(now)
+            bucket.total_bytes += len(chunk)
+            bucket.printable += sum(1 for b in chunk if _is_printable(b))
 
-        self._residual += chunk
-        *complete, self._residual = self._residual.split(b"\n")
-        if len(self._residual) > _MAX_LINE_BYTES:
-            # No newline in sight — treat the runaway as a malformed frame and reset the buffer.
-            bucket.lines += 1
-            bucket.malformed += 1
-            self._residual = b""
-        for raw in complete:
-            self._ingest_line(raw, now, bucket)
+            self._residual += chunk
+            *complete, self._residual = self._residual.split(b"\n")
+            if len(self._residual) > _MAX_LINE_BYTES:
+                # No newline in sight — treat the runaway as malformed and reset the buffer.
+                bucket.lines += 1
+                bucket.malformed += 1
+                self._residual = b""
+            for raw in complete:
+                self._ingest_line(raw, now, bucket)
 
     def _ingest_line(self, raw: bytes, now: float, bucket: _Bucket) -> None:
         text = raw.rstrip(b"\r")
@@ -201,53 +213,63 @@ class PortDiagnostics:
 
     def snapshot(self, now: float) -> dict[str, Any]:
         """Reduce the live window to a JSON-safe stats dict with the advisor's verdict attached."""
-        self._prune(now)
-        buckets = self._buckets.values()
-        total_bytes = sum(b.total_bytes for b in buckets)
-        printable = sum(b.printable for b in buckets)
-        lines = sum(b.lines for b in buckets)
-        valid = sum(b.valid for b in buckets)
-        bad_checksum = sum(b.bad_checksum for b in buckets)
-        malformed = sum(b.malformed for b in buckets)
+        with self._lock:
+            self._prune(now)
+            buckets = list(self._buckets.values())
+            # Rates divide by the OBSERVED span, not the full window: during warm-up only a second
+            # or two of data is present, and dividing an 80%-loaded first second by the full 10 s
+            # window would report ~8% and suppress the collision rule exactly when it matters. Once
+            # the window is full the span equals window_s and the rates are unchanged (EFF7).
+            if self._buckets:
+                oldest = min(self._buckets)
+                span_s = min(self.window_s, max(1.0, now - oldest))
+            else:
+                span_s = self.window_s
+            total_bytes = sum(b.total_bytes for b in buckets)
+            printable = sum(b.printable for b in buckets)
+            lines = sum(b.lines for b in buckets)
+            valid = sum(b.valid for b in buckets)
+            bad_checksum = sum(b.bad_checksum for b in buckets)
+            malformed = sum(b.malformed for b in buckets)
 
-        talkers: set[str] = set()
-        formatters: Counter[str] = Counter()
-        for b in buckets:
-            talkers |= b.talkers
-            formatters.update(b.formatters)
+            talkers: set[str] = set()
+            formatters: Counter[str] = Counter()
+            for b in buckets:
+                talkers |= b.talkers
+                formatters.update(b.formatters)
 
-        printable_ratio = printable / total_bytes if total_bytes else 0.0
-        bytes_per_s = total_bytes / self.window_s
-        sentences_per_s = lines / self.window_s
-        bus_load_pct = (bytes_per_s * _BITS_PER_CHAR / self.baud * 100.0) if self.baud else 0.0
+            printable_ratio = printable / total_bytes if total_bytes else 0.0
+            bytes_per_s = total_bytes / span_s
+            sentences_per_s = lines / span_s
+            bus_load_pct = (bytes_per_s * _BITS_PER_CHAR / self.baud * 100.0) if self.baud else 0.0
 
-        inventory = {
-            formatter: {
-                "last_seen_s": (
-                    round(now - self._last_seen[formatter], 3)
-                    if formatter in self._last_seen
-                    else None
-                ),
-                "rate_hz": round(count / self.window_s, 3),
+            inventory = {
+                formatter: {
+                    "last_seen_s": (
+                        round(now - self._last_seen[formatter], 3)
+                        if formatter in self._last_seen
+                        else None
+                    ),
+                    "rate_hz": round(count / span_s, 3),
+                }
+                for formatter, count in sorted(formatters.items())
             }
-            for formatter, count in sorted(formatters.items())
-        }
 
-        stats: dict[str, Any] = {
-            "port_id": self.port_id,
-            "baud": self.baud,
-            "bytes": total_bytes,
-            "printable_ratio": round(printable_ratio, 4),
-            "lines": lines,
-            "valid": valid,
-            "bad_checksum": bad_checksum,
-            "malformed": malformed,
-            "sentences_per_s": round(sentences_per_s, 3),
-            "bytes_per_s": round(bytes_per_s, 3),
-            "bus_load_pct": round(bus_load_pct, 3),
-            "talkers": sorted(talkers),
-            "inventory": inventory,
-        }
+            stats: dict[str, Any] = {
+                "port_id": self.port_id,
+                "baud": self.baud,
+                "bytes": total_bytes,
+                "printable_ratio": round(printable_ratio, 4),
+                "lines": lines,
+                "valid": valid,
+                "bad_checksum": bad_checksum,
+                "malformed": malformed,
+                "sentences_per_s": round(sentences_per_s, 3),
+                "bytes_per_s": round(bytes_per_s, 3),
+                "bus_load_pct": round(bus_load_pct, 3),
+                "talkers": sorted(talkers),
+                "inventory": inventory,
+            }
         verdict, advice = classify_fault(stats)
         stats["verdict"] = verdict
         stats["advice"] = advice
@@ -311,7 +333,17 @@ def classify_fault(stats: dict[str, Any]) -> tuple[str, str]:
             "valid data but expected sentence absent — device/config fault, not wiring",
         )
 
-    # 7. Nothing wrong.
+    # 7. Printable but not NMEA: bytes arrived and none of the physical-fault rules matched, yet
+    #    not a single line ever framed as a checksum-VALID sentence. That is not a healthy port —
+    #    it is a non-NMEA / wrong-protocol / wrong-baud stream that must never be blessed green.
+    if valid <= 0:
+        return (
+            "not-nmea",
+            "printable bytes but no valid NMEA sentence — not NMEA at this baud "
+            "(wrong baud, wrong protocol, or a non-NMEA device)",
+        )
+
+    # 8. Nothing wrong.
     return ("valid", "valid NMEA at this baud")
 
 
@@ -325,7 +357,12 @@ def score_baud(samples: dict[int, bytes]) -> dict[str, Any]:
     """
     ratios: dict[int, float] = {}
     for baud, raw in samples.items():
-        lines = [ln for ln in raw.split(b"\n") if ln.strip()]
+        segments = raw.split(b"\n")
+        # A capture cut at the dwell boundary ends mid-sentence: the trailing segment (no closing
+        # newline) is a partial fragment, not a failed line, and must not drag the valid ratio down.
+        if raw and not raw.endswith(b"\n"):
+            segments = segments[:-1]
+        lines = [ln for ln in segments if ln.strip()]
         if not lines:
             ratios[baud] = 0.0
             continue

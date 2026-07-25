@@ -48,10 +48,27 @@ else
 fi
 
 echo "Downloading wheels from ${REQ_FILE} into ${WHEELHOUSE} ..."
+# --only-binary=:all: forces built wheels for EVERY dependency. Without it, an sdist-only
+# pin (or a platform with no matching wheel) captures a source distribution that then needs
+# a compiler + build deps to install — which the OFFLINE DR host does not have. Fail here,
+# at build time with an index, instead of at restore time with none.
 # shellcheck disable=SC2086  # HASH_FLAG is intentionally word-split (empty => no flag)
 ${PIP} download ${HASH_FLAG} \
+    --only-binary=:all: \
     --dest "${WHEELHOUSE}" \
     --requirement "${REQ_FILE}"
+
+# Write a checksum manifest so wheelhouse rot (a truncated/corrupt/half-synced artifact) is
+# detectable before an offline install trusts it: verify with
+#   cd wheelhouse && sha256sum -c MANIFEST.sha256
+echo "Writing ${WHEELHOUSE}/MANIFEST.sha256 ..."
+(
+    cd "${WHEELHOUSE}" || exit 1
+    # List artifacts deterministically; exclude the manifest itself. Empty-safe.
+    find . -maxdepth 1 -type f ! -name 'MANIFEST.sha256' -printf '%P\n' \
+        | LC_ALL=C sort \
+        | xargs -r sha256sum > MANIFEST.sha256
+)
 
 echo "Done. Offline install with:"
 echo "  pip install --no-index --find-links='${WHEELHOUSE}' ${HASH_FLAG} -r '${REQ_FILE}'"

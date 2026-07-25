@@ -51,6 +51,12 @@ class LogWriter:
 
     def write_line(self, line: str) -> None:
         self._stream.write(line + "\n")
+        # Flush per line: under systemd the stream is block-buffered (no PYTHONUNBUFFERED in the
+        # unit), so a crash would otherwise lose whole blocks of already-"written" sentences. At
+        # 1-10 Hz the flush cost is negligible. Best-effort: a borrowed stream mid-close must not
+        # turn a log write into a crash.
+        with contextlib.suppress(ValueError, OSError):
+            self._stream.flush()
 
     def close(self) -> None:
         # Never close a borrowed stream (e.g. stdout); flush best-effort.

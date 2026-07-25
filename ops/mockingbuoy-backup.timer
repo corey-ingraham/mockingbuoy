@@ -1,10 +1,19 @@
 # Daily trigger for mockingbuoy-backup.service.
 #
+# !! DISABLED pending the C3 backup redesign !!
+#   The paired service previously staged the Caddy CA PRIVATE key into the app-writable
+#   data/ dir (a root-CA-key leak), and neither documented rsync destination actually
+#   worked. Until the redesign lands (root-owned/re-minted CA, provisioned transport,
+#   encrypted dated generations), this timer ships WITHOUT an [Install] target so
+#   `systemctl enable mockingbuoy-backup.timer` is a no-op — it cannot be wired into
+#   timers.target and will not fire. setup.sh also refuses to enable it. To re-activate
+#   after the fix: restore the [Install] section below and `systemctl enable --now`.
+#
 # Install: see ops/mockingbuoy-backup.service header.
 # Inspect:  systemctl list-timers mockingbuoy-backup.timer
 
 [Unit]
-Description=Daily mockingbuoy host backup
+Description=Daily mockingbuoy host backup (DISABLED pending C3 redesign)
 Documentation=file:///opt/mockingbuoy/docs/ref/security.md
 
 [Timer]
@@ -15,5 +24,5 @@ Persistent=true
 RandomizedDelaySec=15m
 Unit=mockingbuoy-backup.service
 
-[Install]
-WantedBy=timers.target
+# [Install] intentionally omitted — see the DISABLED note at the top of this file. Restoring
+# it (WantedBy=timers.target) re-enables the timer once the C3 redesign is complete.

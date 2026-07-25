@@ -64,24 +64,28 @@ def zda_from_datetime(talker: str, utc: datetime) -> str:
 class GpsGenerator:
     """Builds GPS sentences for one talker (default ``GP``) from a ``VesselState``."""
 
+    # Sentence name -> builder method name. Hoisted to the class so the dispatch table is
+    # built once at import, not rebuilt on every emission (this runs at each sentence's rate).
+    _BUILDERS = {
+        "GGA": "gga",
+        "RMC": "rmc",
+        "VTG": "vtg",
+        "ZDA": "zda",
+        "GLL": "gll",
+    }
+
     def __init__(self, talker: str = "GP") -> None:
         self.talker = talker
 
     def build(self, state: VesselState, sentences: tuple[str, ...] = SUPPORTED) -> list[str]:
         """Return the requested sentences (in order) as strings without CRLF."""
-        builders = {
-            "GGA": self.gga,
-            "RMC": self.rmc,
-            "VTG": self.vtg,
-            "ZDA": self.zda,
-            "GLL": self.gll,
-        }
         out: list[str] = []
         for name in sentences:
             try:
-                out.append(builders[name](state))
+                builder = getattr(self, self._BUILDERS[name])
             except KeyError:
                 raise ValueError(f"unsupported GPS sentence {name!r}") from None
+            out.append(builder(state))
         return out
 
     def gga(self, s: VesselState) -> str:
@@ -113,6 +117,10 @@ class GpsGenerator:
         lat, lat_dir = to_ddmm(s.lat, is_lat=True)
         lon, lon_dir = to_ddmm(s.lon, is_lat=False)
         status = "A" if s.fix_quality > 0 else "V"  # A=valid, V=warning (no fix)
+        # Mode indicator must agree with status: A=autonomous only with a fix, N=no-fix
+        # otherwise (status V + mode A is internally inconsistent). Byte-identical to the old
+        # hardcoded "A" whenever there is a fix.
+        mode = "A" if s.fix_quality > 0 else "N"
         var_dir = "E" if s.mag_variation_deg >= 0 else "W"
         msg = pynmea2.RMC(
             self.talker,
@@ -129,7 +137,7 @@ class GpsGenerator:
                 _datestamp(s.utc),
                 f"{abs(s.mag_variation_deg):.1f}",
                 var_dir,
-                "A",  # mode indicator: autonomous
+                mode,  # mode indicator: A=autonomous (fix), N=no-fix
             ),
         )
         return str(msg)
@@ -172,9 +180,10 @@ class GpsGenerator:
         lat, lat_dir = to_ddmm(s.lat, is_lat=True)
         lon, lon_dir = to_ddmm(s.lon, is_lat=False)
         status = "A" if s.fix_quality > 0 else "V"
+        mode = "A" if s.fix_quality > 0 else "N"  # match status; byte-identical with a fix
         msg = pynmea2.GLL(
             self.talker,
             "GLL",
-            (lat, lat_dir, lon, lon_dir, _timestamp(s.utc), status, "A"),
+            (lat, lat_dir, lon, lon_dir, _timestamp(s.utc), status, mode),
         )
         return str(msg)

@@ -8,6 +8,7 @@ tested below, so its content is covered. Nothing here opens a serial port or a s
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import pytest
@@ -26,7 +27,7 @@ from nmea_sim.cli_monitor import (
 from nmea_sim.diagnostics import PortDiagnostics
 
 
-def _parse(argv: list[str]):
+def _parse(argv: list[str]) -> argparse.Namespace:
     """Parse + validate an argv, matching how ``main`` prepares its namespace."""
     parser = build_parser()
     return cli_monitor._validate(parser, parser.parse_args(argv))
@@ -194,3 +195,34 @@ def test_main_bad_args_exits_two() -> None:
     with pytest.raises(SystemExit) as exc:
         main([])
     assert exc.value.code == 2
+
+
+# --- standalone source: present surfacing + pending bound (M15) --------------------
+
+
+def test_absent_standalone_device_surfaces_error_and_exits_four(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M15: a mistyped/permission-denied --port opens present=False (SerialPort never raises); the
+    monitor must surface that as a clear source error + non-zero exit, not a perpetual silent
+    'no-data' that keeps advising a TX/RX swap."""
+    args = _parse(["--port", "/dev/mockingbuoy-nonexistent-xyz", "--plain"])
+    source = cli_monitor._build_source(args, None)
+    code = cli_monitor._run_stream(source, args, color=False)
+    assert code == 4
+    err = capsys.readouterr().err.lower()
+    assert "not present" in err
+    assert "mockingbuoy-nonexistent-xyz" in err
+
+
+def test_standalone_pending_buffer_is_bounded_when_undrained() -> None:
+    """M15: with --decode off nothing drains the pending list, so the reader-thread assembler must
+    write into a bounded ring — far more lines than the cap must not grow it without bound."""
+    source = cli_monitor._StandaloneSource("/dev/mockingbuoy-nonexistent-xyz", 4800, "in-1")
+    for i in range(cli_monitor._PENDING_MAX * 3):
+        source._on_raw(f"$GPTXT,{i:04d}*00\n".encode("latin-1"))
+    assert len(source._pending) <= cli_monitor._PENDING_MAX
+    # Draining still returns the (bounded) retained lines and clears the ring.
+    drained = source.lines()
+    assert len(drained) <= cli_monitor._PENDING_MAX
+    assert source.lines() == []

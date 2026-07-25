@@ -1,5 +1,5 @@
 {
-  "$schema_note": "Example config. Copy to config.local.json (git-ignored) and edit. Device paths are placeholders — set them to your own /dev/serial/by-id/... values (see docs/ref/serial-hardware.md).",
+  "$schema_note": "Example config. Copy to data/config.local.json (git-ignored) and edit — that is the ONLY local override the app loads. Device paths are placeholders — set them to your own /dev/serial/by-id/... values (see docs/ref/serial-hardware.md).",
   "writer_backend": "log",
   "movement": { "mode": "static", "physics_hz": 10.0 },
   "time_source": { "mode": "system_utc", "epoch": null, "rate": 1.0 },

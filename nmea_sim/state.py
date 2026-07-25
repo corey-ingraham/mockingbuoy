@@ -18,13 +18,17 @@ from datetime import datetime
 from typing import Any
 
 # AIS "not available" sentinels (used by the P2 AIS generator; defined here with the
-# target model so the values live in one place).
-AIS_HEADING_NA = 511
-AIS_COG_NA = 3600  # tenths of a degree
-AIS_SOG_NA = 1023  # tenths of a knot
-AIS_ROT_NA = -128
-AIS_LAT_NA = 91 * 600000  # 1/10000 min
-AIS_LON_NA = 181 * 600000
+# target model so the values live in one place). These are in the ENGINEERING units
+# ``pyais`` expects on encode — NOT raw six-bit wire units — so they can be handed
+# straight to ``encode_dict`` (pyais applies the ×10 / ×600000 scaling itself). Passing
+# raw wire units here instead makes pyais wrap them into plausible garbage (e.g. a raw
+# SOG of 1023 encodes as 101.4 kn), so keep these engineering-valued.
+AIS_HEADING_NA = 511  # degrees
+AIS_COG_NA = 360.0  # degrees
+AIS_SOG_NA = 102.3  # knots
+AIS_ROT_NA = -128  # ROT special "not available"
+AIS_LAT_NA = 91.0  # degrees
+AIS_LON_NA = 181.0  # degrees
 
 
 @dataclass(frozen=True)

@@ -13,6 +13,11 @@ Security-relevant invariants (see ``docs/ref/security.md``):
   required constructor argument; there is no wildcard default.
 * **Drop-oldest per client.** Each client has a bounded buffer; a slow or stalled consumer
   loses its own oldest lines but never stalls the broadcaster or other clients.
+* **Bounded subscriber count.** At most ``max_clients`` connections are served at once; further
+  connections are accepted and immediately closed, so an unauthenticated flood of taps cannot
+  exhaust threads/memory on a small (GIL-bound) host.
+* **Non-blocking sends.** Each client socket has a send timeout and TCP keep-alive, so a stalled
+  reader is reaped instead of pinning a sender thread on a blocking ``sendall`` forever.
 
 Threads use composition (``threading.Thread(target=...)``) to avoid shadowing ``Thread``
 internals.
@@ -27,6 +32,12 @@ from collections import deque
 
 # Per-client line buffer bound. When exceeded, the oldest queued line is discarded.
 _DEFAULT_MAX_QUEUE = 2000
+# Max simultaneous subscribers. Beyond this, new connections are accepted then dropped so an
+# unauthenticated tap flood cannot exhaust threads/memory (matches the listen backlog).
+_DEFAULT_MAX_CLIENTS = 8
+# Per-send socket timeout (seconds). A stalled reader trips this and its sender thread reaps the
+# client, instead of blocking forever in ``sendall`` with data queuing behind it.
+_SEND_TIMEOUT_S = 5.0
 
 
 class _Client:
@@ -73,12 +84,20 @@ class _Client:
 class TcpTap:
     """A read-only NMEA-over-TCP broadcaster bound to a specific host:port."""
 
-    def __init__(self, host: str, port: int, *, max_queue: int = _DEFAULT_MAX_QUEUE) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        max_queue: int = _DEFAULT_MAX_QUEUE,
+        max_clients: int = _DEFAULT_MAX_CLIENTS,
+    ) -> None:
         if not host or host == "0.0.0.0":  # noqa: S104 - explicitly forbidding the wildcard
             raise ValueError("TcpTap requires an explicit bind host (never 0.0.0.0)")
         self._host = host
         self._port = port
         self._max_queue = max_queue
+        self._max_clients = max_clients
         self._server: socket.socket | None = None
         self._clients: list[_Client] = []
         self._lock = threading.Lock()
@@ -121,8 +140,15 @@ class TcpTap:
             except OSError:
                 break
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            sock.settimeout(_SEND_TIMEOUT_S)  # a stalled reader trips this, reaping the client
             with self._lock:
-                self._prune_dead()
+                live = self._prune_dead()
+                if len(live) >= self._max_clients:
+                    # At capacity: refuse the connection so a tap flood can't exhaust the host.
+                    with contextlib.suppress(OSError):
+                        sock.close()
+                    continue
                 self._clients.append(_Client(sock, self._max_queue))
 
     def _prune_dead(self) -> list[_Client]:

@@ -280,3 +280,131 @@ def test_cli_reports_error_on_empty_input(tmp_path: Path) -> None:
         csv.writer(fh).writerow(_CSV_HEADER)  # header only, no rows
     rc = main([str(empty), "--out", str(tmp_path / "p.json"), "--format", "csv"])
     assert rc == 1
+
+
+def test_cli_aivdm_with_bbox_fails_loud(tmp_path: Path) -> None:
+    """A bounding box is a CSV-only filter; passing it with an aivdm capture must fail loudly
+    rather than being silently dropped (which would also strip static-only records)."""
+    src = _write_lines(tmp_path / "capture.log", _position_a(111111111, 10.1, -30.3, 12.0, 90.0))
+    out = tmp_path / "p.json"
+    rc = main(
+        [
+            str(src),
+            "--out",
+            str(out),
+            "--format",
+            "aivdm",
+            "--min-lat",
+            "10.0",
+            "--max-lat",
+            "10.5",
+            "--min-lon",
+            "-30.5",
+            "--max-lon",
+            "-30.0",
+        ]
+    )
+    assert rc == 2
+    assert not out.exists()
+
+
+def test_cli_aivdm_with_columns_fails_loud(tmp_path: Path) -> None:
+    """``--columns`` is meaningless for a decoded capture; it must fail loudly, not be ignored."""
+    src = _write_lines(tmp_path / "capture.log", _position_a(111111111, 10.1, -30.3, 12.0, 90.0))
+    out = tmp_path / "p.json"
+    rc = main([str(src), "--out", str(out), "--format", "aivdm", "--columns", "lat=Latitude"])
+    assert rc == 2
+    assert not out.exists()
+
+
+# --- reassembly edge cases: reversed / interleaved fragments -----------------------
+
+
+def test_aivdm_reversed_fragments_reassemble(tmp_path: Path) -> None:
+    """A multi-part message whose fragments arrive out of order still reassembles (the
+    ``_Reassembler`` orders by fragment number, not by arrival)."""
+    static = _static5(111111111, ship_type=70)
+    assert len(static) == 2
+    src = _write_lines(tmp_path / "capture.log", [static[1], static[0]])  # 2nd fragment first
+    records = list(aivdm_source.iter_records(src))
+    assert any(r.ship_type == 70 for r in records)
+
+
+def test_aivdm_interleaved_multipart_do_not_crosscontaminate(tmp_path: Path) -> None:
+    """Two multi-part statics interleaved on the same channel (distinct seq-ids) each reassemble
+    to their own vessel, never splicing a fragment of one into the other."""
+    a = _static5(111111111, ship_type=70, seq_id=0)  # cargo
+    b = _static5(222222222, ship_type=30, seq_id=1)  # fishing
+    src = _write_lines(tmp_path / "capture.log", [a[0], b[0], a[1], b[1]])
+    records = list(aivdm_source.iter_records(src))
+    types = {r.mmsi: r.ship_type for r in records if r.ship_type >= 0}
+    assert types[111111111] == 70
+    assert types[222222222] == 30
+
+
+# --- clamp bounds, MMSI sanity, legacy types, static-only fail-loud ----------------
+
+
+def test_target_count_clamped_up_to_min_three(tmp_path: Path) -> None:
+    rows = [(111111111, "2024-01-01T00:05:00", 10.1, -30.3, 12.0, 90.0, 90, 70, "A")]
+    src = _write_csv(tmp_path / "ais.csv", rows)
+    profile = build_profile(csv_source.iter_records(src))
+    assert profile["target_count"] == 3  # median concurrent 1 -> clamped up to the floor of 3
+
+
+def test_target_count_clamped_down_to_max_forty(tmp_path: Path) -> None:
+    rows = [
+        (100_000_000 + i, "2024-01-01T00:05:00", 10.1, -30.3, 12.0, 90.0, 90, 70, "A")
+        for i in range(45)
+    ]
+    src = _write_csv(tmp_path / "many.csv", rows)
+    profile = build_profile(csv_source.iter_records(src))
+    assert profile["target_count"] == 40  # 45 concurrent -> clamped down to the ceiling of 40
+
+
+def test_csv_zero_and_invalid_mmsi_skipped(tmp_path: Path) -> None:
+    """MMSI 0 (and other non-9-digit values) merge many distinct vessels into one bucket, so
+    they are filtered out."""
+    rows = [
+        (0, "2024-01-01T00:05:00", 10.1, -30.3, 12.0, 90.0, 90, 70, "A"),  # MMSI 0
+        (42, "2024-01-01T00:06:00", 10.2, -30.2, 4.0, 45.0, 45, 30, "A"),  # too short
+        (111111111, "2024-01-01T00:07:00", 10.15, -30.25, 8.0, 60.0, 60, 70, "A"),  # valid
+    ]
+    src = _write_csv(tmp_path / "ais.csv", rows)
+    records = list(csv_source.iter_records(src))
+    assert [r.mmsi for r in records] == [111111111]
+
+
+def test_csv_legacy_vessel_types_are_categorised(tmp_path: Path) -> None:
+    """Marine-Cadastre legacy VesselType codes 1001-1025 map onto real categories, not 'other'."""
+    rows = [
+        (111111111, "2024-01-01T00:05:00", 10.1, -30.3, 12.0, 90.0, 90, 1004, "A"),  # legacy cargo
+        (222222222, "2024-01-01T00:06:00", 10.2, -30.2, 4.0, 45.0, 45, 1001, "A"),  # legacy fishing
+        (
+            333333333,
+            "2024-01-01T00:07:00",
+            10.15,
+            -30.25,
+            8.0,
+            60.0,
+            60,
+            1005,
+            "B",
+        ),  # legacy tanker
+    ]
+    src = _write_csv(tmp_path / "ais.csv", rows)
+    profile = build_profile(csv_source.iter_records(src))
+    mix = profile["type_mix"]
+    assert set(mix) == {"cargo", "fishing", "tanker"}  # none fell through to 'other'
+
+
+def test_aivdm_static_only_stream_fails_loud(tmp_path: Path) -> None:
+    """A capture with only static reports carries no position, so no region can be derived — it
+    must fail loudly instead of silently collapsing the region to Null Island (0, 0)."""
+    lines = [
+        *_static5(111111111, ship_type=70, seq_id=0),
+        *_static5(222222222, ship_type=30, seq_id=1),
+    ]
+    src = _write_lines(tmp_path / "capture.log", lines)
+    with pytest.raises(ValueError):
+        build_profile(aivdm_source.iter_records(src))

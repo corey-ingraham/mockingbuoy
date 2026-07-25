@@ -625,6 +625,174 @@ def test_edit_then_save_persists(tmp_path: Path) -> None:
 # --- R22/R52 range consistency: web edit bounds must agree with the state validator -----
 
 
+# --- AIS own-ship identity validation (H8) ----------------------------------------
+
+
+def _ais_own(**own_over: object) -> ChannelSpec:
+    """An AIS channel whose own-ship identity fields can be overridden (valid by default)."""
+    from nmea_sim.config import AisOwnShip, AisSpec
+
+    base: dict[str, object] = {
+        "mmsi": 366000123,
+        "klass": "A",
+        "name": "TESTBUOY",
+        "call_sign": "TB1",
+        "ship_type": 37,
+    }
+    base.update(own_over)
+    return _ais(ais=AisSpec(own_ship=AisOwnShip(**base)))  # type: ignore[arg-type]
+
+
+def test_ais_valid_identity_passes() -> None:
+    assert validate(_config([_ais_own()])) == []
+
+
+@pytest.mark.parametrize("bad_mmsi", [0, -5, 9999999999])
+def test_ais_mmsi_out_of_range_rejected(bad_mmsi: int) -> None:
+    problems = validate(_config([_ais_own(mmsi=bad_mmsi)]))
+    assert any("ais.own_ship.mmsi" in p and "out of range" in p for p in problems)
+
+
+@pytest.mark.parametrize("bad_type", [-1, 100, 700])
+def test_ais_ship_type_out_of_range_rejected(bad_type: int) -> None:
+    problems = validate(_config([_ais_own(ship_type=bad_type)]))
+    assert any("ais.own_ship.ship_type" in p and "out of range" in p for p in problems)
+
+
+def test_ais_name_too_long_rejected() -> None:
+    problems = validate(_config([_ais_own(name="A" * 21)]))
+    assert any("ais.own_ship.name" in p and "too long" in p for p in problems)
+
+
+def test_ais_call_sign_too_long_rejected() -> None:
+    problems = validate(_config([_ais_own(call_sign="ABCDEFGH")]))  # 8 chars, max 7
+    assert any("ais.own_ship.call_sign" in p and "too long" in p for p in problems)
+
+
+def test_ais_name_bad_charset_rejected() -> None:
+    # Lower-case letters are not in the AIS 6-bit ASCII set and would be mangled on the wire.
+    problems = validate(_config([_ais_own(name="test buoy")]))
+    assert any("ais.own_ship.name" in p and "outside the" in p and "6-bit" in p for p in problems)
+
+
+def test_ais_type5_period_non_positive_rejected() -> None:
+    from nmea_sim.config import AisOwnShip, AisSpec
+
+    ch = _ais(ais=AisSpec(own_ship=AisOwnShip(mmsi=366000123), type5_period_s=0.0))
+    problems = validate(_config([ch]))
+    assert any("ais.type5_period_s must be > 0" in p for p in problems)
+
+
+# --- framing validation (M5) ------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_framing", ["8X1", "9N1", "8N3", "8N", "abc"])
+def test_bad_framing_rejected_without_raising(bad_framing: str) -> None:
+    # validate() must never raise on a bad framing (its docstring promises a problem list), and it
+    # must report the framing as unbuildable rather than letting budget.evaluate raise.
+    problems = validate(_config([_gps(framing=bad_framing)]))
+    assert any("is not buildable" in p and "framing" in p for p in problems)
+
+
+def test_valid_framings_pass_framing_check() -> None:
+    for good in ("8N1", "7E1", "8O2", "5N1"):
+        assert not any("is not buildable" in p for p in validate(_config([_gps(framing=good)])))
+
+
+def test_bad_input_framing_rejected() -> None:
+    problems = validate(_config([_gps()], inputs=[_input(framing="8X1")]))
+    assert any("input 'gps_in'" in p and "is not buildable" in p for p in problems)
+
+
+# --- duplicate arbitrated role (M1) -----------------------------------------------
+
+
+def test_duplicate_gps_role_rejected() -> None:
+    a = _gps(id="gps_a", path="/dev/serial/by-id/unit-a")
+    b = _gps(id="gps_b", path="/dev/serial/by-id/unit-b")
+    problems = validate(_config([a, b]))
+    assert any("duplicate role 'gps'" in p for p in problems)
+
+
+def test_two_instrument_channels_allowed() -> None:
+    # instrument is not arbitrated, so two of them raise no duplicate-role complaint.
+    a = _instrument(id="inst_a", path="/dev/serial/by-id/unit-ia")
+    b = _instrument(id="inst_b", path="/dev/serial/by-id/unit-ib")
+    assert not any("duplicate role" in p for p in validate(_config([a, b])))
+
+
+# --- writer_backend enum + time_source.rate (M7) ----------------------------------
+
+
+def test_bad_writer_backend_rejected() -> None:
+    problems = validate(_config([_gps()], writer_backend="bogus"))
+    assert any("writer_backend 'bogus' invalid" in p for p in problems)
+
+
+@pytest.mark.parametrize("backend", ["log", "null", "pty", "serial"])
+def test_known_writer_backends_pass(backend: str) -> None:
+    # A known backend raises no writer_backend complaint (serial carries other auto-mode rules,
+    # so we assert only the backend enum message is absent).
+    assert not any(
+        "writer_backend" in p and "invalid" in p
+        for p in validate(_config([_gps()], writer_backend=backend))
+    )
+
+
+def test_non_positive_rate_rejected() -> None:
+    cfg = _config([_gps()], time_source=TimeSourceSpec(mode="system_utc", rate=0.0))
+    assert any("time_source.rate must be a finite number > 0" in p for p in validate(cfg))
+
+
+def test_non_numeric_rate_rejected_without_raising() -> None:
+    # An uncoerced string rate must be reported, not raise a TypeError out of validate().
+    ts = TimeSourceSpec(mode="system_utc")
+    object.__setattr__(ts, "rate", "fast")
+    cfg = _config([_gps()], time_source=ts)
+    assert any("time_source.rate must be a finite number > 0" in p for p in validate(cfg))
+
+
+# --- H2: transmitting channel needs an enabled emit entry -------------------------
+
+
+def test_all_disabled_emit_on_tx_channel_rejected() -> None:
+    ch = _gps(emit=[EmitSpec("GGA", 1.0, enabled=False), EmitSpec("RMC", 1.0, enabled=False)])
+    problems = validate(_config([ch]))
+    assert any("every 'emit' entry is disabled" in p for p in problems)
+
+
+# --- H9: route speed + waypoint finiteness/range ----------------------------------
+
+
+def test_route_enabled_requires_positive_speed() -> None:
+    cfg = _route_cfg(
+        route=RouteSpec(enabled=True, waypoints=[(0.0, 0.0), (1.0, 1.0)], speed_kn=0.0)
+    )
+    assert any("requires speed_kn > 0" in p for p in validate(cfg))
+
+
+def test_route_out_of_range_waypoint_rejected() -> None:
+    cfg = _route_cfg(
+        route=RouteSpec(enabled=True, waypoints=[(95.0, 200.0), (96.0, 201.0)], speed_kn=8.0)
+    )
+    problems = validate(cfg)
+    assert any("out of range" in p and "route.waypoints" in p for p in problems)
+
+
+def test_route_nan_waypoint_rejected() -> None:
+    nan = float("nan")
+    cfg = _route_cfg(
+        route=RouteSpec(enabled=True, waypoints=[(nan, 0.0), (1.0, 1.0)], speed_kn=8.0)
+    )
+    assert any("route.waypoints" in p and "is not finite" in p for p in validate(cfg))
+
+
+def test_nan_initial_state_field_rejected() -> None:
+    bad = dict(_STATE, sog_kn=float("nan"))
+    problems = validate(_config([_gps()], initial_state_raw=bad))
+    assert any("initial_state.sog_kn" in p and "is not a finite number" in p for p in problems)
+
+
 def test_update_ranges_agree_with_state_ranges_for_manual_fields() -> None:
     """The web edit/persist bounds (``_UPDATE_RANGES``) and the state validator bounds
     (``_STATE_RANGES``) must AGREE for every manual own-ship field both define, so a value the

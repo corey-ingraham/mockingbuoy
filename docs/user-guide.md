@@ -209,7 +209,7 @@ anything else as tabular CSV):
 # Tabular CSV export (map the logical fields to your export's column names):
 python -m nmea_sim.aisprofile <export_dir_or_file> --out profiles/<you>.local.json \
     --format csv \
-    --columns lat=Latitude lon=Longitude sog=SOG type=VesselType \
+    --columns lat=Latitude lon=Longitude sog=SOG ship_type=VesselType \
     --motion-model transiting
 
 # AIVDM/AIVDO capture from your own receiver or the Maintenance monitor:
@@ -282,11 +282,13 @@ The Maintenance tab (and its CLI twin, below) is a bench NMEA diagnostic surface
 individually confirmed, and restricted to a non-operational port** — you cannot accidentally
 disturb a live output.
 
-### Multi-port live monitor
+### Per-port live diagnostics
 
-Watch **4–6 ports** at once: **raw + hex**, **millisecond timestamps**, **per-line checksum
-colouring**, a **filter**, and **pause**. Per port it also reports the **checksum-error rate**,
-a **talker / sentence inventory**, the **sentence rate**, and the **bus load**.
+The monitor polls `GET /api/diag` for rolling **per-port statistics**: the **checksum-error rate**, a
+**talker / sentence inventory**, the **sentence rate**, and the **bus load**, plus the fault verdict. A
+full **multi-port raw + hex line view** (millisecond timestamps, per-line checksum colouring, filter, and
+pause) is a **planned** enhancement — it will ride its own sampled diagnostics stream rather than the
+conning `state`/`nmea` stream — and is not yet shipped.
 
 ### Fault advisor
 
@@ -312,13 +314,15 @@ Built-in reference panels for quick bench work:
 - **Wiring / pinout** — how to land the differential pair and ground.
 - **Talker ID** — the two-letter talker prefixes and what they mean.
 
-### Optional ADC voltage tiles
+### Optional ADC voltage tiles (planned)
 
-If a **pluggable ADC voltage sensor** is present (off by default — a `VoltageProvider` add-on,
-e.g. an ADS1115 over I2C behind a protective analog front-end), the Maintenance tab shows
-per-line, differential, and common-mode **voltage tiles**. This positively confirms a reversed
-A/B pair from the **differential idle sign** rather than inferring it from checksum failures
-alone.
+The design reserves an optional **pluggable ADC voltage sensor** path (off by default — a
+`VoltageProvider` add-on, e.g. an ADS1115 over I2C behind a protective analog front-end) that would show
+per-line, differential, and common-mode **voltage tiles** to positively confirm a reversed A/B pair from
+the **differential idle sign** rather than inferring it from checksum failures alone. The config block,
+driver, and tests exist, **but nothing wires a provider yet**: `/api/diag` exposes no voltage data and the
+Maintenance tab currently renders a **"voltage sensing not installed"** chip. Treat this as planned, not
+shipped.
 
 ### The `mockingbuoy-mon` CLI
 
@@ -381,8 +385,8 @@ them. The live stream is `GET /api/stream` (SSE: `nmea` / `health` / `state` eve
 do maps to a small endpoint set:
 
 - **`POST /api/control`** — the Config-tab actions: `start` / `stop`, `update` (vessel params),
-  `channel` (per-channel enable), `route` (mode + source routing), and `fault` (GPS-fault injection,
-  simulate-only).
+  `channel` (per-channel enable), `route` (route-playback control — `start` / `pause` / `reset` the route
+  cursor), and `fault` (GPS-fault injection, simulate-only).
 - **`POST /api/config/initial-state`** — *Save as defaults* (allow-listed → `data/config.local.json`).
 - **`GET /api/inputs`** — the sensed/assigned input slots and their function.
 - **`GET /api/security`** — the Security tab's posture booleans (never a secret).

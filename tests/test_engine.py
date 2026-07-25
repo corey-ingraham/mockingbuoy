@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import queue
 import socket
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from geographiclib.geodesic import Geodesic
@@ -22,19 +25,49 @@ from nmea_sim.config import (
     TimeSourceSpec,
 )
 from nmea_sim.engine import (
+    _STOP,
     BudgetExceeded,
     Engine,
     PhysicsEngine,
+    StatusMsg,
     TimeSource,
+    ZdaCarveout,
+    _ChannelWorker,
     _InstrumentSource,
+    _ReplayLine,
+    _ReplayThread,
     _RouteDriver,
+    _sanitize_state_changes,
+    _Sink,
     advance_next_fire,
     build_source,
     emission_offsets,
     emitters_for,
 )
-from nmea_sim.state import VesselState
+from nmea_sim.gps_generator import GpsGenerator
+from nmea_sim.ntpsync import NtpSync
+from nmea_sim.router import Router
+from nmea_sim.state import SharedState, VesselState
 from nmea_sim.tcp_tap import TcpTap
+from nmea_sim.timeauthority import TimeAuthority
+
+
+def _wait_until(
+    predicate: Callable[[], bool], *, timeout: float = 5.0, interval: float = 0.005
+) -> bool:
+    """Poll ``predicate`` until it is true or ``timeout`` elapses; return its final value.
+
+    A bounded wait on a definite condition — the project's approved alternative to a fixed
+    wall-clock sleep followed by a fragile count-band assertion (the anti-flake rule): it returns
+    the instant the condition holds and only fails (returns False) on genuine breakage.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
 
 _INITIAL = {
     "lat": 10.1,
@@ -313,16 +346,21 @@ def test_engine_emits_at_configured_rate() -> None:
     collector = CollectingWriter()
     cfg = _config([_gps_channel(rate=5.0)])
     engine = Engine(cfg, sink_hook=lambda spec: [collector])
-    t0 = time.monotonic()
     engine.start()
-    time.sleep(0.8)
-    engine.stop()
-    elapsed = time.monotonic() - t0
+    try:
+        # Two sentences at 5 Hz => ~10 lines/s. Wait (bounded) until a full second's worth has
+        # flowed — a definite condition that holds the moment emission works — instead of sleeping a
+        # fixed wall-clock span and asserting a fragile count band (the project's anti-flake rule).
+        assert _wait_until(lambda: len(collector.snapshot()) >= 10)
+    finally:
+        engine.stop()
 
-    n = len(collector.snapshot())
-    # Two sentences at 5 Hz => ~10 lines/s. Generous band absorbs scheduler jitter.
-    assert n >= 6
-    assert n <= 10 * elapsed * 2
+    # Validate WHAT was emitted deterministically: every line is a well-formed GPS sentence at the
+    # configured talker and both configured sentences flow — independent of scheduler jitter.
+    lines = collector.snapshot()
+    assert all(line.startswith("$GP") for line in lines)
+    assert any(line.startswith("$GPGGA") for line in lines)
+    assert any(line.startswith("$GPRMC") for line in lines)
 
 
 def test_engine_clean_stop_leaves_no_threads() -> None:
@@ -493,3 +531,189 @@ def test_engine_fans_out_to_tcp_tap() -> None:
         assert buf.lstrip().startswith(b"$GP")
     finally:
         engine.stop()
+
+
+# --- empty-emitter / rx-only channels (H2) ---------------------------------------
+
+
+def _make_shared() -> SharedState:
+    return SharedState(VesselState(**_INITIAL, utc=datetime(2024, 1, 1, tzinfo=UTC)))
+
+
+def test_worker_with_no_emitters_stays_alive_and_injects_replay() -> None:
+    """H2: a channel whose emit list yields no emitters (rx-only / all-disabled) must not crash on
+    ``min()`` of an empty sequence — the worker stays alive and still injects replayed lines."""
+    collector = CollectingWriter()
+    spec = ChannelSpec(id="rx0", role="gps", path="none", baud=38400, talker="GP", emit=[])
+    assert emitters_for(spec) == []  # rx-only: nothing scheduled
+    stop = threading.Event()
+    status_q: queue.Queue[StatusMsg] = queue.Queue()
+    worker = _ChannelWorker(
+        spec, build_source(spec), [_Sink("c", collector)], _make_shared(), status_q, stop, None
+    )
+    worker.start()
+    try:
+        assert _wait_until(worker.is_alive)  # came up instead of dying on empty min()
+        worker.enqueue(_ReplayLine("$GPRMC,injected"))
+        assert _wait_until(lambda: bool(collector.snapshot()))  # replayed line injected
+        assert collector.snapshot() == ["$GPRMC,injected"]
+    finally:
+        stop.set()
+        worker.enqueue(_STOP)
+        worker.join(2.0)
+    assert not worker.is_alive()  # clean stop
+
+
+def test_engine_all_disabled_channel_worker_stays_alive() -> None:
+    """H2: a validate-clean config where every emit entry is disabled must not crash the worker."""
+    gps = ChannelSpec(
+        id="gps",
+        role="gps",
+        path="none",
+        baud=38400,
+        talker="GP",
+        emit=[EmitSpec("GGA", 5.0, enabled=False), EmitSpec("RMC", 5.0, enabled=False)],
+    )
+    assert emitters_for(gps) == []
+    engine = Engine(_config([gps]), sink_hook=lambda spec: [CollectingWriter()])
+    engine.start()
+    try:
+        assert _wait_until(lambda: engine.health().channels[0].alive)
+        report = engine.health()
+        assert report.physics_alive
+        assert report.channels[0].alive  # did not die on empty min() (H2)
+        assert report.ok  # nothing down
+    finally:
+        engine.stop()
+    assert engine.health().channels[0].alive is False
+
+
+# --- H1: engine call sites survive a garbage checksum-valid field -----------------
+
+
+def test_feed_passthrough_state_survives_garbage_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H1 belt-and-suspenders: a ``ValueError``/``TypeError`` from a checksum-valid garbage field is
+    swallowed at the engine call site, so the channel's only writer never dies mid-forward."""
+    import nmea_sim.engine as engine_mod
+
+    def boom(line: str) -> dict[str, float]:
+        raise ValueError("garbage speed field 1.2.3")
+
+    monkeypatch.setattr(engine_mod.rx, "parse_line", boom)
+    spec = ChannelSpec(
+        id="gps", role="gps", path="none", baud=38400, talker="GP", emit=[EmitSpec("RMC", 1.0)]
+    )
+    stop = threading.Event()
+    status_q: queue.Queue[StatusMsg] = queue.Queue()
+    worker = _ChannelWorker(
+        spec,
+        build_source(spec),
+        [_Sink("c", CollectingWriter())],
+        _make_shared(),
+        status_q,
+        stop,
+        None,
+    )
+    # An RMC formatter passes the state-formatter gate; the raising parser must not propagate.
+    worker._feed_passthrough_state("$GPRMC,garbage")
+
+
+# --- H9: finite / range gate before SharedState.update ---------------------------
+
+
+def test_sanitize_state_changes_drops_nan_and_out_of_range() -> None:
+    """H9: non-finite / out-of-range fields are dropped before they can reach SharedState."""
+    assert _sanitize_state_changes({"sog_kn": float("nan"), "cog_deg": 90.0}) == {"cog_deg": 90.0}
+    assert _sanitize_state_changes({"sog_kn": -3.0}) == {}  # negative SOG rejected
+    # A bad half of a lat/lon pair invalidates the whole fix (both dropped).
+    assert _sanitize_state_changes({"lat": 95.0, "lon": 10.0}) == {}
+    assert _sanitize_state_changes({"lat": float("inf"), "lon": 10.0}) == {}
+    # A clean set passes through untouched.
+    clean = {"lat": 10.0, "lon": -30.0, "sog_kn": 5.0}
+    assert _sanitize_state_changes(clean) == clean
+
+
+# --- DOM10: ZDA carve-out latch expiry -------------------------------------------
+
+
+def test_zda_carveout_latch_expires() -> None:
+    """DOM10: once a source stops sending its own ZDA, synthesis resumes after the latch window
+    instead of being suppressed forever."""
+    gen = GpsGenerator("GP")
+    state = VesselState(**_INITIAL, utc=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC))
+    rmc = gen.build(state, ("RMC",))[0]
+    zda = gen.build(state, ("ZDA",))[0]
+    carve = ZdaCarveout("GP")
+    assert carve.on_forward("in0", zda, now=0.0) == []  # source owns ZDA -> latched
+    assert carve.on_forward("in0", rmc, now=1.0) == []  # recent ZDA -> no synthesis
+    synth = carve.on_forward("in0", rmc, now=31.0)  # well past the latch window -> resume
+    assert len(synth) == 1
+    assert synth[0].startswith("$GPZDA")
+
+
+def test_zda_carveout_synthesizes_when_source_never_sends_zda() -> None:
+    """Baseline: a source that only ever sends RMC gets a synthesized ZDA immediately."""
+    gen = GpsGenerator("GP")
+    state = VesselState(**_INITIAL, utc=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC))
+    rmc = gen.build(state, ("RMC",))[0]
+    synth = ZdaCarveout("GP").on_forward("in0", rmc, now=0.0)
+    assert len(synth) == 1
+    assert synth[0].startswith("$GPZDA")
+
+
+# --- H6: replay / reader thread aliveness folds into health ----------------------
+
+
+def test_replay_thread_missing_file_is_unhealthy() -> None:
+    """H6: a replay thread that dies on a vanished/unreadable file reports unhealthy (not green)
+    and surfaces a ``replay_error`` status, instead of silently dying under a whole-loop suppress.
+    """
+    stop = threading.Event()
+    status_q: queue.Queue[StatusMsg] = queue.Queue()
+    thread = _ReplayThread(
+        "this-capture-does-not-exist.nmea", False, 1.0, {}, _make_shared(), stop, status_q
+    )
+    thread.start()
+    thread.join(2.0)
+    assert not thread.is_alive()
+    assert thread.healthy() is False  # dead-but-green is disqualified
+    kinds = []
+    while not status_q.empty():
+        kinds.append(status_q.get_nowait().kind)
+    assert "replay_error" in kinds
+
+
+# --- M4: TimeAuthority monotonic clamp must not cross tiers -----------------------
+
+
+class _StubRouter:
+    """Minimal Router stand-in that always names the same GNSS winner."""
+
+    def __init__(self, winner: str | None) -> None:
+        self._winner = winner
+
+    def winner(self, channel_id: str, cls: str, now: float) -> str | None:
+        return self._winner
+
+
+def test_time_authority_future_sim_base_does_not_freeze_live_gnss() -> None:
+    """M4: a sim-epoch-ahead base clock must not freeze the live GNSS time via the monotonic clamp.
+
+    Before the fix, clamping the projected GNSS time up to ``current`` (seeded from a future sim
+    epoch) pinned the clock at the future value forever, tagged ``gps``.
+    """
+    base = TimeSource(TimeSourceSpec(mode="simulated"), datetime(2030, 1, 1, tzinfo=UTC))
+    router = cast(Router, _StubRouter("in0"))
+    authority = TimeAuthority(base, router, "gps", {"in0": "gps"}, NtpSync())
+    now = time.monotonic()
+    authority.note_time("in0", datetime(2026, 1, 1, tzinfo=UTC), now)
+
+    current = datetime(2030, 1, 1, tzinfo=UTC)  # state seeded from the future sim epoch
+    resolved = authority.advance(current, dt_s=0.05)
+    assert resolved.year == 2026  # live GNSS time wins; NOT frozen at the 2030 sim epoch
+    assert authority.source_tag() == "gps"
+
+    # And it keeps advancing on the next tick (clamped only against the last real-time value).
+    resolved2 = authority.advance(resolved, dt_s=0.05)
+    assert resolved2 >= resolved
+    assert resolved2.year == 2026

@@ -13,13 +13,20 @@ permissions:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pin the two versions this project actually runs on: the Pi appliance ships
+        # Python 3.11, the dev workstation runs 3.13. Testing only one lets a
+        # version-specific break (syntax, stdlib, typing) ship green to the other.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
         run: |
@@ -38,13 +45,34 @@ jobs:
       - name: Pytest
         run: pytest
 
-      # Public-artifact scrub gate (R39). Scans TRACKED files for tokens that must never
-      # appear in this repo: assistant/tooling references, offline-framing phrases, and a
-      # stray codename. Policy is placeholders + a short accepted-exceptions list (repo-owner
-      # handle, ftdi_sio, Airmar) which these narrow patterns do not match, so the scan stays
-      # green on a clean tree. This workflow file is excluded because it necessarily embeds
-      # the token list below. git grep exits 1 when it finds nothing, so we invert it: any
-      # match => fail the build; no match => pass.
+  # C1 gate: the ONLY step that actually catches a broken lock. `lint-and-test` installs
+  # `-e .[dev]` (the unpinned dev tree), never the hash-locked runtime lock, so a
+  # Windows/py3.13-tagged or uvloop-missing requirements.txt sails past it. This job installs
+  # the lock exactly as the Pi does. NOTE: it stays RED until requirements.txt is regenerated
+  # on Linux/py3.11 (see the header of requirements.txt) — that red IS the signal.
+  lock-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime lock with hash enforcement (Pi parity)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.txt
+
+  # Public-artifact scrub gate (R39). Scans TRACKED files for tokens that must never appear
+  # in this repo: assistant/tooling references, offline-framing phrases, and a stray codename.
+  # This workflow file is excluded because it necessarily embeds the token list below. git
+  # grep exits 1 when it finds nothing, so we invert it: any match => fail; no match => pass.
+  scrub-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Scrub scan (banned tokens)
         run: |
           if git grep -nEi 'claude|anthropic|co-authored-by|ai-generated|air[ -]?gap|safe to unplug|monterey' -- . ':(exclude).github/workflows/ci.yml'; then
@@ -52,10 +80,28 @@ jobs:
             exit 1
           fi
 
-      # Advisory dependency-CVE scan. continue-on-error so a newly-disclosed upstream
-      # advisory surfaces as an annotation without blocking unrelated PRs; review the log.
-      - name: pip-audit (advisory)
-        continue-on-error: true
+  # Dependency-CVE scan of the LOCKED runtime set. Audits requirements.txt (the pinned lock
+  # that actually ships), not the unpinned dev env, and is a real gate: the previous form was
+  # doubly neutered (continue-on-error AND `|| true`), so it could never fail the build.
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: pip-audit (locked runtime deps)
         run: |
+          python -m pip install --upgrade pip
           pip install pip-audit
-          pip-audit --strict --desc || true
+          pip-audit --strict --desc --requirement requirements.txt
+
+  # ~600 lines of root-run bash gate the whole appliance; lint it so a quoting/`set -e`
+  # regression is caught in CI, not on a Pi at DR time.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck (ops bash)
+        run: shellcheck setup.sh bootstrap.sh ops/*.sh

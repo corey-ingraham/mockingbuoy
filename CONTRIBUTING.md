@@ -17,6 +17,13 @@ mypy                # types
 pytest              # tests
 ```
 
+CI also enforces a **public-artifact scrub gate** (R39) that fails the build if any
+tracked file contains operator/environment specifics, real coordinates/identifiers, or
+tooling references — see `.github/workflows/ci.yml`. Keep tracked code, tests, and docs
+generic: placeholders and synthetic values only. CI additionally installs the pinned
+`requirements.txt` with `--require-hashes` and shellcheck-lints the ops scripts, so a
+lockfile or shell regression fails CI even when the checks above pass locally.
+
 ## Run without hardware
 
 ```bash

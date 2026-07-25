@@ -31,6 +31,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
+# Tiers that track wall time. The monotonic clamp exists only to stop the clock stepping backward
+# across a handover BETWEEN these real-time sources; it must never clamp against a simulated/held
+# base epoch (which may sit arbitrarily in the future), so the clamp is applied only within
+# this set.
+_REALTIME_TIERS = frozenset({"gps", "sat", "ntp", "system"})
+
 if TYPE_CHECKING:
     # Typing-only: these are used purely in annotations, and importing them under TYPE_CHECKING
     # keeps the module import-light and cycle-proof (the engine imports this module, so pulling
@@ -98,6 +104,11 @@ class TimeAuthority:
         # Last resolved source tag, read by source_tag() from another thread. Defaults to "system"
         # so a caller reading before the first advance() gets a sane free-running-clock label.
         self._last_tag = "system"
+        # The last UTC produced by a REAL-TIME tier, used as the monotonic clamp floor (M4).
+        # Clamping against this — not against ``current`` — is what stops a simulated/held future
+        # base epoch from freezing the live clock forever: a sim epoch never lands here, so it can
+        # never become the floor. ``None`` until the first real-time resolution (nothing to clamp).
+        self._last_realtime_utc: datetime | None = None
 
     def note_time(self, input_id: str, utc: datetime, now: float) -> None:
         """Record a freshly parsed UTC for ``input_id`` as an immutable fix, atomically.
@@ -133,9 +144,7 @@ class TimeAuthority:
         if fix is not None:
             # Live GNSS source with a parsed fix: project forward and clamp to real-time monotonic.
             projected = fix.utc + timedelta(seconds=now - fix.arrival)
-            resolved, tag = projected, fix.tag
-            # Real-time tier: never step backward across a source handover (R7/R51).
-            resolved = max(resolved, current)
+            resolved, tag = self._clamp_realtime(projected, current), fix.tag
         else:
             # No live GNSS fix — either no winner, or a winner is live but has produced no parsable
             # time yet. DO NOT crash; fall through to the base clock and honour its mode (R8).
@@ -143,12 +152,9 @@ class TimeAuthority:
             if self._base.mode == "system_utc":
                 # Real wall clock: NTP-disciplined vs free-running system, with a plausibility guard
                 # so a wildly-off clock (pre-2020) is never labelled "ntp".
-                if self._ntp.synced(now) and base_utc.year >= 2020:
-                    resolved, tag = base_utc, "ntp"
-                else:
-                    resolved, tag = base_utc, "system"
+                tag = "ntp" if (self._ntp.synced(now) and base_utc.year >= 2020) else "system"
                 # Real-time tier: clamp monotonic.
-                resolved = max(resolved, current)
+                resolved = self._clamp_realtime(base_utc, current)
             else:
                 # simulated / hold: honoured verbatim and NEVER clamped (R51) — clamping a scripted
                 # or held demo clock would freeze it or break its configured drift.
@@ -157,6 +163,25 @@ class TimeAuthority:
         # Publish the resolved tag for source_tag(); a plain str assignment is atomic under the GIL.
         self._last_tag = tag
         return resolved
+
+    def _clamp_realtime(self, value: datetime, current: datetime) -> datetime:
+        """Monotonic clamp WITHIN the real-time tiers, then record the floor (R7/R51, M4).
+
+        The clamp only stops the clock stepping backward across a handover between real-time sources
+        (gps/sat/ntp/system). The floor is the highest real-time value seen so far — the previous
+        real-time resolution AND ``current``, but ``current`` counts as a real-time floor ONLY when
+        the base clock itself tracks wall time (``system_utc``). Under a ``simulated``/``hold``
+        base, ``current`` carries that base's own (possibly future) epoch, so clamping to it freezes
+        the live GNSS clock forever tagged ``gps`` (M4) — there we clamp against prior GNSS values
+        only.
+        """
+        floor = self._last_realtime_utc
+        if self._base.mode == "system_utc":
+            floor = current if floor is None else max(floor, current)
+        if floor is not None and value < floor:
+            value = floor
+        self._last_realtime_utc = value
+        return value
 
     def source_tag(self) -> str:
         """The tag of the last resolved tier ("gps"/"sat"/"ntp"/"system"/"simulated"/"hold").

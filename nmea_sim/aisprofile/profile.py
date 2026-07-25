@@ -22,6 +22,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
+from random import Random
 
 from ..realism import RealismProfile
 from .records import AisRecord
@@ -34,9 +35,38 @@ _SOG_MAX_KN = 40.0
 
 MOTION_MODELS = ("anchored", "transiting", "drifting")
 
+# Marine-Cadastre legacy "VesselType" group codes (1001-1025) carry the same broad meaning as
+# the standard AIS ship-and-cargo codes; without an explicit map they would ALL collapse to
+# "other" and wipe out the type mix. Codes not listed (tug/tow, law/military, unknown groups)
+# have no equivalent among the six area-neutral categories and stay "other".
+_LEGACY_VESSEL_TYPE: dict[int, str] = {
+    1001: "fishing",
+    1002: "fishing",
+    1003: "cargo",
+    1004: "cargo",
+    1005: "tanker",
+    1006: "tanker",
+    1012: "passenger",
+    1013: "passenger",
+    1014: "passenger",
+    1015: "passenger",
+    1016: "cargo",
+    1017: "tanker",
+    1018: "cargo",
+    1019: "pleasure",
+    1024: "tanker",
+}
+
+# Reservoir caps keep memory bounded by distinct vessels, not by row count: a daily
+# Marine-Cadastre export streams through in constant memory instead of buffering every row.
+_RESERVOIR_CAP = 50_000
+_SPEED_CAP_PER_MMSI = 64
+
 
 def _category(ship_type: int) -> str:
     """Map an AIS ship-and-cargo-type code to a broad, area-neutral category."""
+    if ship_type in _LEGACY_VESSEL_TYPE:
+        return _LEGACY_VESSEL_TYPE[ship_type]
     if ship_type == 30:
         return "fishing"
     if ship_type in (36, 37):
@@ -48,6 +78,20 @@ def _category(ship_type: int) -> str:
     if 80 <= ship_type <= 89:
         return "tanker"
     return "other"
+
+
+def _reservoir_add(sample: list[float], value: float, seen: int, cap: int, rng: Random) -> None:
+    """Algorithm-R reservoir insert. ``seen`` is how many values were offered before this one.
+
+    Below the cap every value is kept (so small inputs are exact); at the cap a uniform random
+    subset is retained, bounding memory without biasing the sampled distribution.
+    """
+    if len(sample) < cap:
+        sample.append(value)
+        return
+    j = rng.randint(0, seen)
+    if j < cap:
+        sample[j] = value
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:
@@ -89,7 +133,12 @@ def _bucket_key(ts: datetime) -> str:
 
 @dataclass
 class _Accumulator:
-    """Distinct-MMSI aggregates. Category and speed are correlated per MMSI, then discarded."""
+    """Distinct-MMSI aggregates. Category and speed are correlated per MMSI, then discarded.
+
+    Positions and per-vessel speeds are reservoir-sampled, so memory stays bounded by the
+    number of distinct vessels rather than the number of rows — a multi-million-row daily
+    export is streamed in constant memory, matching the ``csv_source`` streaming contract.
+    """
 
     vessels: set[int] = field(default_factory=set)
     lats: list[float] = field(default_factory=list)
@@ -98,6 +147,10 @@ class _Accumulator:
     vessel_category: dict[int, str] = field(default_factory=dict)
     vessel_class: dict[int, str] = field(default_factory=dict)
     bucket_mmsis: dict[str, set[int]] = field(default_factory=lambda: defaultdict(set))
+    # Deterministic RNG for reservoir sampling; a fixed seed keeps the distiller reproducible.
+    _rng: Random = field(default_factory=lambda: Random(0))
+    _pos_count: int = 0
+    _speed_count: dict[int, int] = field(default_factory=lambda: defaultdict(int))
 
     def add(self, rec: AisRecord) -> None:
         self.vessels.add(rec.mmsi)
@@ -112,10 +165,15 @@ class _Accumulator:
             and -90.0 <= rec.lat <= 90.0
             and -180.0 <= rec.lon <= 180.0
         ):
-            self.lats.append(rec.lat)
-            self.lons.append(rec.lon)
+            _reservoir_add(self.lats, rec.lat, self._pos_count, _RESERVOIR_CAP, self._rng)
+            _reservoir_add(self.lons, rec.lon, self._pos_count, _RESERVOIR_CAP, self._rng)
+            self._pos_count += 1
         if math.isfinite(rec.sog) and 0.0 <= rec.sog <= _SOG_MAX_KN:
-            self.speeds_by_mmsi[rec.mmsi].append(rec.sog)
+            seen = self._speed_count[rec.mmsi]
+            _reservoir_add(
+                self.speeds_by_mmsi[rec.mmsi], rec.sog, seen, _SPEED_CAP_PER_MMSI, self._rng
+            )
+            self._speed_count[rec.mmsi] += 1
         if rec.ts is not None:
             self.bucket_mmsis[_bucket_key(rec.ts)].add(rec.mmsi)
 
@@ -123,6 +181,11 @@ class _Accumulator:
 def _aggregate(acc: _Accumulator, motion_model: str) -> dict[str, object]:
     if not acc.vessels:
         raise ValueError("no usable AIS records to build a profile from")
+    if not acc.lats or not acc.lons:
+        raise ValueError(
+            "no usable position reports: cannot derive a region "
+            "(a static-only stream would silently collapse to Null Island)"
+        )
 
     lat_sorted = sorted(acc.lats)
     lon_sorted = sorted(acc.lons)

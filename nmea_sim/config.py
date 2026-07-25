@@ -16,12 +16,64 @@ import contextlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .state import VesselState
+
+# JSON keys a comment/schema convention may carry without being a real config field — a key
+# starting with either is tolerated (and dropped) rather than rejected as unknown.
+_COMMENT_KEY_PREFIXES = ("$", "_")
+
+# Top-level JSON keys ``EngineConfig.from_dict`` accepts. Kept explicit (not derived from the
+# dataclass) because a couple of JSON keys differ from their field names (``initial_state`` ->
+# ``initial_state_raw``); anything else is a typo we now reject loudly rather than silently drop.
+_ENGINE_CONFIG_KEYS = frozenset(
+    {
+        "writer_backend",
+        "movement",
+        "time_source",
+        "initial_state",
+        "channels",
+        "ais_targets",
+        "tcp_tap_host",
+        "mode",
+        "inputs",
+        "voltage_sense",
+        "route",
+        "replay",
+    }
+)
+
+
+def _reject_unknown_keys(data: dict[str, Any], allowed: frozenset[str], where: str) -> None:
+    """Raise ``ValueError`` naming any key in ``data`` outside ``allowed`` (comment keys apart).
+
+    Fail-loud replacement for the old silent-drop: a typo'd top-level key used to be ignored on
+    load and deleted on save. Keys prefixed ``$``/``_`` are treated as comments and tolerated.
+    """
+    unknown = sorted(
+        k for k in data if k not in allowed and not k.startswith(_COMMENT_KEY_PREFIXES)
+    )
+    if unknown:
+        raise ValueError(f"{where}: unknown key(s) {unknown} (expected any of {sorted(allowed)})")
+
+
+def _spec_from_mapping(cls: type[Any], data: dict[str, Any], where: str) -> Any:
+    """Build a small dataclass from a JSON mapping, rejecting unknown keys loudly.
+
+    ``from_dict`` used to splat ``**data`` straight into MovementSpec/TimeSourceSpec, so a typo'd
+    key raised a raw ``TypeError`` that escaped ``main._load``'s ``(ValueError, KeyError)`` catch.
+    Surface it as a ``ValueError`` naming the offending keys instead — the same fail-loud handling
+    the top-level and every other unknown-key case now gets.
+    """
+    known = {f.name for f in fields(cls)}
+    _reject_unknown_keys(data, frozenset(known), where)
+    filtered = {k: v for k, v in data.items() if not k.startswith(_COMMENT_KEY_PREFIXES)}
+    return cls(**filtered)
+
 
 # --- individual spec pieces -------------------------------------------------------
 
@@ -512,10 +564,13 @@ class EngineConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EngineConfig:
+        _reject_unknown_keys(data, _ENGINE_CONFIG_KEYS, "config")
         return cls(
             writer_backend=str(data.get("writer_backend", "log")),
-            movement=MovementSpec(**data.get("movement", {})),
-            time_source=TimeSourceSpec(**data.get("time_source", {})),
+            movement=_spec_from_mapping(MovementSpec, data.get("movement", {}), "movement"),
+            time_source=_spec_from_mapping(
+                TimeSourceSpec, data.get("time_source", {}), "time_source"
+            ),
             initial_state_raw=dict(data.get("initial_state", {})),
             channels=[ChannelSpec.from_dict(c) for c in data.get("channels", [])],
             ais_targets=[dict(t) for t in data.get("ais_targets", [])],
@@ -615,7 +670,10 @@ class EngineConfig:
         """
         dest = Path(path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(self.to_dict(), indent=2) + "\n"
+        # allow_nan=False: reject NaN/Infinity outright rather than emit the non-standard JSON
+        # literals ``json.loads`` would happily read back, so a poisoned own-ship value cannot
+        # round-trip through a saved config (H9).
+        payload = json.dumps(self.to_dict(), indent=2, allow_nan=False) + "\n"
         fd, tmp_name = tempfile.mkstemp(
             dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp"
         )

@@ -399,6 +399,12 @@ click-to-decode; and a **guided fault advisor** that classifies the byte stream 
 cause and fix (for example, a reversed A/B data pair). It is read-only by default; any
 transmit/reconfigure action is opt-in, confirmed, and restricted to a non-operational port.
 
+**Status (shipped vs planned)** Shipped today: the polled per-port statistics (checksum-error rate,
+talker/sentence inventory, rate, bus-load, fault verdict) via `GET /api/diag`, click-to-decode, the gated
+baud-sweep/send/loopback/capture actions, and the fault advisor. The **live multi-port raw+hex line view**
+(millisecond timestamps, per-line checksum colouring, filter, pause) and the **ADC voltage tiles** are
+designed but **not yet wired** — they are planned enhancements, not current behaviour.
+
 **Context** Bench-testing real NMEA hardware is otherwise a scatter of terminal tools, and the hardest
 faults (wrong baud, reversed differential pair, marginal wiring) present as garbled bytes that no
 common tool interprets. This is the deliberate differentiator: **no existing tool auto-detects a

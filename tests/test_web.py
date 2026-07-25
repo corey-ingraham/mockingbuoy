@@ -26,6 +26,7 @@ import web.app as web_app
 from web.app import Broker, SubscriberLimitError, create_app
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 
 
 @pytest.fixture
@@ -856,6 +857,10 @@ def auto_config(tmp_path: Path) -> Path:
     The tolerant serial backend never opens the ``none`` device, so no hardware is needed."""
     base = json.loads(CONFIG_PATH.read_text())
     base["mode"] = "auto"
+    # Auto mode requires the ``serial`` writer backend (the log/pty/null backends have no real
+    # input port); create_app now deep-validates on boot (H5), so this must be a VALID auto config.
+    # The tolerant SerialPort never opens the placeholder devices, so no hardware is still needed.
+    base["writer_backend"] = "serial"
     base.setdefault("inputs", []).append(
         {"id": "spare_in", "path": "none", "function": "unused", "baud": 4800}
     )
@@ -1443,9 +1448,14 @@ def no_ais_config(tmp_path: Path) -> Path:
 
 
 def test_persist_ais_traffic_requires_exactly_one_ais_channel_more(two_ais_config: Path) -> None:
-    """>1 channel with role 'ais' is ambiguous — the merge refuses to guess and returns a clear
-    400 naming the count, never a silent write to the wrong channel."""
-    app = create_app(str(two_ais_config))
+    """>1 channel with role 'ais' is ambiguous. Post-H5 the boot-time deep validator rejects a
+    duplicate-role config outright (``create_app`` raises); if a build ever reaches the running
+    app, the persist merge still refuses to guess and returns a clear 400 naming the role. Either
+    guard is acceptable — both prevent a silent write to the wrong channel."""
+    try:
+        app = create_app(str(two_ais_config))
+    except ValueError:
+        return  # H5: boot-time validation already refused the ambiguous duplicate-role config
     with TestClient(app) as c:
         resp = c.post(
             "/api/config/initial-state",
@@ -1465,3 +1475,134 @@ def test_persist_ais_traffic_requires_exactly_one_ais_channel_none(no_ais_config
         )
         assert resp.status_code == 400
         assert "role 'ais'" in resp.json()["detail"]
+
+
+# --- C2: externalized CSS/JS for a strict CSP --------------------------------------
+
+
+def test_index_references_external_css_and_js_no_inline_blocks() -> None:
+    """C2: the UI must load its stylesheet + script as same-origin ``/static`` files (not inline)
+    so a strict CSP with no ``script-src 'unsafe-inline'`` still renders the page behind Caddy."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert '<link rel="stylesheet" href="/static/app.css">' in html
+    assert '<script src="/static/app.js"></script>' in html
+    # No inline blocks survive (the tags now carry href/src attributes, never the bare form).
+    assert "<style>" not in html
+    assert "<script>" not in html
+
+
+def test_static_css_and_js_are_served(client: TestClient) -> None:
+    """FastAPI serves the externalized assets from /static with the right content types (C2)."""
+    css = client.get("/static/app.css")
+    assert css.status_code == 200
+    assert "text/css" in css.headers["content-type"]
+    assert ":root" in css.text  # a known stylesheet token
+
+    js = client.get("/static/app.js")
+    assert js.status_code == 200
+    assert "javascript" in js.headers["content-type"]
+    assert "EventSource" in js.text  # a known script token
+
+
+def test_app_js_gates_ais_traffic_on_ais_channel() -> None:
+    """M10 (client contract): the Save-as-defaults handler only sends the ``ais_traffic`` block
+    when the config actually has an ais-role channel, so a save never 400s on a no-AIS config."""
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'role || "").toLowerCase() === "ais"' in js
+    assert "if (aisCh) {" in js
+
+
+# --- H5: production entrypoint deep-validates the config ----------------------------
+
+
+def test_create_app_deep_validates_and_raises_on_invalid(tmp_path: Path) -> None:
+    """H5: ``create_app`` runs full ``validate()`` and raises on a config only deep validation
+    catches (here an out-of-range initial-state lat) so systemd surfaces it, instead of booting a
+    subtly-broken engine on the ``uvicorn web.app:app`` path."""
+    base = json.loads(CONFIG_PATH.read_text())
+    base["initial_state"]["lat"] = 999.0  # load() accepts it; validate() rejects the range
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(base))
+    with pytest.raises(ValueError):
+        create_app(str(dest))
+
+
+# --- M9: GET /api/config withholds device paths ------------------------------------
+
+
+def test_config_endpoint_does_not_leak_device_paths(client: TestClient) -> None:
+    """M9: GET /api/config must not expose channel/input device ``path`` fields — the
+    ``/dev/serial/by-id/...`` links carry the adapter brand + serial that /api/inputs and
+    /api/profiles deliberately withhold (R19)."""
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    body = resp.json()
+    for ch in body["channels"]:
+        assert "path" not in ch
+    for inp in body.get("inputs", []):
+        assert "path" not in inp
+    raw = resp.text
+    assert "/dev/serial" not in raw
+    assert "CHANGE-ME" not in raw
+    # The non-path channel fields the UI actually needs are still present.
+    assert all({"id", "role", "enabled"} <= set(ch) for ch in body["channels"])
+
+
+# --- H4: saved config reaches the running process ----------------------------------
+
+
+def test_saved_config_reaches_next_start(tmp_config: Path) -> None:
+    """H4: a successful save swaps the manager's config so the NEXT in-app Start builds its engine
+    from the saved values, not the stale boot config. Persist a new manual default -> stop ->
+    start -> the value is live on the very next state read (movement is ``static``, so no drift)."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        assert c.get("/api/state").json()["stw_kn"] == pytest.approx(0.0)  # boot default
+        assert c.post("/api/config/initial-state", json={"stw_kn": 9.5}).status_code == 200
+
+        assert c.post("/api/control", json={"action": "stop"}).status_code == 200
+        assert c.post("/api/control", json={"action": "start"}).status_code == 200
+        # Before H4 the restart reused the stale boot config and this stayed 0.0.
+        assert c.get("/api/state").json()["stw_kn"] == pytest.approx(9.5)
+
+
+def test_two_sequential_saves_both_persist(tmp_config: Path) -> None:
+    """H4 data-loss regression: a second save must merge onto the FIRST save's config (not the
+    stale boot config), so save #1's blocks survive save #2 instead of being silently erased."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        assert c.post("/api/config/initial-state", json={"stw_kn": 3.0}).status_code == 200
+        assert c.post("/api/config/initial-state", json={"depth_m": 77.0}).status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert float(reloaded.initial_state_raw["stw_kn"]) == pytest.approx(3.0)  # survived save #2
+    assert float(reloaded.initial_state_raw["depth_m"]) == pytest.approx(77.0)
+
+
+# --- M10 server contract + ControlRequest hardening --------------------------------
+
+
+def test_persist_without_ais_traffic_succeeds_on_no_ais_config(no_ais_config: Path) -> None:
+    """M10 (server contract behind the UI gate): a save that OMITS ``ais_traffic`` persists cleanly
+    on a config with no ais-role channel — the case the UI now produces instead of unconditionally
+    sending the block and 400ing every save on such a config."""
+    app = create_app(str(no_ais_config))
+    with TestClient(app) as c:
+        resp = c.post("/api/config/initial-state", json={"stw_kn": 4.0})
+        assert resp.status_code == 200
+        assert resp.json()["saved"] is True
+
+
+def test_control_rejects_unknown_field(client: TestClient) -> None:
+    """``ControlRequest`` forbids extras: an unrecognized key is a 422, never silently ignored."""
+    resp = client.post("/api/control", json={"action": "update", "bogus": 1})
+    assert resp.status_code == 422
+
+
+def test_update_with_no_recognized_fields_is_bad_request(client: TestClient) -> None:
+    """An ``update`` naming zero recognized state fields is a 400 (nothing to apply), not a silent
+    no-op 200."""
+    resp = client.post("/api/control", json={"action": "update"})
+    assert resp.status_code == 400

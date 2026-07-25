@@ -113,10 +113,15 @@ class AdcVoltageProvider:
             return VoltageReading(a_v=0.0, b_v=0.0, diff_v=0.0, common_v=0.0, present=False)
         # The driver contract is deliberately minimal and duck-typed: it exposes read_pair(wiring,
         # i2c_address) -> (a_raw, b_raw). Concrete adapters live outside tracked code (hardware-
-        # specific), so we stay agnostic to any particular vendor library here.
-        a_raw, b_raw = self._driver.read_pair(wiring, self._i2c_address)
-        a_v = float(a_raw) * self._divider_ratio
-        b_v = float(b_raw) * self._divider_ratio
+        # specific), so we stay agnostic to any particular vendor library here. A read that raises
+        # or returns a non-numeric pair means the ADC could not answer NOW — honour the
+        # present=False contract (reading is "unknown", never a coerced 0 V), never crash caller.
+        try:
+            a_raw, b_raw = self._driver.read_pair(wiring, self._i2c_address)
+            a_v = float(a_raw) * self._divider_ratio
+            b_v = float(b_raw) * self._divider_ratio
+        except Exception:  # noqa: BLE001 - a hardware read failure is "unavailable", not a crash
+            return VoltageReading(a_v=0.0, b_v=0.0, diff_v=0.0, common_v=0.0, present=False)
         return VoltageReading(
             a_v=a_v,
             b_v=b_v,

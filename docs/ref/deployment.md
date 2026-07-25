@@ -111,7 +111,13 @@ runs fine with no ADC present. Config + safety detail → security.md.
 
 Many small single-board hosts have no battery-backed RTC, so the clock may be wrong until sync. Keep the OS in UTC. The app's `time_source.mode`
 controls dated sentences:
-- `system_utc` (default) — use OS UTC; gate ZDA/RMC dates on `timedatectl … NTPSynchronized == yes`.
+- `system_utc` (default) — use OS UTC. Dated sentences (ZDA/RMC) are **always emitted**, not gated; the
+  Time Authority only *tags* the clock's provenance (`ntp` vs `system`). That tag comes from a cheap,
+  file-only probe of the systemd-timesyncd runtime marker (`/run/systemd/timesync/synchronized`,
+  `nmea_sim/ntpsync.py`) — no `timedatectl`/`chronyc` fork. The probe returns "unsynced" only when it can
+  positively confirm it, and otherwise degrades to "assume disciplined". Because `setup.sh` installs
+  **chrony** (which removes timesyncd), that marker is absent on the shipped appliance, so the probe is
+  UNKNOWN and tags `ntp`; a caller-side plausibility guard (year ≥ 2020) is the real sanity check.
 - `simulated` — fixed epoch + rate multiplier (repeatable scenarios; requires `epoch`).
 - `hold` — freeze time.
 

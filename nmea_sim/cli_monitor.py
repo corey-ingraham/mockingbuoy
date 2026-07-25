@@ -32,6 +32,7 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
 from typing import Any
 
 from .config import EngineConfig
@@ -52,6 +53,13 @@ _STANDALONE_READ_TIMEOUT = 0.2
 _MAX_LINE_BYTES = 4096
 #: Hard ceiling on a full baud sweep so a no-hardware box can never hang the sweep-and-exit path.
 _SWEEP_TOTAL_CAP_S = 20.0
+#: Minimum dwell per candidate baud, DECOUPLED from the render ``--interval``: a sweep must sit on
+#: each rate long enough to catch at least one sentence from a slow (1 Hz) talker, otherwise a
+#: healthy port captures nothing and is mis-diagnosed as a wiring/polarity fault.
+_SWEEP_MIN_DWELL_S = 2.0
+#: Bound on the standalone decode-pending buffer. With ``--decode`` off nothing drains it, so it is
+#: a bounded ring (oldest lines dropped) to prevent a slow memory leak on long DR watches.
+_PENDING_MAX = 1000
 
 # ANSI colour is always a SECONDARY cue: every verdict is printed as legible text with counts, so
 # the block reads correctly when piped, redirected, or viewed by a colourblind operator.
@@ -64,6 +72,7 @@ _VERDICT_COLORS = {
     "wrong-baud": "\033[31m",  # red — actionable physical fault
     "reversed-ab": "\033[31m",
     "collision": "\033[31m",
+    "not-nmea": "\033[31m",  # red — printable bytes but nothing frames as valid NMEA
 }
 
 #: The stable subset of a snapshot that ``render_json`` emits, so machine consumers get a fixed
@@ -87,6 +96,10 @@ _JSON_KEYS: tuple[str, ...] = (
 )
 
 _TUI_UNAVAILABLE = "the TUI needs a POSIX terminal — use --plain / --json"
+_ABSENT_DEVICE = (
+    "cannot open serial source {label!r}: device not present — check the --port path, "
+    "permissions, --baud, and cabling (this is a source failure, not a wire-polarity fault)"
+)
 
 
 # --- PURE: argument parsing -------------------------------------------------------
@@ -334,8 +347,11 @@ class _StandaloneSource:
 
     def __init__(self, path: str, baud: int, port_id: str, window_s: float = _WINDOW_S) -> None:
         self._diag = PortDiagnostics(port_id, baud, window_s=window_s)
+        self._label = port_id
         self._lock = threading.Lock()
-        self._pending: list[str] = []
+        # Bounded ring: the reader thread always assembles lines here, but with --decode off the
+        # render loop never drains them — a plain list would grow without bound (M15).
+        self._pending: deque[str] = deque(maxlen=_PENDING_MAX)
         self._linebuf = bytearray()
         self._port = SerialPort(
             path,
@@ -362,12 +378,21 @@ class _StandaloneSource:
     def start(self) -> None:
         self._port.start()
 
+    def present(self) -> bool:
+        """Whether the underlying serial device actually opened (False = bad path/perms/cabling)."""
+        return self._port.present
+
+    @property
+    def label(self) -> str:
+        """The operator-facing source label (the slot id or the raw --port path)."""
+        return self._label
+
     def poll(self) -> list[dict[str, Any]]:
         return [self._diag.snapshot(time.monotonic())]
 
     def lines(self) -> list[str]:
         with self._lock:
-            out = self._pending[:]
+            out = list(self._pending)
             self._pending.clear()
         return out
 
@@ -549,6 +574,19 @@ def _sweep_refusal(args: argparse.Namespace, config: EngineConfig | None, path: 
 # --- IO: run loops ----------------------------------------------------------------
 
 
+def _absent_standalone_label(source: Any) -> str | None:
+    """Return a label if ``source`` is a standalone device that failed to open, else ``None``.
+
+    A ``SerialPort`` never raises on a bad path/permissions — it just opens ``present = False`` and
+    backs off — so without this check a mistyped ``--port`` renders a perpetual silent "no-data"
+    and the advisor keeps recommending a TX/RX swap. Surfacing ``present == False`` up front points
+    the operator at the source, not the wire (M15). Attach sources have their own failure path.
+    """
+    if isinstance(source, _StandaloneSource) and not source.present():
+        return source.label
+    return None
+
+
 def _capture_at_baud(path: str, baud: int, window_s: float) -> bytes:
     """Open ``path`` at ``baud`` receive-only, harvest raw bytes for ``window_s``, and return them.
 
@@ -573,7 +611,10 @@ def _capture_at_baud(path: str, baud: int, window_s: float) -> bytes:
 
 def _run_baud_sweep(path: str, args: argparse.Namespace) -> int:
     """Cycle the standard rates on a standalone port, score valid yield, print the result, exit."""
-    per_baud = min(args.interval, _SWEEP_TOTAL_CAP_S / len(STANDARD_BAUDS))
+    # Dwell is DECOUPLED from the render ``--interval`` (M14): it is the per-rate budget within the
+    # total cap, floored at _SWEEP_MIN_DWELL_S so even a 1 Hz talker yields at least one sentence.
+    # (At default --interval=1.0 the old dwell captured nothing from a 1 Hz source -> false fault.)
+    per_baud = max(_SWEEP_MIN_DWELL_S, _SWEEP_TOTAL_CAP_S / len(STANDARD_BAUDS))
     samples: dict[int, bytes] = {}
     deadline = time.monotonic() + _SWEEP_TOTAL_CAP_S
     try:
@@ -594,6 +635,11 @@ def _run_stream(source: Any, args: argparse.Namespace, *, color: bool) -> int:
     silent blank screen; later failures degrade quietly so a mid-run service restart is tolerated.
     """
     source.start()
+    absent = _absent_standalone_label(source)
+    if absent is not None:
+        print(_ABSENT_DEVICE.format(label=absent), file=sys.stderr)
+        source.close()
+        return 4
     first = True
     try:
         while True:
@@ -633,6 +679,11 @@ def _run_curses(source: Any, args: argparse.Namespace) -> int:
         return 3
 
     source.start()
+    absent = _absent_standalone_label(source)
+    if absent is not None:
+        print(_ABSENT_DEVICE.format(label=absent), file=sys.stderr)
+        source.close()
+        return 4
     try:
         curses.wrapper(lambda screen: _curses_loop(screen, curses, source, args))
     except KeyboardInterrupt:
@@ -684,8 +735,8 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point: parse, resolve safety, and dispatch to the requested renderer.
 
     Returns a process exit code; bad argument combinations exit 2 via argparse (no traceback), a
-    refused baud sweep exits 5, an unreachable attach target exits 4, and an unavailable TUI exits
-    3. Ctrl-C anywhere unwinds cleanly to 0.
+    refused baud sweep exits 5, an unreachable attach target OR an absent standalone serial device
+    exits 4, and an unavailable TUI exits 3. Ctrl-C anywhere unwinds cleanly to 0.
     """
     parser = build_parser()
     args = _validate(parser, parser.parse_args(argv))
