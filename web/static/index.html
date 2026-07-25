@@ -647,6 +647,12 @@
         <input id="cfg-replay-file" type="text" style="width:100%;" placeholder="capture filename in data dir">
       </div>
       <div class="field"><label for="cfg-replay-speed">Speed ×</label><input id="cfg-replay-speed" type="number" step="any" value="1"></div>
+      <div class="field"><label for="cfg-replay-scope">Scope</label>
+        <select id="cfg-replay-scope">
+          <option value="full">Full capture</option>
+          <option value="ais-only">AIS-only (simulate own-ship)</option>
+        </select>
+      </div>
       <label class="switch"><input type="checkbox" id="cfg-replay-loop"> Loop</label>
     </div>
     <p class="hint" style="margin:6px 0 0;">Replay file must exist when Replay is the mode (checked on Save / Start). Persisted via Save as defaults.</p>
@@ -684,6 +690,30 @@
     <p class="hint" style="margin-top:8px;">
       Turn a sentence off to free baud budget, or change its rate. Save as defaults applies on next
       Start; an over-budget change is rejected with a message rather than saved.
+    </p>
+  </div>
+
+  <div class="card" id="cfg-ais-traffic-card">
+    <h2>AIS Traffic <span class="hint">(synthetic contacts · persisted)</span>
+      <span id="cfg-ais-traffic-src" class="src src-off">OFF</span></h2>
+    <div class="ctl-row" style="align-items:flex-start;">
+      <label class="switch"><input type="checkbox" id="cfg-ais-enabled"> Enabled</label>
+      <div class="field">
+        <label for="cfg-ais-profile">Realism profile</label>
+        <select id="cfg-ais-profile" style="min-width:220px;">
+          <option value="">Neutral default</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="cfg-ais-count">Target count</label>
+        <input id="cfg-ais-count" type="number" step="1" min="0" style="width:120px;" placeholder="profile default">
+      </div>
+    </div>
+    <p class="hint" style="margin:6px 0 0;">
+      Enable to interleave synthetic AIS contacts with own-ship on the AIS channel. The chosen
+      profile carries every region-specific value; leave it on Neutral default for the built-in
+      region-neutral profile. Target count overrides the profile's own count when set. Persists via
+      Save as defaults (applies on next Start).
     </p>
   </div>
 
@@ -1427,6 +1457,14 @@
       const src = parseSource(ch.source);
       node.textContent = src.tag; node.className = "src " + src.cls;
     }
+    // AIS Traffic group reuses the ais channel's per-channel source badge to show active state.
+    const aisId = channelOrder.find((id) => (channelMeta[id] || {}).role === "ais");
+    const aisCh = aisId ? lastHealth.channels.find((c) => c.channel_id === aisId) : null;
+    const aisNode = $("cfg-ais-traffic-src");
+    if (aisCh && aisNode) {
+      const src = parseSource(aisCh.source);
+      aisNode.textContent = src.tag; aisNode.className = "src " + src.cls;
+    }
   }
 
   // --- F4: per-channel sentence enable/rate table (built from cfg.channels[].emit) ---
@@ -1496,7 +1534,48 @@
     $("cfg-replay-file").value = rp ? (rp.file || "") : "";
     $("cfg-replay-loop").checked = !!(rp && rp.loop);
     $("cfg-replay-speed").value = (rp && rp.speed != null) ? rp.speed : "1";
+    $("cfg-replay-scope").value = (rp && rp.scope) ? rp.scope : "full";
   }
+  // --- Scope B: AIS synthetic-traffic block (profiles dropdown + enable + count) ---
+  function aisTrafficFromCfg() {
+    const channels = (cfg && Array.isArray(cfg.channels)) ? cfg.channels : [];
+    const ch = channels.find((c) => String(c.role || "").toLowerCase() === "ais");
+    return (ch && ch.ais && ch.ais.traffic) || null;
+  }
+  function baseName(p) {
+    if (!p) return "";
+    const s = String(p);
+    const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  async function loadProfiles(selected) {
+    const sel = $("cfg-ais-profile");
+    if (!sel) return;
+    let names = [];
+    try {
+      const res = await fetch("/api/profiles");
+      const d = await res.json();
+      if (d && Array.isArray(d.profiles)) names = d.profiles;
+    } catch (e) { /* keep the neutral-default-only dropdown */ }
+    const want = selected != null ? selected : sel.value;
+    sel.textContent = "";
+    const dflt = document.createElement("option");
+    dflt.value = ""; dflt.textContent = "Neutral default";
+    sel.appendChild(dflt);
+    for (const name of names) {
+      const o = document.createElement("option");
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    }
+    sel.value = want || "";
+  }
+  async function loadAisTrafficIntoConfig() {
+    const t = aisTrafficFromCfg();
+    $("cfg-ais-enabled").checked = !!(t && t.enabled);
+    $("cfg-ais-count").value = (t && t.target_count != null) ? t.target_count : "";
+    await loadProfiles(t ? baseName(t.profile_path) : "");
+  }
+
   function parseWaypoints() {
     const wpts = [];
     for (const line of String($("cfg-route-wpts").value).split(/\r?\n/)) {
@@ -1677,7 +1756,18 @@
         file: replayFile,
         loop: $("cfg-replay-loop").checked,
         speed: spRaw === "" ? 1.0 : Number(spRaw),
+        scope: $("cfg-replay-scope").value,
       };
+    }
+    // Scope B: AIS synthetic-traffic block (feeds the SAME allow-listed persist call). profile_path
+    // is the dropdown's basename ("" => neutral default); target_count only when a number is given.
+    {
+      const at = { enabled: $("cfg-ais-enabled").checked };
+      const profile = $("cfg-ais-profile").value;
+      if (profile) at.profile_path = profile;
+      const countRaw = String($("cfg-ais-count").value).trim();
+      if (countRaw !== "" && Number.isFinite(Number(countRaw))) at.target_count = Number(countRaw);
+      body.ais_traffic = at;
     }
     const r = await postJson("/api/config/initial-state", body);
     if (r.ok) setCfgMsg("Saved as defaults (applies on next Start).", "ok");
@@ -1696,6 +1786,7 @@
       for (const ch of (cfg.channels || [])) { const cb = $("cfg-ch-" + ch.id); if (cb) cb.checked = ch.enabled !== false; }
       buildConfigSentences();
       loadRouteReplayIntoConfig();
+      await loadAisTrafficIntoConfig();
       await refreshInputs();
       setCfgMsg((s && s.running !== false) ? "Loaded current state + config." : "Loaded config (engine stopped — no live state).", "ok");
     } catch (e) { setCfgMsg("Load failed: " + e.message, "err"); }
@@ -1906,6 +1997,7 @@
     buildConfigChannels();
     buildConfigSentences();
     loadRouteReplayIntoConfig();
+    await loadAisTrafficIntoConfig();
     setMode(cfg.mode || "simulate");
     connectStream();
   }

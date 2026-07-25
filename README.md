@@ -15,6 +15,10 @@ host) and needs no desktop.
 - **Instrument** channel — motion/environment suite `VHW`, `DPT`, `DBT`, `MWV` (apparent wind),
   `MWD` (true wind), `ROT`, `XDR`, `RSA`, `VDR`, `$PASHR`, `II` talker
 - **AIS** channel — `!AIVDM`/`!AIVDO` (own-ship + optional simulated targets), via a proven encoder
+- **AIS area realism** — shape surrounding contacts from a statistics-only realism profile distilled
+  from a public dataset or your own receiver capture (synthetic MMSIs, nothing real rebroadcast,
+  own-ship always simulated); replay adds a **full vs ais-only scope** so contacts-only captures leave
+  own-ship simulated
 - One shared vessel state keeps position, course, speed, heading, **speed-through-water, depth, wind,
   rate-of-turn, rudder, and set/drift synchronized** across all channels; apparent wind is derived from
   true wind + vessel motion so the two can never disagree

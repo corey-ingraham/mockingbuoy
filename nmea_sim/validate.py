@@ -432,6 +432,18 @@ def _validate_route_replay(config: EngineConfig, errors: list[str]) -> None:
                     "(set it to an NMEA capture present on this host)"
                 )
 
+    # Scope enum + ais-only precondition. Enum-checked whenever a replay block exists so a bad value
+    # fails loud regardless of mode. Under scope 'ais-only' own-ship is simulated and only the AIS
+    # contacts are replayed, so an AIS output channel MUST exist for those contacts to land on.
+    if replay is not None:
+        if replay.scope not in ("full", "ais-only"):
+            errors.append(f"replay.scope {replay.scope!r} invalid (expected full|ais-only)")
+        elif replay.scope == "ais-only" and not any(ch.role == "ais" for ch in config.channels):
+            errors.append(
+                "replay.scope 'ais-only' requires a channel with role 'ais' to receive the "
+                "replayed AIS contacts (own-ship is simulated, so only AIS comes from the capture)"
+            )
+
     # F2 (R54): replay and route both own position — reject enabling both.
     route_on = route is not None and route.enabled
     replay_on = config.mode == "replay" or (replay is not None and replay.enabled)

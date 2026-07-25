@@ -26,6 +26,7 @@ from nmea_sim.config import (
     EngineConfig,
     MovementSpec,
     ReplaySpec,
+    RouteSpec,
     TimeSourceSpec,
 )
 from nmea_sim.engine import Engine
@@ -206,3 +207,135 @@ def test_replay_stops_cleanly_without_leaked_threads(tmp_path: Path) -> None:
     assert "replay" not in names
     assert "physics" not in names
     assert not any(name.startswith("channel-") for name in names)
+
+
+# --- Scope C: full (default) regression + ais-only (own-ship simulated) -----------
+
+
+def test_replay_scope_defaults_to_full_capture_is_source_of_truth(tmp_path: Path) -> None:
+    """Scope defaults to 'full': the capture owns own-ship AND AIS, every generator is suppressed,
+    and own-ship state is seeded from the capture — byte-identical to pre-scope replay."""
+    cfg = _replay_config(_write_capture(tmp_path, [_RMC, _GGA, _HDT, _AIVDM]))
+    assert cfg.replay is not None
+    assert cfg.replay.scope == "full"  # default, unset by _replay_config
+
+    monitor = _Monitor()
+    engine = Engine(cfg, monitor=monitor.record)
+    engine.start()
+    try:
+        assert _wait_until(
+            lambda: len(monitor.lines_for("gps")) >= 2 and bool(monitor.lines_for("ais"))
+        )
+        time.sleep(0.3)  # give a (wrongly) un-suppressed generator time to fire
+    finally:
+        engine.stop()
+
+    # Only replayed lines appear — no generated sentence of any channel's own.
+    assert set(monitor.lines_for("gps")) <= {_RMC, _GGA}
+    assert set(monitor.lines_for("heading")) <= {_HDT}
+    assert set(monitor.lines_for("ais")) <= {_AIVDM}
+    # Own-ship position was seeded from the replayed capture RMC (full replay owns own-ship).
+    assert engine.snapshot().lat == _RMC_LAT
+
+
+def _ais_only_config(capture: str, *, with_route: bool = True) -> EngineConfig:
+    """A replay + scope='ais-only' config: AIS comes from the capture, own-ship is SIMULATED.
+
+    gps/heading channels generate own-ship nav; the ais channel injects the replayed contacts AND
+    generates own-ship AIVDO; movement is underway so physics owns own-ship position, optionally
+    steered by a waypoint route (which drives own-ship north, far from the capture's RMC fix)."""
+    gps = ChannelSpec(
+        id="gps", role="gps", path="none", baud=38400, talker="GP", emit=[EmitSpec("RMC", 5.0)]
+    )
+    heading = ChannelSpec(
+        id="heading",
+        role="heading",
+        path="none",
+        baud=38400,
+        talker="HE",
+        emit=[EmitSpec("HDT", 5.0)],
+    )
+    ais = ChannelSpec(
+        id="ais",
+        role="ais",
+        path="none",
+        baud=38400,
+        emit=[EmitSpec("AIVDM", 5.0)],
+        ais=AisSpec(own_ship=AisOwnShip(mmsi=366000123, klass="A"), include_type5=False),
+    )
+    route = (
+        RouteSpec(enabled=True, waypoints=[(0.5, 0.0), (1.0, 0.0)], speed_kn=3000.0, loop=False)
+        if with_route
+        else None
+    )
+    return EngineConfig(
+        writer_backend="null",
+        movement=MovementSpec(mode="underway", physics_hz=20.0),
+        time_source=TimeSourceSpec(mode="system_utc"),
+        initial_state_raw={"lat": 0.0, "lon": 0.0, "sog_kn": 0.0, "cog_deg": 0.0},
+        channels=[gps, heading, ais],
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file=capture, loop=True, speed=100.0, scope="ais-only"),
+        route=route,
+    )
+
+
+def test_replay_ais_only_replays_contacts_and_simulates_ownship(tmp_path: Path) -> None:
+    """Scope 'ais-only': the captured !AIVDM is injected verbatim to the ais channel, the gps and
+    heading channels GENERATE own-ship nav, own-ship !AIVDO rides alongside the replayed contact,
+    and the replayed gnss/heading lines are dropped (own-ship is simulated, not the capture's)."""
+    capture = _write_capture(tmp_path, [_RMC, _GGA, _HDT, _AIVDM])
+    monitor = _Monitor()
+    engine = Engine(_ais_only_config(capture), monitor=monitor.record)
+    start_lat = engine.snapshot().lat
+    engine.start()
+    try:
+        assert _wait_until(
+            lambda: bool(monitor.lines_for("gps"))
+            and bool(monitor.lines_for("heading"))
+            and _AIVDM in monitor.lines_for("ais")
+            and any(line.startswith("!AIVDO") for line in monitor.lines_for("ais"))
+        ), "expected generated own-ship nav + replayed AIS contact + own-ship AIVDO"
+        # Let physics keep integrating so own-ship demonstrably advances past its start.
+        assert _wait_until(lambda: engine.snapshot().lat > start_lat + 1e-4)
+    finally:
+        engine.stop()
+
+    ais_lines = monitor.lines_for("ais")
+    # The replayed contact is present verbatim, alongside at least one generated own-ship AIVDO.
+    assert _AIVDM in ais_lines
+    assert any(line.startswith("!AIVDO") for line in ais_lines)
+
+    # gps/heading GENERATE own-ship nav — the captured gnss/heading lines never reach any channel.
+    assert _RMC not in monitor.lines_for("gps")
+    assert _GGA not in monitor.lines_for("gps")
+    assert _HDT not in monitor.lines_for("heading")
+    # The replayed contact only ever lands on the ais channel.
+    assert _AIVDM not in monitor.lines_for("gps")
+    assert _AIVDM not in monitor.lines_for("heading")
+
+    # Own-ship is SIMULATED: its position advanced from the start and never took the capture's fix.
+    moved = engine.snapshot()
+    assert moved.lat > start_lat
+    assert moved.lat != _RMC_LAT
+    assert moved.lon != _RMC_LON
+
+
+def test_replay_ais_only_route_drives_ownship_north(tmp_path: Path) -> None:
+    """Under ais-only own-ship is simulated, so a configured waypoint route drives it: latitude
+    climbs toward the northern waypoints and COG steers due north on the live schedule."""
+    capture = _write_capture(tmp_path, [_RMC, _AIVDM])
+    engine = Engine(_ais_only_config(capture, with_route=True))
+    start_lat = engine.snapshot().lat
+    engine.start()
+    try:
+        assert _wait_until(
+            lambda: engine.snapshot().lat > start_lat + 1e-4
+        ), "expected the route to walk own-ship latitude north"
+        moved = engine.snapshot()
+        assert moved.cog_deg < 5.0 or moved.cog_deg > 355.0  # steered due north
+        status = engine.route_status()
+        assert status is not None
+        assert status["waypoint_count"] == 2
+    finally:
+        engine.stop()

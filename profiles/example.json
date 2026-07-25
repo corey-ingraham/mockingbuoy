@@ -1,0 +1,57 @@
+{
+  "region": {
+    "min_lat": -1.0,
+    "max_lat": 1.0,
+    "min_lon": -1.0,
+    "max_lon": 1.0
+  },
+  "target_count": 12,
+  "type_mix": {
+    "cargo": 0.3,
+    "tanker": 0.15,
+    "fishing": 0.15,
+    "passenger": 0.1,
+    "pleasure": 0.2,
+    "other": 0.1
+  },
+  "speed_profiles": {
+    "cargo": {
+      "mean_kn": 11.0,
+      "std_kn": 3.0,
+      "min_kn": 0.0,
+      "max_kn": 18.0
+    },
+    "tanker": {
+      "mean_kn": 10.0,
+      "std_kn": 3.0,
+      "min_kn": 0.0,
+      "max_kn": 16.0
+    },
+    "fishing": {
+      "mean_kn": 6.0,
+      "std_kn": 3.0,
+      "min_kn": 0.0,
+      "max_kn": 14.0
+    },
+    "passenger": {
+      "mean_kn": 12.0,
+      "std_kn": 4.0,
+      "min_kn": 0.0,
+      "max_kn": 22.0
+    },
+    "pleasure": {
+      "mean_kn": 7.0,
+      "std_kn": 4.0,
+      "min_kn": 0.0,
+      "max_kn": 20.0
+    },
+    "other": {
+      "mean_kn": 5.0,
+      "std_kn": 3.0,
+      "min_kn": 0.0,
+      "max_kn": 15.0
+    }
+  },
+  "motion_model": "transiting",
+  "class_a_fraction": 0.5
+}

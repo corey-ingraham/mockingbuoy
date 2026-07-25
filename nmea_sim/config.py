@@ -125,6 +125,11 @@ class ReplaySpec:
     file: str = ""
     loop: bool = False
     speed: float = 1.0
+    # Replay scope. "full" (the default, today's behaviour) treats the capture as the entire source
+    # of truth — own-ship AND AIS are replayed and every generator is suppressed. "ais-only" replays
+    # just the AIS contacts while own-ship is SIMULATED from config/route (the gps/heading channels
+    # generate own-ship nav and physics owns own-ship position). Allowed values: "full"|"ais-only".
+    scope: str = "full"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReplaySpec:
@@ -133,6 +138,7 @@ class ReplaySpec:
             file=str(data.get("file", "")),
             loop=bool(data.get("loop", False)),
             speed=float(data.get("speed", 1.0)),
+            scope=str(data.get("scope", "full")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,6 +147,7 @@ class ReplaySpec:
             "file": self.file,
             "loop": self.loop,
             "speed": self.speed,
+            "scope": self.scope,
         }
 
 

@@ -1280,3 +1280,188 @@ def test_persist_rejects_unknown_key_in_sub_blocks(
     with TestClient(app) as c:
         resp = c.post("/api/config/initial-state", json=payload)
         assert resp.status_code == 422, block
+
+
+# --- Scope B: AIS traffic — GET /api/profiles + ais_traffic persist -----------------
+
+
+def _write_profile(path: Path, content: str = "{}") -> None:
+    """Write a minimal loadable realism profile ("{}" loads to the neutral default)."""
+    path.write_text(content, encoding="utf-8")
+
+
+def test_profiles_lists_basenames_from_both_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``GET /api/profiles`` lists ``*.json`` basenames from BOTH the shipped ``profiles/`` and the
+    writable ``data/profiles/`` dir, de-duplicated (a name in both appears once), and NEVER leaks a
+    path separator (R19: basenames only). Non-json files are ignored."""
+    shipped = tmp_path / "profiles"
+    writable = tmp_path / "data" / "profiles"
+    shipped.mkdir(parents=True)
+    writable.mkdir(parents=True)
+    _write_profile(shipped / "example.json")
+    _write_profile(shipped / "coastal.json")
+    _write_profile(writable / "harbor.json")
+    _write_profile(writable / "example.json")  # duplicate name across both dirs
+    (shipped / "notes.txt").write_text("ignored", encoding="utf-8")  # non-json: never listed
+    monkeypatch.setattr(web_app, "_PROFILE_SEARCH_DIRS", (str(shipped), str(writable)))
+
+    with TestClient(create_app(str(CONFIG_PATH))) as c:
+        resp = c.get("/api/profiles")
+        assert resp.status_code == 200
+        names = resp.json()["profiles"]
+
+    assert names == ["coastal.json", "example.json", "harbor.json"]
+    assert names.count("example.json") == 1  # present once, not twice
+    for name in names:  # basenames only — no path separator ever surfaces
+        assert "/" not in name and "\\" not in name
+    assert "notes.txt" not in names
+
+
+def test_profiles_missing_data_dir_is_not_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing ``data/profiles/`` contributes nothing (treated as empty), never a 500."""
+    shipped = tmp_path / "profiles"
+    shipped.mkdir(parents=True)
+    _write_profile(shipped / "example.json")
+    missing = tmp_path / "nope" / "profiles"  # never created
+    monkeypatch.setattr(web_app, "_PROFILE_SEARCH_DIRS", (str(shipped), str(missing)))
+
+    with TestClient(create_app(str(CONFIG_PATH))) as c:
+        resp = c.get("/api/profiles")
+        assert resp.status_code == 200
+        assert resp.json()["profiles"] == ["example.json"]
+
+
+def test_persist_ais_traffic_round_trips(
+    tmp_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``ais_traffic`` block persists onto the role=='ais' channel's ``ais.traffic`` and reloads:
+    ``enabled``/``target_count`` round-trip verbatim, and the basename ``profile_path`` is stored as
+    the RESOLVED path under a search dir (ending in the basename)."""
+    from nmea_sim.config import EngineConfig
+
+    shipped = tmp_path / "profiles"
+    shipped.mkdir(parents=True)
+    _write_profile(shipped / "example.json")  # a valid, loadable profile
+    monkeypatch.setattr(web_app, "_PROFILE_SEARCH_DIRS", (str(shipped), str(tmp_path / "absent")))
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "ais_traffic": {
+                    "enabled": True,
+                    "profile_path": "example.json",
+                    "target_count": 9,
+                }
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] is True
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    ais = next(ch for ch in reloaded.channels if ch.role == "ais")
+    assert ais.ais is not None and ais.ais.traffic is not None
+    traffic = ais.ais.traffic
+    assert traffic.enabled is True
+    assert traffic.target_count == 9
+    assert traffic.profile_path is not None
+    assert Path(traffic.profile_path).name == "example.json"
+    assert Path(traffic.profile_path).exists()  # resolved to a real file under a search dir
+
+
+def test_persist_ais_traffic_rejects_unknown_key(tmp_config: Path) -> None:
+    """``extra="forbid"``: ``seed`` (a real ``AisTrafficSpec`` field deliberately left OUT of the
+    allow-list) is a 422, never silently written."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"ais_traffic": {"enabled": True, "seed": 5}},
+        )
+        assert resp.status_code == 422
+
+
+def test_persist_ais_traffic_unknown_profile_is_bad_request(
+    tmp_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A basename matching no profile in any search dir is a clear 400 (fail loudly)."""
+    empty = tmp_path / "profiles"
+    empty.mkdir(parents=True)
+    monkeypatch.setattr(web_app, "_PROFILE_SEARCH_DIRS", (str(empty),))
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"ais_traffic": {"enabled": True, "profile_path": "nope.json"}},
+        )
+        assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("bad", ["sub/example.json", "sub\\example.json", "../example.json", ".."])
+def test_persist_ais_traffic_rejects_path_like_profile(tmp_config: Path, bad: str) -> None:
+    """``profile_path`` is a BASENAME only: a value with a forward slash, a backslash, or a ``..``
+    parent segment is rejected 400 before any search-dir lookup (R18 traversal guard)."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"ais_traffic": {"enabled": True, "profile_path": bad}},
+        )
+        assert resp.status_code == 400
+
+
+@pytest.fixture
+def two_ais_config(tmp_path: Path) -> Path:
+    """A tmp config with TWO channels of role 'ais' (the first cloned with a new id + no tap), to
+    exercise the ambiguous >1-ais-channel guard."""
+    base = json.loads(CONFIG_PATH.read_text())
+    ais = next(c for c in base["channels"] if c["role"] == "ais")
+    clone = json.loads(json.dumps(ais))
+    clone["id"] = ais["id"] + "_2"
+    clone["tcp_tap"] = None
+    if clone.get("ais") and clone["ais"].get("own_ship"):
+        clone["ais"]["own_ship"]["mmsi"] = int(ais["ais"]["own_ship"]["mmsi"]) + 1
+    base["channels"].append(clone)
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(base))
+    return dest
+
+
+@pytest.fixture
+def no_ais_config(tmp_path: Path) -> Path:
+    """A tmp config with NO channel of role 'ais', to exercise the 0-ais-channel guard."""
+    base = json.loads(CONFIG_PATH.read_text())
+    base["channels"] = [c for c in base["channels"] if c["role"] != "ais"]
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(base))
+    return dest
+
+
+def test_persist_ais_traffic_requires_exactly_one_ais_channel_more(two_ais_config: Path) -> None:
+    """>1 channel with role 'ais' is ambiguous — the merge refuses to guess and returns a clear
+    400 naming the count, never a silent write to the wrong channel."""
+    app = create_app(str(two_ais_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"ais_traffic": {"enabled": False}},
+        )
+        assert resp.status_code == 400
+        assert "role 'ais'" in resp.json()["detail"]
+
+
+def test_persist_ais_traffic_requires_exactly_one_ais_channel_none(no_ais_config: Path) -> None:
+    """0 channels with role 'ais' is likewise a clear 400 — there is no channel to merge onto."""
+    app = create_app(str(no_ais_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"ais_traffic": {"enabled": False}},
+        )
+        assert resp.status_code == 400
+        assert "role 'ais'" in resp.json()["detail"]

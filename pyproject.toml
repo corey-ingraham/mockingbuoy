@@ -33,9 +33,10 @@ dev = [
 [project.scripts]
 mockingbuoy = "main:main"
 mockingbuoy-mon = "nmea_sim.cli_monitor:main"
+mockingbuoy-ais-profile = "nmea_sim.aisprofile.__main__:main"
 
 [tool.setuptools]
-packages = ["nmea_sim", "web"]
+packages = ["nmea_sim", "nmea_sim.aisprofile", "web"]
 py-modules = ["main"]
 
 [tool.ruff]

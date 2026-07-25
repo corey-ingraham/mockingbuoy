@@ -306,7 +306,13 @@ def test_replay_spec_and_mode_round_trip() -> None:
     )
     d = cfg.to_dict()
     assert d["mode"] == "replay"
-    assert d["replay"] == {"enabled": True, "file": "cap.nmea", "loop": True, "speed": 2.0}
+    assert d["replay"] == {
+        "enabled": True,
+        "file": "cap.nmea",
+        "loop": True,
+        "speed": 2.0,
+        "scope": "full",
+    }
     reloaded = EngineConfig.from_dict(d)
     assert reloaded.mode == "replay"
     assert reloaded.replay == ReplaySpec(enabled=True, file="cap.nmea", loop=True, speed=2.0)
@@ -319,6 +325,27 @@ def test_replay_from_dict_defaults_when_keys_absent() -> None:
     assert spec.file == ""
     assert spec.loop is False
     assert spec.speed == pytest.approx(1.0)
+    assert spec.scope == "full"
+
+
+def test_replay_scope_defaults_to_full() -> None:
+    # A replay block with no scope key defaults to "full" (today's whole-capture behaviour).
+    assert ReplaySpec().scope == "full"
+    assert ReplaySpec.from_dict({"enabled": True, "file": "cap.nmea"}).scope == "full"
+    assert EngineConfig().to_dict().get("replay") is None  # still omitted when absent
+
+
+def test_replay_scope_ais_only_round_trips() -> None:
+    cfg = EngineConfig(
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file="cap.nmea", scope="ais-only"),
+    )
+    d = cfg.to_dict()
+    assert d["replay"]["scope"] == "ais-only"
+    reloaded = EngineConfig.from_dict(d)
+    assert reloaded.replay is not None
+    assert reloaded.replay.scope == "ais-only"
+    assert reloaded.to_dict() == d
 
 
 def test_movement_rejects_bad_hz() -> None:

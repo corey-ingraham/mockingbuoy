@@ -488,6 +488,68 @@ def test_route_and_replay_are_mutually_exclusive(tmp_path: Path) -> None:
     assert any("incompatible with replay" in p for p in validate(cfg))
 
 
+# --- replay scope selector (Scope C) ----------------------------------------------
+
+
+def _ais(**over: object) -> ChannelSpec:
+    from nmea_sim.config import AisOwnShip, AisSpec
+
+    base: dict[str, object] = {
+        "id": "ais",
+        "role": "ais",
+        "path": "/dev/serial/by-id/unit-ais",
+        "baud": 38400,
+        "talker": "AI",
+        "emit": [EmitSpec("AIVDM", 1.0)],
+        "ais": AisSpec(own_ship=AisOwnShip(mmsi=366000123, klass="A")),
+    }
+    base.update(over)
+    return ChannelSpec(**base)  # type: ignore[arg-type]
+
+
+def test_replay_scope_full_default_passes(tmp_path: Path) -> None:
+    cap = tmp_path / "cap.nmea"
+    cap.write_text("$GPRMC\n", encoding="utf-8")
+    cfg = _config([_gps()], mode="replay", replay=ReplaySpec(enabled=True, file=str(cap)))
+    assert validate(cfg) == []  # scope defaults to "full"
+
+
+def test_replay_scope_bad_enum_rejected(tmp_path: Path) -> None:
+    cap = tmp_path / "cap.nmea"
+    cap.write_text("$GPRMC\n", encoding="utf-8")
+    cfg = _config(
+        [_gps()],
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file=str(cap), scope="bogus"),
+    )
+    assert any("replay.scope 'bogus' invalid" in p and "full|ais-only" in p for p in validate(cfg))
+
+
+def test_replay_scope_ais_only_requires_ais_channel(tmp_path: Path) -> None:
+    cap = tmp_path / "cap.nmea"
+    cap.write_text("$GPRMC\n", encoding="utf-8")
+    # gps channel only, no ais channel -> ais-only has nowhere to land the replayed contacts.
+    cfg = _config(
+        [_gps()],
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file=str(cap), scope="ais-only"),
+    )
+    assert any(
+        "replay.scope 'ais-only' requires a channel with role 'ais'" in p for p in validate(cfg)
+    )
+
+
+def test_replay_scope_ais_only_with_ais_channel_passes(tmp_path: Path) -> None:
+    cap = tmp_path / "cap.nmea"
+    cap.write_text("$GPRMC\n", encoding="utf-8")
+    cfg = _config(
+        [_gps(), _ais()],
+        mode="replay",
+        replay=ReplaySpec(enabled=True, file=str(cap), scope="ais-only"),
+    )
+    assert validate(cfg) == []
+
+
 # --- per-sentence enable/rate x baud budget (F4) ----------------------------------
 
 

@@ -1021,11 +1021,25 @@ class Engine:
             )
             clock = self._time_authority
 
-        # Route playback (F1): simulate-mode only, opt-in. Cross-field preconditions (simulate +
-        # underway + >= 2 waypoints) are enforced in ``validate``; we build the driver only when it
-        # is actually enabled, so a disabled/absent route leaves the physics tick byte-identical.
+        # Scope C: replay "scope" decides who owns own-ship. "full" (the default, and every
+        # non-replay mode) keeps the capture as the entire source of truth — own-ship AND AIS are
+        # replayed and every generator is suppressed. "ais-only" replays just the AIS contacts while
+        # own-ship is SIMULATED (route/physics own its position, gps/heading channels generate its
+        # nav). Read once so the four seams below agree; both flags are False outside replay mode.
+        replay_scope = config.replay.scope if config.replay is not None else "full"
+        ais_only = config.mode == "replay" and replay_scope == "ais-only"
+        full_replay = config.mode == "replay" and not ais_only
+
+        # Route playback (F1): simulate mode, or replay in "ais-only" scope where own-ship is
+        # simulated too. Opt-in; cross-field preconditions are enforced in ``validate``; we build
+        # the driver only when actually enabled, so a disabled/absent route leaves the physics tick
+        # byte-identical.
         self._route_driver: _RouteDriver | None = None
-        if config.mode == "simulate" and config.route is not None and config.route.enabled:
+        if (
+            (config.mode == "simulate" or ais_only)
+            and config.route is not None
+            and config.route.enabled
+        ):
             self._route_driver = _RouteDriver(config.route)
 
         self._physics_engine = PhysicsEngine(config.movement.mode, clock)
@@ -1035,7 +1049,9 @@ class Engine:
             config.movement.physics_hz,
             self._stop_event,
             route=self._route_driver,
-            replay_mode=config.mode == "replay",
+            # Physics owns own-ship lat/lon/utc only under FULL replay; under ais-only own-ship is
+            # simulated, so physics dead-reckons normally (replay_mode False).
+            replay_mode=full_replay,
         )
 
         # Sinks that own I/O resources (serial ports, TCP taps) and must be started before
@@ -1044,7 +1060,14 @@ class Engine:
 
         self._workers: list[_ChannelWorker] = []
         for spec in config.channels:
-            source = build_source(spec)
+            if ais_only and spec.role == "ais" and spec.ais is not None:
+                # Under ais-only the ONLY non-own-ship contacts must be the replayed ones, so the
+                # synthetic-traffic spawner is forced off at construction. This is a build-time
+                # override on a copy — the saved config is never mutated. Own-ship AIVDO is still
+                # generated (the ais channel is NOT suppressed under ais-only).
+                source: SentenceSource = _AisSource(replace(spec.ais, traffic=None))
+            else:
+                source = build_source(spec)
             sinks = self._build_sinks(spec, sink_hook)
             self._check_budget(spec, source, strict_budget)
             # Only the GPS channel in auto mode carries a ZDA carve-out; every other worker (and all
@@ -1065,9 +1088,10 @@ class Engine:
                     monitor,
                     self._router,
                     carveout,
-                    # Replay mode suppresses generation on every channel — the capture is the source
-                    # of truth and channels only inject replayed lines. False in simulate/auto.
-                    suppress_generation=config.mode == "replay",
+                    # FULL replay suppresses generation on every channel — the capture is the source
+                    # of truth and channels only inject replayed lines. Under ais-only NO channel is
+                    # suppressed (own-ship nav is generated); False in simulate/auto.
+                    suppress_generation=full_replay,
                 )
             )
         self._worker_by_id = {w.channel_id: w for w in self._workers}
@@ -1079,7 +1103,10 @@ class Engine:
         if config.mode == "replay" and config.replay is not None and config.replay.enabled:
             channel_by_role = {ch.role: ch.id for ch in config.channels}
             worker_by_class: dict[str, _ChannelWorker] = {}
-            for cls, role in CLASS_TO_ROLE.items():
+            # Under ais-only ONLY the 'ais' class is routed from the capture — replayed gnss/heading
+            # lines are dropped, because own-ship nav is generated locally. Full replay routes all.
+            routed_classes = {"ais": CLASS_TO_ROLE["ais"]} if ais_only else CLASS_TO_ROLE
+            for cls, role in routed_classes.items():
                 cid = channel_by_role.get(role)
                 if cid is not None and cid in self._worker_by_id:
                     worker_by_class[cls] = self._worker_by_id[cid]

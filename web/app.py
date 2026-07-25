@@ -137,6 +137,14 @@ _INITIAL_STATE_MANUAL_FIELDS: tuple[str, ...] = (
     "drift_kn",
 )
 
+#: Directories searched for AIS realism-profile files, in priority order: the shipped ``profiles/``
+#: dir first, then the writable ``data/profiles/`` dir. The web only ever names a profile by
+#: BASENAME (a dropdown value from ``GET /api/profiles``); that basename is resolved against these
+#: dirs before it reaches config, so a persist request can never point ``profile_path`` at an
+#: arbitrary filesystem location (R15/R18), and only basenames are ever returned (R19). A missing
+#: ``data/profiles/`` is treated as empty, never an error — a fresh install has no writable dir yet.
+_PROFILE_SEARCH_DIRS: tuple[str, ...] = ("profiles", "data/profiles")
+
 #: Inclusive ``(min, max)`` bounds for the value-bearing GPS-fault actions (F3). ``hdop_spike`` and
 #: ``drop_sats`` each carry a numeric magnitude that is range-checked here before it reaches
 #: ``update_state`` — a fault can never poke a field outside these bounds. The valueless faults
@@ -298,6 +306,49 @@ def _data_dir_bytes(data_dir: str) -> int:
     return total
 
 
+# --- AIS realism-profile discovery / basename resolution --------------------------
+
+
+def _list_profile_names() -> list[str]:
+    """Sorted, de-duplicated ``*.json`` basenames across the profile search dirs.
+
+    A search dir that does not exist contributes nothing (never an error — ``data/profiles/`` may be
+    absent on a fresh install). Only basenames are returned; the search-dir prefix / absolute path
+    is never exposed (R19). A name present in both dirs appears once.
+    """
+    names: set[str] = set()
+    for search_dir in _PROFILE_SEARCH_DIRS:
+        root = Path(search_dir)
+        if not root.is_dir():
+            continue
+        for child in root.glob("*.json"):
+            if child.is_file():
+                names.add(child.name)
+    return sorted(names)
+
+
+def _resolve_profile_basename(name: str) -> str:
+    """Resolve a web-supplied profile BASENAME to a stored path under a search dir, or raise 400.
+
+    The web only ever sends a bare basename (the value of a ``GET /api/profiles`` dropdown option).
+    Any value carrying a path separator (``/`` or ``\\``) or a ``..`` parent segment is rejected
+    outright — it can never be a legitimate basename and is the shape a directory-traversal takes
+    (R18). The basename is then located in the search dirs (shipped first, then writable); a name
+    that matches no profile is a hard error (fail loudly), never a silent write. The returned path
+    is stored in config; ``validate_or_raise`` re-checks it exists and loads before the save lands.
+    """
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(
+            status_code=400,
+            detail="profile_path must be a bare filename (no path separators or '..')",
+        )
+    for search_dir in _PROFILE_SEARCH_DIRS:
+        candidate = Path(search_dir) / name
+        if candidate.is_file():
+            return str(candidate)
+    raise HTTPException(status_code=400, detail=f"unknown profile: {name!r}")
+
+
 # --- control request model --------------------------------------------------------
 
 
@@ -406,6 +457,26 @@ class ReplayDefault(BaseModel):
     file: str = ""
     loop: bool = False
     speed: float = 1.0
+    # Replay scope: "full" (default) replays own-ship + AIS from the capture; "ais-only" replays
+    # only the AIS contacts while own-ship is simulated. Enum-validated by ``validate`` before save.
+    scope: str = "full"
+
+
+class AisTrafficDefault(BaseModel):
+    """The synthetic-traffic block in a persist request (Scope B). Opts the ``role=='ais'`` channel
+    into synthetic contacts: ``enabled`` flips the seam on/off, ``profile_path`` is a BASENAME ONLY
+    (a value chosen from ``GET /api/profiles``) resolved against the shipped ``profiles/`` and
+    writable ``data/profiles/`` search dirs, and ``target_count`` optionally overrides the profile's
+    own count. ``seed`` and ``max_advance_s`` are deliberately NOT reachable here — the two knobs an
+    operator never sets from the web stay out of the allow-list. Extras forbidden so no other
+    ``AisTrafficSpec`` field can be smuggled in; the merged config is deep-validated (a set profile
+    must exist and load) before save, so a bad/missing profile is a 400, never a silent write."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    profile_path: str | None = None
+    target_count: int | None = None
 
 
 class InputDefault(BaseModel):
@@ -424,7 +495,8 @@ class InitialStateRequest(BaseModel):
     This is a DEDICATED model, not :class:`ControlRequest`: it exposes ONLY the operator-editable
     manual own-ship fields, an optional operating ``mode`` (``simulate``/``auto``/``replay``),
     per-channel enable defaults (each optionally carrying per-sentence emit overrides, F4), per-slot
-    input-function assignments, and the opt-in ``route`` (F1) / ``replay`` (F2) blocks. Every field
+    input-function assignments, and the opt-in ``route`` (F1) / ``replay`` (F2) / ``ais_traffic``
+    (Scope B synthetic-traffic) blocks. Every field
     an attacker might use to redirect I/O or leak paths — ``path``, ``tcp_tap*``, ``baud``,
     ``writer_backend``, ``direction``, ``framing``, ``voltage_sense``, ``rx_feeds_state`` — is
     simply absent, and ``extra="forbid"`` turns any unknown key into a 422 rather than a silent
@@ -450,6 +522,7 @@ class InitialStateRequest(BaseModel):
     inputs: list[InputDefault] | None = None
     route: RouteDefault | None = None
     replay: ReplayDefault | None = None
+    ais_traffic: AisTrafficDefault | None = None
 
 
 # --- diagnostics request models ---------------------------------------------------
@@ -1149,7 +1222,38 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     "file": body.replay.file,
                     "loop": body.replay.loop,
                     "speed": body.replay.speed,
+                    "scope": body.replay.scope,
                 }
+
+            if body.ais_traffic is not None:
+                # Scope B: merge the synthetic-traffic block onto the ais channel's ais.traffic.
+                # Resolve the channel EXPLICITLY by role — 0 or >1 channels with role 'ais' is an
+                # ambiguous config we refuse to guess at (clear 400), never a silent write to the
+                # wrong channel. profile_path is a BASENAME resolved against the search dirs (or
+                # null/'' for the neutral built-in default). The R-preconditions on an enabled
+                # profile (must exist and load) are enforced by validate_or_raise below.
+                ais_channels = [c for c in merged["channels"] if c.get("role") == "ais"]
+                if len(ais_channels) != 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"expected exactly one channel with role 'ais', "
+                        f"found {len(ais_channels)}",
+                    )
+                channel = ais_channels[0]
+                ais_block = channel.get("ais")
+                if ais_block is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"channel {channel.get('id')!r} has role 'ais' but no ais block",
+                    )
+                traffic = dict(ais_block.get("traffic") or {})
+                traffic["enabled"] = body.ais_traffic.enabled
+                name = body.ais_traffic.profile_path
+                traffic["profile_path"] = _resolve_profile_basename(name) if name else None
+                if body.ais_traffic.target_count is not None:
+                    traffic["target_count"] = body.ais_traffic.target_count
+                ais_block["traffic"] = traffic
+                channel["ais"] = ais_block
 
             if body.inputs is not None:
                 by_id = {i["id"]: i for i in merged["inputs"]}
@@ -1180,6 +1284,14 @@ def create_app(config_path: str | None = None) -> FastAPI:
             "mode": merged_config.mode,
             "hot_reloaded": False,
         }
+
+    @app.get("/api/profiles")
+    async def api_profiles(_: None = Depends(auth)) -> dict[str, Any]:
+        # Read-only profile discovery for the Config tab's AIS-traffic dropdown. Returns *.json
+        # basenames from the shipped profiles/ dir AND the writable data/profiles/ dir (missing dir
+        # => empty, never an error), de-duplicated. Names ONLY — the search-dir prefix / absolute
+        # path is never exposed (R19), consistent with how device paths are withheld elsewhere.
+        return {"profiles": _list_profile_names()}
 
     @app.get("/api/inputs")
     async def api_inputs(_: None = Depends(auth)) -> list[dict[str, Any]]:

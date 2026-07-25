@@ -174,6 +174,95 @@ Three buttons on the Config tab govern the lifecycle of your inputs:
 - **Load current** — pull the engine's current live values back into the form (useful before
   editing, or to discard un-applied edits).
 
+## Custom AIS area realism
+
+By default the AIS channel emits own-ship plus an optional handful of synthetic contacts shaped
+by a **built-in region-neutral profile**. If you want the surrounding traffic to *resemble* a
+particular kind of area — its target density, ship-type mix, and per-category speed behaviour —
+you point the AIS channel at a **realism profile**: a small JSON file of area-neutral statistics.
+
+A profile carries **only statistics** — a lat/lon bounding box, a target count, a ship-type mix,
+per-category speed distributions, a motion model, and the Class A share. It contains **no real
+identities and nothing captured verbatim**. A tracked example lives at
+[`profiles/example.json`](../profiles/example.json); copy it and edit the numbers, or generate
+one from data as below.
+
+### Where to get the data
+
+You distil a profile from an AIS *export* or *capture* — you never hand-write the statistics:
+
+- A **public AIS dataset** — for example the Marine Cadastre historical AIS export — gives you a
+  tabular CSV of positions and ship types you can reduce to statistics.
+- **Your own receiver or log capture** — an AIVDM/AIVDO capture (for example one saved from the
+  Maintenance monitor or a bench AIS receiver) works equally well.
+
+Both are input to the same tool; the result is statistics-only.
+
+### Distilling a profile: `python -m nmea_sim.aisprofile`
+
+The `nmea_sim.aisprofile` tool reads a file (or a directory of files) and writes a profile JSON
+that `RealismProfile.from_dict` accepts. It handles **both** input shapes and sniffs the format
+from the first non-empty line (a line beginning with `!AIVDM`/`!AIVDO` is treated as a capture,
+anything else as tabular CSV):
+
+```bash
+# Tabular CSV export (map the logical fields to your export's column names):
+python -m nmea_sim.aisprofile <export_dir_or_file> --out profiles/<you>.local.json \
+    --format csv \
+    --columns lat=Latitude lon=Longitude sog=SOG type=VesselType \
+    --motion-model transiting
+
+# AIVDM/AIVDO capture from your own receiver or the Maintenance monitor:
+python -m nmea_sim.aisprofile <capture.nmea> --out profiles/<you>.local.json --format aivdm
+
+# Let the tool sniff the format (the default):
+python -m nmea_sim.aisprofile <input> --out profiles/<you>.local.json
+```
+
+Optional `--min-lat/--max-lat/--min-lon/--max-lon` bounds crop the region before the statistics
+are computed. The output is pretty-printed JSON you can inspect and edit by hand.
+
+> **Local-only:** the repository ignores `profiles/*.local.json`, so a profile you generate from
+> real data stays on your host and is never committed. Only the synthetic `example.json` is
+> tracked.
+
+### Selecting the profile in the UI
+
+On the **Config** tab, the **AIS Traffic** group turns synthetic contacts on and points the
+channel at a profile file (`profile_path`). Leave it empty to use the built-in region-neutral
+profile, or set it to your generated `profiles/<you>.local.json`. An optional target-count
+override lets you scale the contact density without editing the profile.
+
+### Privacy
+
+Profiles are **statistics-only**. They record distributions — how many contacts, the ship-type
+mix, per-category speed spreads, a bounding box — and **nothing real is rebroadcast**. Contact
+**MMSIs are synthetic** (generated per run), positions are freshly sampled inside the region, and
+no name, identity, or captured line from the source data ever reaches the wire. The tool exists
+precisely so you can share the *shape* of an area's traffic without sharing anyone's data.
+
+### Own-ship is always simulated
+
+Whatever the profile does, **own-ship is always simulated** from vessel state — the profile only
+governs the *surrounding contacts*. Own-ship position, course, speed, and its own AIS position
+report always come from the engine, never from a profile.
+
+### Replay scope: full vs ais-only
+
+Replay mode (see *Operating Modes*) has a **scope selector** that decides how much of a capture
+drives the run:
+
+- **`full`** (the default) treats the capture as the entire source of truth — **own-ship and AIS
+  are both replayed** and every generator is suppressed. Use this only when the capture
+  **includes own-ship nav** (its own GPS/heading/position sentences).
+- **`ais-only`** replays just the AIS contacts while **own-ship is simulated** from config/route
+  (the GPS and heading channels generate own-ship nav and physics owns own-ship position). Use
+  this for a contacts-only source that has no own-ship track.
+
+For a **contacts-only** source — a public dataset or a receiver capture of other vessels with no
+own-ship nav — use `ais-only` (or skip replay entirely and drive the contacts from a realism
+profile). Reserve `full` for a capture you recorded yourself that already carries own-ship.
+
 ## Reading the Indicators
 
 Wherever a value or channel is shown, its provenance is labelled with **both colour and text**:
