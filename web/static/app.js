@@ -91,15 +91,17 @@
   function num(v, d) { return (v == null || !Number.isFinite(Number(v))) ? "---" : Number(v).toFixed(d == null ? 1 : d); }
   function fmtLat(lat) {
     if (lat == null || !Number.isFinite(Number(lat))) return "---";
-    const v = Number(lat), h = v >= 0 ? "N" : "S", a = Math.abs(v);
-    const d = Math.floor(a), m = (a - d) * 60;
-    return d + "° " + m.toFixed(3) + "′ " + h;
+    return fmtDeg(Math.abs(Number(lat)), Number(lat) >= 0 ? "N" : "S");
   }
   function fmtLon(lon) {
     if (lon == null || !Number.isFinite(Number(lon))) return "---";
-    const v = Number(lon), h = v >= 0 ? "E" : "W", a = Math.abs(v);
-    const d = Math.floor(a), m = (a - d) * 60;
-    return d + "° " + m.toFixed(3) + "′ " + h;
+    return fmtDeg(Math.abs(Number(lon)), Number(lon) >= 0 ? "E" : "W");
+  }
+  // JPG-style position: 3-digit degrees, then decimal-minutes shown as two 3-digit groups
+  function fmtDeg(a, h) {
+    const d = Math.floor(a);
+    const m6 = String(Math.min(599999, Math.round((a - d) * 60 * 10000))).padStart(6, "0");
+    return String(d).padStart(3, "0") + "° " + m6.slice(0, 3) + " " + m6.slice(3) + " " + h;
   }
   function fmtUtc(iso) {
     if (!iso) return "--:--:--";
@@ -664,7 +666,7 @@
     if (!dyn) return;
     const NS = "http://www.w3.org/2000/svg";
     while (dyn.firstChild) dyn.removeChild(dyn.firstChild);
-    const x0 = 34, y0 = 8, x1 = 312, y1 = 100, w = x1 - x0, h = y1 - y0;
+    const x0 = 34, y0 = 8, x1 = 312, y1 = 160, w = x1 - x0, h = y1 - y0;
     const n = depthHistory.length;
     const mk = (tag) => document.createElementNS(NS, tag);
     const label = (x, y, txt, anchor) => {
@@ -683,6 +685,17 @@
     const xstep = w / (DEPTH_CAP - 1);
     const xOf = (j) => x1 - (n - 1 - j) * xstep;      // newest at right
     const yOf = (depth) => y0 + (depth - mn) / span * h; // inverted: deeper = lower
+    // horizontal grid + depth labels across the scaled window (JPG-style y axis)
+    const GRID = 5;
+    for (let i = 0; i <= GRID; i++) {
+      const yy = y0 + (i / GRID) * h;
+      const gl = mk("line");
+      gl.setAttribute("x1", String(x0)); gl.setAttribute("x2", String(x1));
+      gl.setAttribute("y1", yy.toFixed(1)); gl.setAttribute("y2", yy.toFixed(1));
+      gl.setAttribute("stroke", "#1c2530"); gl.setAttribute("stroke-width", "0.6");
+      dyn.appendChild(gl);
+      label(x0 - 3, yy + 3, (mn + (i / GRID) * span).toFixed(0));
+    }
     let pts = "";
     for (let j = 0; j < n; j++) pts += (j ? " " : "") + xOf(j).toFixed(1) + "," + yOf(depthHistory[j]).toFixed(1);
     // seabed fill below the trace
@@ -709,9 +722,7 @@
     shipDot.setAttribute("cx", xOf(n - 1).toFixed(1)); shipDot.setAttribute("cy", yOf(depthHistory[n - 1]).toFixed(1));
     shipDot.setAttribute("r", "3"); shipDot.setAttribute("fill", "#dde4ea");
     dyn.appendChild(shipDot);
-    // axis labels: shallow (top) / deep (bottom) + time span
-    label(x0 - 3, y0 + 8, mn.toFixed(1));
-    label(x0 - 3, y1, mx.toFixed(1));
+    // time-span labels (depth grid labels drawn above)
     label(x0, y1 + 14, "-3m", "start");
     label(x1, y1 + 14, "now", "end");
   }

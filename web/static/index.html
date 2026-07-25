@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=17">
+<link rel="stylesheet" href="/static/app.css?v=18">
 </head>
 <body>
 
@@ -57,15 +57,6 @@
   <!-- INS grid: coords | primary | propulsion / env | ship | autopilot / depth | helm | alerts -->
   <div class="conn-ins">
 
-    <!-- COORDINATES (re-homed from #readouts) -->
-    <div class="ins-panel p-coords">
-      <div class="ins-hdr"><span>Coordinates</span></div>
-      <div class="coord-row"><span class="coord-label">LAT</span><span id="ro-lat" class="coord-val v-live">---</span></div>
-      <div class="coord-row"><span class="coord-label">LONG</span><span id="ro-lon" class="coord-val v-live">---</span></div>
-      <div class="coord-row"><span class="coord-label">UTC</span><span id="ro-utc" class="coord-val">--:--:--</span></div>
-      <div class="coord-row"><span class="coord-label">LOCAL</span><span id="ro-local" class="coord-val">--:--:--</span></div>
-    </div>
-
     <!-- PRIMARY: HDG tape + Rate of Turn on top, then SOG / COG / STW bignums -->
     <div class="ins-panel p-primary">
       <div class="ins-hdr"><span>Primary</span></div>
@@ -111,7 +102,21 @@
       </div>
     </div>
 
-    <!-- ENVIRONMENT: wind TRUE dial (new) + wind RELATIVE dial (from #wind) + weather -->
+    <!-- LEFT COLUMN: coordinates, time, environment, depth stacked flush -->
+    <div class="conn-col conn-col-left">
+    <!-- COORDINATES -->
+    <div class="ins-panel p-coords">
+      <div class="ins-hdr"><span>Coordinates</span></div>
+      <div class="coord-row"><span class="coord-label">LAT</span><span id="ro-lat" class="coord-val v-live">---</span></div>
+      <div class="coord-row"><span class="coord-label">LONG</span><span id="ro-lon" class="coord-val v-live">---</span></div>
+    </div>
+    <!-- TIME -->
+    <div class="ins-panel p-time">
+      <div class="ins-hdr"><span>Time</span></div>
+      <div class="coord-row"><span class="coord-label">UTC</span><span id="ro-utc" class="coord-val">--:--:--</span></div>
+      <div class="coord-row"><span class="coord-label">LOCAL</span><span id="ro-local" class="coord-val">--:--:--</span></div>
+    </div>
+    <!-- ENVIRONMENT: wind TRUE + wind RELATIVE dials + weather -->
     <div class="ins-panel p-env">
       <div class="ins-hdr"><span>Environment</span></div>
       <div class="env-dials">
@@ -186,6 +191,29 @@
         </div>
       </div>
     </div>
+    <!-- DEPTH: value + alert constant + taller 1 Hz history graph -->
+    <div class="ins-panel p-depth">
+      <div class="ins-hdr"><span>Depth</span></div>
+      <div class="depth-vals">
+        <div class="ro-item">
+          <div class="ins-label">Depth</div>
+          <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">Alert depth</div>
+          <div class="ins-val-row"><span id="depth-alert" class="ins-bignum v-sim">--</span><span class="ins-unit">m</span></div>
+        </div>
+        <div class="ro-item">
+          <div class="ins-label">Sea State</div>
+          <div class="ins-val-row"><span id="ro-sea" class="ins-bignum v-live">---</span><span class="ins-unit">WMO</span></div>
+        </div>
+      </div>
+      <svg id="depth-graph" viewBox="0 0 320 180" aria-label="depth history">
+        <rect x="34" y="8" width="278" height="152" fill="url(#faceGrad)" stroke="#1c2530"/>
+        <g id="depth-dyn"></g>
+      </svg>
+    </div>
+    </div><!-- /conn-col-left -->
 
     <!-- SHIP: schematic + derived vectors + fuel + heading compass repeater -->
     <div class="ins-panel p-ship">
@@ -261,29 +289,6 @@
         <div class="ins-label">Off-track (±50 m)</div>
         <svg id="ap-xtd" viewBox="0 0 220 44" aria-label="cross-track error"></svg>
       </div>
-    </div>
-
-    <!-- DEPTH: value (re-homed) + alert constant + 1 Hz history graph -->
-    <div class="ins-panel p-depth">
-      <div class="ins-hdr"><span>Depth</span></div>
-      <div class="depth-vals">
-        <div class="ro-item">
-          <div class="ins-label">Depth</div>
-          <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
-        </div>
-        <div class="ro-item">
-          <div class="ins-label">Alert depth</div>
-          <div class="ins-val-row"><span id="depth-alert" class="ins-bignum v-sim">--</span><span class="ins-unit">m</span></div>
-        </div>
-        <div class="ro-item">
-          <div class="ins-label">Sea State</div>
-          <div class="ins-val-row"><span id="ro-sea" class="ins-bignum v-live">---</span><span class="ins-unit">WMO</span></div>
-        </div>
-      </div>
-      <svg id="depth-graph" viewBox="0 0 320 120" aria-label="depth history">
-        <rect x="34" y="8" width="278" height="92" fill="url(#faceGrad)" stroke="#1c2530"/>
-        <g id="depth-dyn"></g>
-      </svg>
     </div>
 
     <!-- ATTITUDE: twin marine inclinometers (pitch/trim + roll/heel) -->
@@ -614,6 +619,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=18"></script>
 </body>
 </html>

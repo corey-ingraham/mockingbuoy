@@ -355,47 +355,39 @@
     grid-template-columns: minmax(230px, 1fr) minmax(460px, 2.2fr) minmax(230px, 1fr);
     grid-template-rows: minmax(0, 1.05fr) minmax(0, 2.2fr) minmax(0, 1fr);
     grid-template-areas:
-      "coords primary propulsion"
-      "env ship autopilot"
-      "depth helm alerts";
+      "leftcol primary propulsion"
+      "leftcol ship autopilot"
+      "leftcol helm alerts";
   }
   .p-primary { grid-area: primary; overflow: hidden; }
-  /* coordinates read as inline label→value rows (JPG style); flush to the top, never scroll */
-  .p-coords { grid-area: coords; overflow: hidden; justify-content: flex-start; gap: 8px; }
-  .coord-row { display: flex; align-items: baseline; gap: 10px; }
-  .coord-label { flex: none; min-width: 46px; font-size: 11px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
-  .coord-val { font-family: var(--sans); font-weight: 700; font-size: clamp(19px, 2.7vh, 32px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; }
+  /* left column: coords, time, env, depth stacked flush in one grid cell */
+  .conn-col-left { grid-area: leftcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  .conn-col-left .p-coords, .conn-col-left .p-time { flex: 0 0 auto; }
+  .conn-col-left .p-env { flex: 1 1 auto; }
+  .conn-col-left .p-depth { flex: 1 1 auto; }
+  /* coordinates/time read as inline label→value rows (JPG style); flush top, never scroll */
+  .p-coords, .p-time { overflow: hidden; justify-content: flex-start; gap: 6px; }
+  .coord-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; }
+  .coord-label { flex: none; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .coord-val { flex: 1 1 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
   .p-propulsion { grid-area: propulsion; }
-  .p-env { grid-area: env; }
   .p-ship { grid-area: ship; }
   .p-autopilot { grid-area: autopilot; }
-  .p-depth { grid-area: depth; }
   .p-helm { grid-area: helm; }
   .p-alerts { grid-area: alerts; }
   @media (max-width: 1100px) {
-    /* narrow screens: abandon the one-screen lock and scroll the view normally */
+    /* narrow screens: abandon the one-screen lock and scroll the view normally as a single column */
     #view-conning.active { overflow: auto; }
     .conn-ins {
       height: auto;
-      grid-template-rows: none;
-      grid-template-columns: 1fr 1fr;
-      grid-template-areas:
-        "primary primary"
-        "ship helm"
-        "coords env"
-        "depth propulsion"
-        "autopilot alerts";
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
     }
+    .conn-col-left { flex: none; }
     .ins-panel { overflow: visible; }
     .ins-panel svg, .env-dial svg, .incl-dial svg, .prop-col svg,
     #cog-arc, #ship-schem, #rudder-arc, #depth-graph, .p-ship #compass.repeater, #rot { max-height: none; }
-  }
-  @media (max-width: 720px) {
-    .conn-ins {
-      grid-template-columns: 1fr;
-      grid-template-areas:
-        "primary" "coords" "env" "ship" "helm" "depth" "propulsion" "autopilot" "alerts";
-    }
   }
   .ins-panel {
     background: var(--panel);
@@ -478,19 +470,22 @@
   .env-dials { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; }
   .env-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 18vh; margin: 2px auto; }
-  .env-dial-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 1px; text-align: center; }
+  /* gauge title — prominent (Wind True / Wind Relative) */
+  .env-dial-label { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text); margin-bottom: 2px; text-align: center; }
   /* per-gauge 2x2 stat block (SPEED KTS | DIRECTION over their values), JPG style */
   .wind-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; width: 100%; margin: 1px 0 4px; }
-  .wind-stat-t { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  .wind-stat-t { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   .wind-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .env-dial .g-sub { margin-top: 2px; text-align: center; }
-  .env-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 4px; }
-  .env-cell { display: flex; flex-direction: column; gap: 1px; }
+  /* weather readings: 4 columns aligned under the two wind gauges' stat columns, centred */
+  .env-readings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 12px; margin-top: 6px; }
+  .env-cell { display: flex; flex-direction: column; gap: 1px; align-items: center; text-align: center; }
+  .env-cell .ins-val-row { justify-content: center; }
   .env-num { font-family: var(--mono); font-size: clamp(16px, 2.1vh, 24px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* depth panel — value + alert + history graph */
   .depth-vals { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
-  #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 16vh; margin: 4px 0 0; }
+  #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 26vh; margin: 4px 0 0; }
 
   /* primary panel — COG tape arc (wide, short); fill the primary cell prominently */
   #cog-arc { width: 100%; height: auto; max-width: 100%; max-height: 24vh; margin: 4px auto; display: block; }
