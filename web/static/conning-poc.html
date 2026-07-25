@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conning POC</title>
+<style>
+  :root {
+    --page: #05080c;
+    --panel: #0a0e13;
+    --panel-hdr: #0d1219;
+    --seam: #1c2530;
+    --white: #f2f6fa;
+    --muted: #8792a0;
+    --green: #00e07a;
+    --red: #ff3b30;
+    --orange: #ff9500;
+    --sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--white);
+    font-family: var(--sans);
+    font-weight: 700;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  .poc-banner {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.5px;
+    color: var(--muted); background: #0c1118; border-bottom: 1px solid var(--seam);
+    padding: 6px 14px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
+  }
+  .poc-banner b { color: var(--white); }
+  .lgd { display: inline-flex; gap: 5px; align-items: center; font-weight: 700; }
+  .lgd .d { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .lgd .d.live { background: var(--green); }
+  .lgd .d.sim { background: var(--orange); }
+  .poc-wrap {
+    flex: 1; display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(460px, 1.7fr);
+    gap: 10px; padding: 10px; align-items: stretch; min-height: 0;
+  }
+  .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--seam);
+    border-radius: 5px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .phdr {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--muted);
+    text-transform: uppercase; padding: 6px 12px;
+    background: var(--panel-hdr); border-bottom: 1px solid var(--seam);
+    border-radius: 5px 5px 0 0; display: flex; justify-content: space-between; align-items: center;
+  }
+  .pbody { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1; }
+
+  .dial-wrap { display: flex; justify-content: center; }
+  .dial-wrap svg { width: 100%; height: auto; max-width: 300px; }
+  .env-read { display: flex; justify-content: space-around; gap: 12px; text-align: center; }
+  .env-read .lab { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.5px; }
+  .env-read .val { font-size: 26px; font-weight: 700; }
+  .env-read .unit { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .env-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 12px; margin-top: 6px; }
+  .env-cell .lab { font-size: 10px; font-weight: 600; color: var(--muted); letter-spacing: 0.5px; }
+  .env-cell .val { font-size: 20px; font-weight: 700; }
+  .env-cell .unit { font-size: 12px; color: var(--muted); font-weight: 600; }
+
+  .ctr-top { display: flex; justify-content: space-between; align-items: flex-start; }
+  .ctr-top .lab { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.4px; }
+  .hero { font-size: clamp(40px, 6vh, 66px); font-weight: 700; line-height: 1; }
+  .hero .deg { font-size: 0.55em; vertical-align: top; }
+  #cog-tape { width: 100%; height: auto; display: block; }
+  .rot-line { text-align: center; }
+  .rot-line .lab { font-size: 13px; font-weight: 600; color: var(--muted); }
+  .rot-line .val { font-size: clamp(22px, 3.4vh, 34px); font-weight: 700; }
+  .rot-line .unit { font-size: 15px; color: var(--muted); }
+  .ship-wrap { flex: 1; display: flex; justify-content: center; align-items: center; min-height: 0; }
+  .ship-wrap svg { width: auto; height: 100%; max-height: 46vh; max-width: 100%; }
+</style>
+</head>
+<body>
+
+<div class="poc-banner">
+  <b>PROOF OF CONCEPT</b>
+  <span>Static mock — open beside the reference JPG on the monitor. Values synthetic.</span>
+  <span class="spacer" style="flex:1"></span>
+  <span class="lgd"><span class="d live"></span> Live (NMEA)</span>
+  <span class="lgd"><span class="d sim"></span> Sim</span>
+</div>
+
+<div class="poc-wrap">
+
+  <!-- ============ LEFT: glossy relative-wind dial + environment ============ -->
+  <div class="col">
+    <div class="panel" style="flex:1;">
+      <div class="phdr"><span>Environment · Wind relative</span></div>
+      <div class="pbody">
+        <div class="dial-wrap">
+          <svg viewBox="0 0 320 320" aria-label="relative wind">
+            <defs>
+              <radialGradient id="faceGrad" cx="50%" cy="50%" r="62%" fx="42%" fy="35%">
+                <stop offset="0%" stop-color="#37404b"/>
+                <stop offset="55%" stop-color="#12171d"/>
+                <stop offset="100%" stop-color="#04070b"/>
+              </radialGradient>
+              <linearGradient id="bezelGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#4a545f"/>
+                <stop offset="50%" stop-color="#222a33"/>
+                <stop offset="100%" stop-color="#0e141b"/>
+              </linearGradient>
+              <linearGradient id="glassGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.11"/>
+                <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+              </linearGradient>
+              <radialGradient id="hubGrad" cx="50%" cy="50%" r="60%" fx="35%" fy="30%">
+                <stop offset="0%" stop-color="#ffffff"/>
+                <stop offset="35%" stop-color="#cdd5dc"/>
+                <stop offset="75%" stop-color="#67717d"/>
+                <stop offset="100%" stop-color="#262e37"/>
+              </radialGradient>
+              <clipPath id="faceClip"><circle cx="160" cy="160" r="145"/></clipPath>
+              <filter id="needleShadow" x="-40%" y="-40%" width="180%" height="180%">
+                <feDropShadow dx="1.5" dy="2.5" stdDeviation="1.5" flood-color="#000" flood-opacity="0.55"/>
+              </filter>
+              <line id="tk-min" x1="160" y1="17" x2="160" y2="24" stroke="#6b7580" stroke-width="1.5"/>
+              <line id="tk-maj" x1="160" y1="17" x2="160" y2="30" stroke="#dfe6ec" stroke-width="2.5"/>
+            </defs>
+
+            <!-- bezel: outer dark ring, light-catching middle, inner hairline -->
+            <circle cx="160" cy="160" r="155" fill="none" stroke="#05080c" stroke-width="6"/>
+            <circle cx="160" cy="160" r="150" fill="none" stroke="url(#bezelGrad)" stroke-width="5"/>
+            <circle cx="160" cy="160" r="146" fill="none" stroke="#000000" stroke-width="1.5"/>
+
+            <!-- glossy face -->
+            <circle cx="160" cy="160" r="145" fill="url(#faceGrad)"/>
+
+            <g clip-path="url(#faceClip)">
+              <!-- filled red danger sector (top, ±32°) -->
+              <path d="M84.2,38.7 A143,143 0 0 1 235.8,38.7 L223.6,58.2 A120,120 0 0 0 96.4,58.2 Z"
+                    fill="#ff3b30" fill-opacity="0.9"/>
+              <!-- glass highlight over the upper face -->
+              <ellipse cx="160" cy="112" rx="112" ry="72" fill="url(#glassGrad)"/>
+            </g>
+
+            <!-- rim ticks: minors (10deg) + majors (30deg) via rotated <use> -->
+            <g>
+              <use href="#tk-min" transform="rotate(10 160 160)"/>
+              <use href="#tk-min" transform="rotate(20 160 160)"/>
+              <use href="#tk-min" transform="rotate(40 160 160)"/>
+              <use href="#tk-min" transform="rotate(50 160 160)"/>
+              <use href="#tk-min" transform="rotate(70 160 160)"/>
+              <use href="#tk-min" transform="rotate(80 160 160)"/>
+              <use href="#tk-min" transform="rotate(100 160 160)"/>
+              <use href="#tk-min" transform="rotate(110 160 160)"/>
+              <use href="#tk-min" transform="rotate(130 160 160)"/>
+              <use href="#tk-min" transform="rotate(140 160 160)"/>
+              <use href="#tk-min" transform="rotate(160 160 160)"/>
+              <use href="#tk-min" transform="rotate(170 160 160)"/>
+              <use href="#tk-min" transform="rotate(190 160 160)"/>
+              <use href="#tk-min" transform="rotate(200 160 160)"/>
+              <use href="#tk-min" transform="rotate(220 160 160)"/>
+              <use href="#tk-min" transform="rotate(230 160 160)"/>
+              <use href="#tk-min" transform="rotate(250 160 160)"/>
+              <use href="#tk-min" transform="rotate(260 160 160)"/>
+              <use href="#tk-min" transform="rotate(280 160 160)"/>
+              <use href="#tk-min" transform="rotate(290 160 160)"/>
+              <use href="#tk-min" transform="rotate(310 160 160)"/>
+              <use href="#tk-min" transform="rotate(320 160 160)"/>
+              <use href="#tk-min" transform="rotate(340 160 160)"/>
+              <use href="#tk-min" transform="rotate(350 160 160)"/>
+              <use href="#tk-maj" transform="rotate(0 160 160)"/>
+              <use href="#tk-maj" transform="rotate(30 160 160)"/>
+              <use href="#tk-maj" transform="rotate(60 160 160)"/>
+              <use href="#tk-maj" transform="rotate(90 160 160)"/>
+              <use href="#tk-maj" transform="rotate(120 160 160)"/>
+              <use href="#tk-maj" transform="rotate(150 160 160)"/>
+              <use href="#tk-maj" transform="rotate(180 160 160)"/>
+              <use href="#tk-maj" transform="rotate(210 160 160)"/>
+              <use href="#tk-maj" transform="rotate(240 160 160)"/>
+              <use href="#tk-maj" transform="rotate(270 160 160)"/>
+              <use href="#tk-maj" transform="rotate(300 160 160)"/>
+              <use href="#tk-maj" transform="rotate(330 160 160)"/>
+            </g>
+            <!-- BOW label at top -->
+            <text x="160" y="52" fill="#c3ccd4" font-size="12" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">BOW</text>
+
+            <!-- faint ship silhouette at centre (bow up) -->
+            <path d="M160,120 C168,132 170,168 166,196 L154,196 C150,168 152,132 160,120 Z" fill="#2b333d"/>
+
+            <!-- 3D needle (points to apparent-wind bearing) -->
+            <g filter="url(#needleShadow)" transform="rotate(325 160 160)">
+              <polygon points="160,42 155,152 160,152" fill="#f4f7fa"/>
+              <polygon points="160,42 165,152 160,152" fill="#b7c0c9"/>
+              <polygon points="160,168 156,184 164,184" fill="#aeb7c0"/>
+            </g>
+
+            <!-- chrome hub + specular dot -->
+            <circle cx="160" cy="160" r="11" fill="url(#hubGrad)"/>
+            <circle cx="156" cy="156" r="2.6" fill="#ffffff" fill-opacity="0.9"/>
+          </svg>
+        </div>
+        <div class="env-read">
+          <div>
+            <div class="lab">REL SPEED</div>
+            <div><span class="val">13.0</span> <span class="unit">kn</span></div>
+          </div>
+          <div>
+            <div class="lab">REL DIRECTION</div>
+            <div><span class="val">325</span><span class="unit">°</span></div>
+          </div>
+        </div>
+        <div class="env-grid">
+          <div class="env-cell"><div class="lab">Water</div><div><span class="val">13</span><span class="unit">°C</span></div></div>
+          <div class="env-cell"><div class="lab">Air</div><div><span class="val">16</span><span class="unit">°C</span></div></div>
+          <div class="env-cell"><div class="lab">Humidity</div><div><span class="val">72</span><span class="unit">%</span></div></div>
+          <div class="env-cell"><div class="lab">Pressure</div><div><span class="val">1011</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RIGHT: center-column mock (JPG proportions) ============ -->
+  <div class="col">
+    <div class="panel" style="flex:1;">
+      <div class="phdr"><span>Conning · Primary</span></div>
+      <div class="pbody">
+
+        <div class="ctr-top">
+          <div>
+            <div class="lab">Speed through water, kt</div>
+            <div class="hero">6.0</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="lab">Course over ground</div>
+            <div class="hero">113<span class="deg">°</span></div>
+          </div>
+        </div>
+
+        <!-- COG tape: dark band, white ticks/numerals, bright-green current segment + caret -->
+        <svg id="cog-tape" viewBox="0 0 760 92" aria-label="course over ground tape">
+          <rect x="0" y="20" width="760" height="52" rx="4" fill="#05080c" stroke="#1c2530"/>
+          <!-- minor ticks every 5deg -->
+          <g stroke="#6b7580" stroke-width="1.5">
+            <line x1="80" y1="52" x2="80" y2="72"/>
+            <line x1="200" y1="52" x2="200" y2="72"/>
+            <line x1="320" y1="52" x2="320" y2="72"/>
+            <line x1="440" y1="52" x2="440" y2="72"/>
+            <line x1="560" y1="52" x2="560" y2="72"/>
+            <line x1="680" y1="52" x2="680" y2="72"/>
+          </g>
+          <!-- major ticks every 10deg with numerals -->
+          <g stroke="#dfe6ec" stroke-width="2.5">
+            <line x1="20" y1="46" x2="20" y2="72"/>
+            <line x1="140" y1="46" x2="140" y2="72"/>
+            <line x1="260" y1="46" x2="260" y2="72"/>
+            <line x1="380" y1="46" x2="380" y2="72"/>
+            <line x1="500" y1="46" x2="500" y2="72"/>
+            <line x1="620" y1="46" x2="620" y2="72"/>
+            <line x1="740" y1="46" x2="740" y2="72"/>
+          </g>
+          <g fill="#f2f6fa" font-family="Segoe UI, system-ui, sans-serif" font-size="18" font-weight="700" text-anchor="middle">
+            <text x="20" y="42">083</text>
+            <text x="140" y="42">093</text>
+            <text x="260" y="42">103</text>
+            <text x="380" y="42">113</text>
+            <text x="500" y="42">123</text>
+            <text x="620" y="42">133</text>
+            <text x="740" y="42">143</text>
+          </g>
+          <!-- current COG segment (113 -> centre) + caret -->
+          <rect x="373" y="22" width="14" height="48" fill="#00e07a"/>
+          <polygon points="380,14 371,2 389,2" fill="#f2f6fa"/>
+        </svg>
+
+        <div class="rot-line">
+          <span class="lab">Rate of turn</span>
+          <span class="val">7.4</span><span class="unit"> °/min</span>
+        </div>
+
+        <!-- dominant ship: large semi-transparent hull, speed boxes, fuel table, athwartships arrows -->
+        <div class="ship-wrap">
+          <svg viewBox="0 0 300 400" aria-label="ship schematic">
+            <defs>
+              <linearGradient id="hullGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#9aa4b0" stop-opacity="0.24"/>
+                <stop offset="100%" stop-color="#5a6470" stop-opacity="0.10"/>
+              </linearGradient>
+            </defs>
+            <!-- hull, bow up -->
+            <path d="M150,18 C200,64 214,158 208,258 L208,330 C208,364 182,382 150,382 C118,382 92,364 92,330 L92,258 C86,158 100,64 150,18 Z"
+                  fill="url(#hullGrad)" stroke="#8b95a3" stroke-width="2"/>
+
+            <!-- athwartships arrows (lateral motion) -->
+            <g fill="#f2f6fa" stroke="#f2f6fa" stroke-width="4">
+              <line x1="70" y1="200" x2="30" y2="200"/>
+              <polygon points="30,200 44,192 44,208" stroke="none"/>
+              <line x1="230" y1="200" x2="270" y2="200"/>
+              <polygon points="270,200 256,192 256,208" stroke="none"/>
+            </g>
+
+            <!-- upper speed box -->
+            <g>
+              <rect x="108" y="96" width="84" height="36" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.5"/>
+              <text x="146" y="121" fill="#f2f6fa" font-family="Segoe UI, system-ui, sans-serif" font-size="20" font-weight="700" text-anchor="middle">0.2 kt</text>
+              <polygon points="196,114 208,108 208,120" fill="#f2f6fa"/>
+            </g>
+            <!-- lower speed box -->
+            <g>
+              <rect x="108" y="268" width="84" height="36" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.5"/>
+              <text x="146" y="293" fill="#f2f6fa" font-family="Segoe UI, system-ui, sans-serif" font-size="20" font-weight="700" text-anchor="middle">0.1 kt</text>
+              <polygon points="196,286 208,280 208,292" fill="#f2f6fa"/>
+            </g>
+
+            <!-- central fuel table -->
+            <g>
+              <rect x="74" y="162" width="152" height="76" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.5"/>
+              <line x1="124.7" y1="162" x2="124.7" y2="238" stroke="#1c2530"/>
+              <line x1="175.3" y1="162" x2="175.3" y2="238" stroke="#1c2530"/>
+              <g fill="#8792a0" font-family="Segoe UI, system-ui, sans-serif" font-size="9" font-weight="600" text-anchor="middle">
+                <text x="99.5" y="180">TOTAL, L</text>
+                <text x="150" y="180">FUEL/HR</text>
+                <text x="200.5" y="180">FUEL/NM</text>
+              </g>
+              <g fill="#f2f6fa" font-family="Segoe UI, system-ui, sans-serif" font-size="17" font-weight="700" text-anchor="middle">
+                <text x="99.5" y="212">2408</text>
+                <text x="150" y="212">34</text>
+                <text x="200.5" y="212">5.7</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
