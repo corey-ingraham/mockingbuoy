@@ -611,7 +611,7 @@
     // assigned once in the markup, hot repaint only sets textContent)
     setTxt("pri-sog", num(s.sog_kn, 1));
     setTxt("pri-stw", num(s.stw_kn, 1));
-    setTxt("pri-cog", num(s.cog_deg, 0));
+    { const cg = Number(s.cog_deg); setTxt("pri-cog", Number.isFinite(cg) ? String((((Math.round(cg) % 360) + 360) % 360)).padStart(3, "0") : "---"); }
     setTxt("ro-hdg", num(s.heading_true_deg, 0) + " / " + num(s.heading_mag_deg, 0));
     setTxt("ro-lat", fmtLat(s.lat));
     setTxt("ro-lon", fmtLon(s.lon));

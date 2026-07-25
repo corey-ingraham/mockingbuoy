@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=13">
+<link rel="stylesheet" href="/static/app.css?v=14">
 </head>
 <body>
 
@@ -80,11 +80,11 @@
       <div class="pri-row">
         <div class="ro-item">
           <div class="ins-label">SOG</div>
-          <div class="ins-val-row"><span id="pri-sog" class="ins-bignum v-live">---</span><span class="ins-unit">kn</span></div>
+          <div class="ins-val-row"><span id="pri-sog" class="ins-bignum v-live">---</span><span class="ins-unit">kt</span></div>
         </div>
         <div class="ro-item">
           <div class="ins-label">STW</div>
-          <div class="ins-val-row"><span id="pri-stw" class="ins-bignum v-live">---</span><span class="ins-unit">kn</span></div>
+          <div class="ins-val-row"><span id="pri-stw" class="ins-bignum v-live">---</span><span class="ins-unit">kt</span></div>
         </div>
         <div class="ro-item">
           <div class="ins-label">COG</div>
@@ -95,7 +95,7 @@
       <svg id="heading-tape" viewBox="0 0 460 140" aria-label="heading">
         <rect x="0.5" y="0.5" width="459" height="139" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
         <text x="12" y="20" fill="#8792a0" font-size="11" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">HDG</text>
-        <text id="heading-big" x="230" y="54" fill="#f2f6fa" font-size="54" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <text id="heading-big" x="230" y="56" fill="#f2f6fa" font-size="60" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
         <clipPath id="htClip"><rect x="6" y="72" width="448" height="62"/></clipPath>
         <g clip-path="url(#htClip)"><g id="htape-scroll"></g></g>
         <polygon points="230,92 221,76 239,76" fill="#00e07a"/>
@@ -228,14 +228,13 @@
         <rect x="106" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
         <text id="ship-vstern" x="146" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
         <polygon points="190,268 200,274 190,280" fill="#cfd6dd"/>
-        <circle cx="150" cy="195" r="3.5" fill="#f2f6fa"/>
         <!-- rudder indicator at the stern: arc scale + deflecting blade + number -->
         <path d="M110,410 Q150,432 190,410" fill="none" stroke="#8792a0" stroke-width="2"/>
         <line x1="150" y1="404" x2="150" y2="416" stroke="#8792a0" stroke-width="1.5"/>
         <line x1="120" y1="411" x2="126" y2="419" stroke="#8792a0" stroke-width="1.2"/>
         <line x1="180" y1="411" x2="174" y2="419" stroke="#8792a0" stroke-width="1.2"/>
         <g id="ship-rud-blade" transform="rotate(0 150 372)">
-          <path d="M143,372 L157,372 L152,406 Q150,414 148,406 Z" fill="#f2f6fa"/>
+          <path d="M143,372 Q150,366 157,372 L152,406 Q150,414 148,406 Z" fill="#f2f6fa"/>
         </g>
         <circle cx="150" cy="372" r="4" fill="#cdd5dc"/>
         <text x="150" y="446" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">Rudder <tspan id="ship-rud-val">--</tspan>°</text>
@@ -303,8 +302,8 @@
             <g clip-path="url(#ipClip)">
               <g id="incl-pitch-scale"></g>
               <g id="incl-pitch-glyph">
-                <rect x="8" y="66" width="144" height="72" fill="#ff9500" fill-opacity="0.82"/>
-                <path d="M46,60 L112,60 L126,66 L112,72 L46,72 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
+                <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
+                <path d="M44,58 Q40,64 44,71 L104,71 Q120,71 130,66 Q120,61 104,61 L44,61 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -323,9 +322,9 @@
             <g clip-path="url(#irClip)">
               <g id="incl-roll-scale"></g>
               <g id="incl-roll-glyph">
-                <rect x="8" y="66" width="144" height="72" fill="#ff9500" fill-opacity="0.82"/>
-                <path d="M58,58 L102,58 L96,74 Q80,80 64,74 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
-                <line x1="80" y1="58" x2="80" y2="40" stroke="#c3ccd4" stroke-width="1.5"/>
+                <rect x="8" y="66" width="144" height="72" fill="#1f6feb" fill-opacity="0.82"/>
+                <path d="M57,56 Q56,55 59,55 L101,55 Q104,55 103,56 L98,71 Q80,82 62,71 Z" fill="#c3ccd4" stroke="#8792a0" stroke-width="1"/>
+                <line x1="80" y1="55" x2="80" y2="38" stroke="#c3ccd4" stroke-width="1.5"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -610,6 +609,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

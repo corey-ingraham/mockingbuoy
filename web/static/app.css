@@ -449,6 +449,8 @@
   }
   .ins-unit { font-size: 12px; color: var(--muted); }
   .pri-row { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+  /* SOG/STW/COG sized to sit alongside the enlarged HDG readout on the heading tape */
+  .p-primary .ins-bignum { font-size: clamp(32px, 5vh, 60px); }
   /* value encoding (JPG-style): live values render bold white; sim/display-only values
      take the caution-orange tint. Global Live/Sim legend lives in the bottom strip. */
   .v-live { color: var(--text); }
