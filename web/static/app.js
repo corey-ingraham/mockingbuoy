@@ -218,7 +218,8 @@
     g.setAttribute("transform", "rotate(" + Number(thetaDeg).toFixed(1) + " 150 195)");
     const line = g.querySelector("line"), head = g.querySelector("polygon");
     const tip = 195 - len;
-    if (line) line.setAttribute("y2", tip.toFixed(1));
+    // stop the shaft at the arrowhead base (not the very point) so the line never pokes past the tip
+    if (line) line.setAttribute("y2", (tip + 9).toFixed(1));
     if (head) head.setAttribute("points", "150," + tip.toFixed(1) + " 144," + (tip + 10).toFixed(1) + " 156," + (tip + 10).toFixed(1));
   }
   // Ship-schematic horizontal (athwartships) callout arrow at row y; +v = starboard (right).
@@ -226,13 +227,15 @@
     const g = $(id); if (!g) return;
     if (!Number.isFinite(v) || Math.abs(v) < 0.05) { g.setAttribute("opacity", "0"); return; }
     g.setAttribute("opacity", "1");
-    const dir = v >= 0 ? 1 : -1;
-    // cap so the tip stays inside the hull outline on EITHER side of the (now narrower) walk box
-    const len = Math.max(8, Math.min(48, Math.abs(v) * 18));
-    const x1 = 150 + dir * len;
+    const dir = v >= 0 ? 1 : -1;                        // +v = starboard (right)
+    // draw the arrow just OUTSIDE the walk box (half-width 28) so the box (painted later) can't hide
+    // it; length capped so the tip stays inside the hull outline on either side
+    const len = Math.max(10, Math.min(22, Math.abs(v) * 18));
+    const x0 = 150 + dir * 30;                          // start at the box edge + small gap
+    const x1 = x0 + dir * len;                          // tip
     const line = g.querySelector("line"), head = g.querySelector("polygon");
-    if (line) { line.setAttribute("x1", "150"); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
-    if (head) head.setAttribute("points", x1.toFixed(1) + "," + y + " " + (x1 - dir * 10).toFixed(1) + "," + (y - 5) + " " + (x1 - dir * 10).toFixed(1) + "," + (y + 5));
+    if (line) { line.setAttribute("x1", x0.toFixed(1)); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
+    if (head) head.setAttribute("points", x1.toFixed(1) + "," + y + " " + (x1 - dir * 9).toFixed(1) + "," + (y - 5) + " " + (x1 - dir * 9).toFixed(1) + "," + (y + 5));
   }
 
   // build compass rose ticks + wind rose ticks once
@@ -648,8 +651,14 @@
     const setDeg = Number(s.set_deg), driftKn = Number(s.drift_kn) || 0;
     const trackOk = Number.isFinite(shipCog) && Number.isFinite(shipHdg);
     const curOk = Number.isFinite(setDeg) && Number.isFinite(shipHdg);
-    setShipVec("ship-vec-cog", trackOk ? shipCog - shipHdg : 0, trackOk ? Math.min(90, shipSog * 9) : 0);
-    setShipVec("ship-vec-cur", curOk ? setDeg - shipHdg : 0, curOk ? Math.min(70, driftKn * 18) : 0);
+    // engine order (display-only prop pitch): AHEAD → green forward vectors above the fuel box;
+    // ASTERN (pitch < -1%) → suppress the forward vectors and raise the red stern arrow below it.
+    const ppEng = Number(sim.prop_pitch_pct);
+    const asternEng = Number.isFinite(ppEng) && ppEng < -1;
+    setShipVec("ship-vec-cog", trackOk ? shipCog - shipHdg : 0, (!asternEng && trackOk) ? Math.min(90, shipSog * 9) : 0);
+    setShipVec("ship-vec-cur", curOk ? setDeg - shipHdg : 0, (!asternEng && curOk) ? Math.min(70, driftKn * 18) : 0);
+    const asternG = $("ship-astern-arrow");
+    if (asternG) asternG.setAttribute("opacity", asternEng ? "1" : "0");
     // athwartships (docking) lateral speeds recovered from ground track + yaw; L=30 m, midships pivot
     const dlt = trackOk ? wrap180(shipCog - shipHdg) : 0;
     const dRad = dlt * Math.PI / 180;
@@ -658,7 +667,7 @@
     const tang = rot * Math.PI / (180 * 60) * 15 * 1.9438; // yaw contribution at L/2, m/s -> kn
     const vBow = vLat + tang, vStern = vLat - tang;
     setLatArrow("ship-abow", vBow, 111);
-    setLatArrow("ship-astern", vStern, 273);
+    setLatArrow("ship-astern", vStern, 281);
     // bow/stern lateral walk shown as a always-populated kt readout in the hull boxes
     setTxt("ship-vbow", Math.abs(vBow).toFixed(2) + " kt");
     setTxt("ship-vstern", Math.abs(vStern).toFixed(2) + " kt");

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=46">
+<link rel="stylesheet" href="/static/app.css?v=47">
 </head>
 <body>
 
@@ -17,8 +17,8 @@
   <button id="btn-stop" class="danger small">Stop</button>
   <nav class="tabbar" id="tabbar">
     <button class="tab active" data-view="conning">Conning</button>
+    <button class="tab" data-view="config">Configuration</button>
     <button class="tab" data-view="streams">NMEA Streams</button>
-    <button class="tab" data-view="config">Config</button>
     <button class="tab" data-view="maintenance">Maintenance</button>
     <button class="tab" data-view="security">Security</button>
   </nav>
@@ -249,9 +249,15 @@
         <text id="fuel-total" x="120" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
         <text id="fuel-rate" x="155" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
         <text id="fuel-pernm" x="185" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
-        <!-- stern-walk readout box (centred + narrowed to match the bow box) -->
-        <rect x="122" y="260" width="56" height="26" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
-        <text id="ship-vstern" x="150" y="278" fill="#f2f6fa" font-size="15" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <!-- engine-order ASTERN telegraph: red arrow below the fuel box, shown only when prop pitch < -1% -->
+        <g id="ship-astern-arrow" opacity="0">
+          <line x1="150" y1="230" x2="150" y2="248" stroke="#e5484d" stroke-width="4"/>
+          <polygon points="150,258 142,246 158,246" fill="#e5484d"/>
+        </g>
+        <!-- stern-walk readout box (centred + narrowed to match the bow box; dropped below the fuel box
+             by the same gap the bow box has above it, leaving room for the astern arrow) -->
+        <rect x="122" y="268" width="56" height="26" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vstern" x="150" y="286" fill="#f2f6fa" font-size="15" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
         <!-- rudder readout inside the hull near the stern (JPG placement) -->
         <text x="150" y="336" fill="#8792a0" font-size="12" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">Rudder</text>
         <text x="150" y="359" fill="#f2f6fa" font-size="19" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle"><tspan id="ship-rud-val">--</tspan>°</text>
@@ -356,8 +362,8 @@
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
             </g>
-            <text x="14" y="116" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">PT</text>
-            <text x="146" y="116" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="end">SB</text>
+            <text x="20" y="116" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">PT</text>
+            <text x="140" y="116" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="end">SB</text>
           </svg>
         </div>
       </div>
@@ -884,6 +890,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=46"></script>
+<script src="/static/app.js?v=47"></script>
 </body>
 </html>
