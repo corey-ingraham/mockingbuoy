@@ -583,6 +583,21 @@ class _RouteDriver:
             return bearing, self._speed_kn
 
 
+def _through_water_speed(sog_kn: float, cog_deg: float, set_deg: float, drift_kn: float) -> float:
+    """Speed through water = |ground velocity - current(set/drift)|.
+
+    Equals SOG when there is no current (the common case), so a route driving SOG
+    also gives a matching STW instead of leaving the log reading zero.
+    """
+    if not drift_kn:
+        return sog_kn
+    cog_r = math.radians(cog_deg)
+    set_r = math.radians(set_deg)
+    ve = sog_kn * math.sin(cog_r) - drift_kn * math.sin(set_r)
+    vn = sog_kn * math.cos(cog_r) - drift_kn * math.cos(set_r)
+    return math.hypot(ve, vn)
+
+
 class _PhysicsThread(threading.Thread):
     def __init__(
         self,
@@ -636,11 +651,14 @@ class _PhysicsThread(threading.Thread):
             steer = self._route.step(snap.lat, snap.lon, dt)
             if steer is not None:
                 cog, sog = steer
-                route_changes = {"cog_deg": cog, "sog_kn": sog}
-                state = replace(snap, cog_deg=cog, sog_kn=sog)
+                # keep speed-through-water in step with the route's ground speed (SOG w/o current)
+                stw = _through_water_speed(sog, cog, snap.set_deg, snap.drift_kn)
+                route_changes = {"cog_deg": cog, "sog_kn": sog, "stw_kn": stw}
+                state = replace(snap, cog_deg=cog, sog_kn=sog, stw_kn=stw)
             else:  # paused/finished/too-few-waypoints -> hold position (sog 0, no dead-reckon)
-                route_changes = {"sog_kn": 0.0}
-                state = replace(snap, sog_kn=0.0)
+                stw = _through_water_speed(0.0, snap.cog_deg, snap.set_deg, snap.drift_kn)
+                route_changes = {"sog_kn": 0.0, "stw_kn": stw}
+                state = replace(snap, sog_kn=0.0, stw_kn=stw)
         changes = self._physics.advance(state, dt)
         if self._replay_mode:
             # Replay owns own-ship position and the clock (from the capture); physics adds
