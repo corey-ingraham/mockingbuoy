@@ -368,10 +368,10 @@
   .conn-col-left .p-depth { flex: 1 1 auto; }
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
-  /* label + value grouped and centred in the column (label sits just left of its value) */
-  .coord-row { display: flex; align-items: baseline; justify-content: center; gap: 10px; width: 100%; }
-  .coord-label { flex: none; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
-  .coord-val { flex: 0 0 auto; text-align: right; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
+  /* value centred in the column (rows line up); label right-justified immediately to its left */
+  .coord-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: baseline; column-gap: 8px; width: 100%; }
+  .coord-label { grid-column: 1; justify-self: end; font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .coord-val { grid-column: 2; justify-self: center; text-align: center; font-family: var(--sans); font-weight: 700; font-size: clamp(20px, 2.9vh, 34px); font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.1; white-space: nowrap; }
   .p-ship { grid-area: ship; }
   /* right column: propulsion, attitude (grows to fill the space under propulsion), autopilot, alerts */
   .conn-col-right { grid-area: rightcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }

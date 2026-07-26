@@ -260,6 +260,7 @@
   // top of the ring reads as a shallow curved tape. Majors every 10deg carry a 3-digit number.
   // repaint rotates #hdg-arc by -heading so the current heading sits under the fixed centre caret;
   // the big #heading-big shows the exact value.
+  const hdgArcNums = [];  // arc-scale number glyphs; repaint counter-rotates each to stay upright
   (function buildHeadingArc() {
     const g = $("hdg-arc");
     if (!g) return;
@@ -278,12 +279,15 @@
       if (major) {
         const lp = pt(deg, R - 36);
         const t = document.createElementNS(NS, "text");
-        t.setAttribute("x", lp[0].toFixed(1)); t.setAttribute("y", (lp[1] + 6).toFixed(1));
+        const lx = lp[0].toFixed(1), ly = (lp[1] + 6).toFixed(1);
+        t.setAttribute("x", lx); t.setAttribute("y", ly);
         t.setAttribute("fill", "#c3ccd4"); t.setAttribute("font-size", "17");
         t.setAttribute("font-family", "Segoe UI, system-ui, sans-serif");
         t.setAttribute("font-weight", "700"); t.setAttribute("text-anchor", "middle");
         t.textContent = (deg < 10 ? "00" : deg < 100 ? "0" : "") + deg;
+        t.dataset.lx = lx; t.dataset.ly = ly;
         g.appendChild(t);
+        hdgArcNums.push(t);
       }
     }
   })();
@@ -550,6 +554,12 @@
       // heading tape: scroll the scale so the current heading sits under the centre caret
       const hdgArc = $("hdg-arc");
       if (hdgArc) hdgArc.setAttribute("transform", "rotate(" + (-hdg).toFixed(2) + " 350 700)");
+      // counter-rotate each arc number by +hdg about its own anchor so it stays upright/horizontal
+      const hArcR = hdg.toFixed(2);
+      for (let i = 0; i < hdgArcNums.length; i++) {
+        const t = hdgArcNums[i];
+        t.setAttribute("transform", "rotate(" + hArcR + " " + t.dataset.lx + " " + t.dataset.ly + ")");
+      }
       const headingBig = $("heading-big");
       if (headingBig) { const hv = ((Math.round(hdg) % 360) + 360) % 360; headingBig.textContent = (hv < 10 ? "00" : hv < 100 ? "0" : "") + hv; }
       const compassCard = $("compass-card");

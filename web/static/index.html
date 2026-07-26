@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=32">
+<link rel="stylesheet" href="/static/app.css?v=33">
 </head>
 <body>
 
@@ -303,10 +303,12 @@
               <g id="incl-pitch-scale"></g>
               <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-pitch-glyph">
-                <path d="M42,64 L112,64 L124,61 L122,69 Q120,70 114,70 L48,70 Q43,70 42,67 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M58,64 L58,57 L67,57 L67,52 L79,52 L79,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M84,64 L84,58 L91,58 L91,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <line x1="72" y1="52" x2="72" y2="43" stroke="#c3ccd4" stroke-width="1.2"/>
+                <!-- full side profile: deck, raked bow (right), rounded keel visible below (red) -->
+                <path d="M40,58 L108,58 L124,53 L121,64 Q113,82 80,83 Q47,82 40,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M40,64 Q47,82 80,83 Q113,82 121,64" fill="none" stroke="#ff3b30" stroke-width="2"/>
+                <path d="M56,58 L56,50 L68,50 L68,45 L82,45 L82,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M88,58 L88,52 L95,52 L95,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="61" y1="45" x2="61" y2="36" stroke="#c3ccd4" stroke-width="1.2"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -327,9 +329,11 @@
               <g id="incl-roll-scale"></g>
               <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-roll-glyph">
-                <path d="M58,62 L102,62 L94,74 L80,87 L66,74 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M66,62 L66,54 L72,54 L74,46 L86,46 L88,54 L94,54 L94,62 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <line x1="80" y1="46" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.5"/>
+                <!-- front view: rounded (U) hull/keel, not pointy; keel shown red -->
+                <path d="M56,58 L104,58 L100,74 Q80,86 60,74 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <path d="M60,74 Q80,86 100,74" fill="none" stroke="#ff3b30" stroke-width="2"/>
+                <path d="M66,58 L66,50 L72,50 L74,44 L86,44 L88,50 L94,50 L94,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
+                <line x1="80" y1="44" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.4"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -357,8 +361,8 @@
       </div>
       <div class="ap-metrics">
         <div class="ap-cell"><div class="ins-label">Distance</div><div class="ins-val-row"><span id="ap-dist" class="ap-num v-sim">--</span><span class="ins-unit">NM</span></div></div>
-        <div class="ap-cell"><div class="ins-label">Course</div><div class="ins-val-row"><span id="ap-course" class="ap-num v-sim">---</span><span class="ins-unit">°</span></div></div>
-        <div class="ap-cell"><div class="ins-label">TTG</div><div class="ins-val-row"><span id="ap-ttg" class="ap-num v-sim">--:--</span></div></div>
+        <div class="ap-cell"><div class="ins-label">Track Course</div><div class="ins-val-row"><span id="ap-course" class="ap-num v-sim">---</span><span class="ins-unit">°</span></div></div>
+        <div class="ap-cell"><div class="ins-label">Time to go</div><div class="ins-val-row"><span id="ap-ttg" class="ap-num v-sim">--:--</span></div></div>
       </div>
       <div class="ap-ind">
         <div class="ins-label">Off-course (±5°)</div>
@@ -642,6 +646,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=32"></script>
+<script src="/static/app.js?v=33"></script>
 </body>
 </html>
