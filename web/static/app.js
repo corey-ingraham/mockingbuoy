@@ -496,10 +496,14 @@
     mklabel(cx, "0", "middle");
     mklabel(cx + 50, "+" + (halfRange / 2) + unit, "middle");
     mklabel(x1, "+" + halfRange + unit, "end");
-    const mk = document.createElementNS(NS, "polygon");
+    // sleek rounded-diamond marker (gradient fill + dark rim + drop shadow), moved by transform
+    const mk = document.createElementNS(NS, "path");
     mk.setAttribute("id", id + "-mark");
-    mk.setAttribute("points", cx + "," + (cy - 7) + " " + (cx + 6) + "," + cy + " " + cx + "," + (cy + 7) + " " + (cx - 6) + "," + cy);
-    mk.setAttribute("fill", "#00e07a");
+    mk.setAttribute("d", "M0,-8.5 C3.4,-4.8 5.6,-2.4 6.6,0 C5.6,2.4 3.4,4.8 0,8.5 C-3.4,4.8 -5.6,2.4 -6.6,0 C-5.6,-2.4 -3.4,-4.8 0,-8.5 Z");
+    mk.setAttribute("fill", "url(#diaGrad)");
+    mk.setAttribute("stroke", "#0a4527"); mk.setAttribute("stroke-width", "0.9");
+    mk.setAttribute("filter", "url(#needleShadow)");
+    mk.setAttribute("transform", "translate(" + cx + " " + cy + ")");
     svg.appendChild(mk);
   }
   function setLinearMarker(id, v, half) {
@@ -508,7 +512,7 @@
     const cx = 110, cy = 22;
     const frac = Number.isFinite(Number(v)) ? Math.max(-1, Math.min(1, Number(v) / half)) : 0;
     const x = cx + frac * 100;
-    mk.setAttribute("points", x.toFixed(1) + "," + (cy - 7) + " " + (x + 6).toFixed(1) + "," + cy + " " + x.toFixed(1) + "," + (cy + 7) + " " + (x - 6).toFixed(1) + "," + cy);
+    mk.setAttribute("transform", "translate(" + x.toFixed(1) + " " + cy + ")");
     const fill = $(id.replace(/-mark$/, "-fill"));
     if (fill) { fill.setAttribute("x", Math.min(cx, x).toFixed(1)); fill.setAttribute("width", Math.abs(x - cx).toFixed(1)); }
   }
@@ -858,8 +862,17 @@
     p.className = "stat-pill " + (live ? "live" : "sim");
   }
   function updateStatusPills() {
-    setPill("pill-coords", parseSource(channelSourceByRole("gps")).tag === "LIVE");
-    setPill("pill-heading", parseSource(channelSourceByRole("heading")).tag === "LIVE");
+    const roleLive = (role) => parseSource(channelSourceByRole(role)).tag === "LIVE";
+    setPill("pill-coords", roleLive("gps"));
+    setPill("pill-heading", roleLive("heading"));
+    setPill("pill-ship", roleLive("gps"));       // ship vectors are position/heading-derived
+    setPill("pill-env", roleLive("instrument")); // wind + weather off the instrument channel
+    setPill("pill-depth", roleLive("instrument")); // depth sounder (DBT) on the instrument channel
+    setPill("pill-attitude", roleLive("heading")); // pitch/roll off the satcompass/heading source
+    // engine, autopilot and derived alerts are display-only synthetic values → always SIM
+    setPill("pill-prop", false);
+    setPill("pill-autopilot", false);
+    setPill("pill-alerts", false);
     // time is LIVE only when disciplined by a live NMEA source (not the SYSTEM clock / sim)
     const ts = String((lastHealth && lastHealth.time_source) || "").toUpperCase();
     setPill("pill-time", ts !== "" && ts !== "SYSTEM" && ts.indexOf("SIM") < 0 && ts !== "OFF");

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=31">
+<link rel="stylesheet" href="/static/app.css?v=32">
 </head>
 <body>
 
@@ -47,10 +47,13 @@
       <stop offset="0%" stop-color="#9aa4b0" stop-opacity="0.24"/><stop offset="100%" stop-color="#5a6470" stop-opacity="0.10"/>
     </linearGradient>
     <linearGradient id="engFill" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#037a3c"/><stop offset="18%" stop-color="#22e07d"/><stop offset="45%" stop-color="#63ffb2"/><stop offset="62%" stop-color="#18d474"/><stop offset="100%" stop-color="#026634"/>
+      <stop offset="0%" stop-color="#013d1f"/><stop offset="20%" stop-color="#08843f"/><stop offset="46%" stop-color="#16b45c"/><stop offset="64%" stop-color="#077038"/><stop offset="100%" stop-color="#012c15"/>
     </linearGradient>
     <linearGradient id="seaGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#4a92e6"/><stop offset="45%" stop-color="#1f6feb"/><stop offset="100%" stop-color="#0c3a7a"/>
+    </linearGradient>
+    <linearGradient id="diaGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8dffc4"/><stop offset="50%" stop-color="#20d979"/><stop offset="100%" stop-color="#059a4c"/>
     </linearGradient>
     <filter id="needleShadow" x="-40%" y="-40%" width="180%" height="180%">
       <feDropShadow dx="1.5" dy="2.5" stdDeviation="1.5" flood-color="#000" flood-opacity="0.55"/>
@@ -109,7 +112,7 @@
     </div>
     <!-- ENVIRONMENT: sea state + wind TRUE + wind RELATIVE dials + weather -->
     <div class="ins-panel p-env">
-      <div class="ins-hdr"><span>Environment</span></div>
+      <div class="ins-hdr"><span>Environment</span><span id="pill-env" class="stat-pill sim">SIM</span></div>
       <div class="env-sea">
         <div class="ins-label">Sea State</div>
         <div class="ins-val-row"><span id="ro-sea" class="ins-bignum v-live">---</span><span class="ins-unit">WMO</span></div>
@@ -186,7 +189,7 @@
     </div>
     <!-- DEPTH: water depth value + alert constant + taller 1 Hz history graph -->
     <div class="ins-panel p-depth">
-      <div class="ins-hdr"><span>Depth</span></div>
+      <div class="ins-hdr"><span>Depth</span><span id="pill-depth" class="stat-pill sim">SIM</span></div>
       <div class="depth-vals">
         <div class="ro-item">
           <div class="ins-label">Alert depth</div>
@@ -206,7 +209,7 @@
 
     <!-- SHIP: schematic + derived vectors + fuel + heading compass repeater -->
     <div class="ins-panel p-ship">
-      <div class="ins-hdr"><span>Ship</span></div>
+      <div class="ins-hdr"><span>Ship</span><span id="pill-ship" class="stat-pill sim">SIM</span></div>
       <!-- schematic (bow-up, heading-up) with vectors derived from real emitted fields (green) -->
       <div class="ship-fill">
       <svg id="ship-schem" viewBox="0 0 300 452" aria-label="ship schematic with derived vectors, fuel, and rudder">
@@ -263,7 +266,7 @@
     <div class="conn-col conn-col-right">
     <!-- PROPULSION: twin vertical engine bars (RPM + LOAD), amber = display-only (s.sim) -->
     <div class="ins-panel p-propulsion">
-      <div class="ins-hdr"><span>Propulsion</span></div>
+      <div class="ins-hdr"><span>Propulsion</span><span id="pill-prop" class="stat-pill sim">SIM</span></div>
       <div class="prop-gauges">
         <div class="prop-col">
           <div class="prop-title">Port Engine</div>
@@ -286,7 +289,7 @@
 
     <!-- ATTITUDE: twin marine inclinometers (pitch/trim + roll/heel) — sits under propulsion -->
     <div class="ins-panel p-helm">
-      <div class="ins-hdr"><span>Attitude</span></div>
+      <div class="ins-hdr"><span>Attitude</span><span id="pill-attitude" class="stat-pill sim">SIM</span></div>
       <div class="incl-dials">
         <div class="incl-dial">
           <div class="env-dial-label">Pitch</div>
@@ -340,7 +343,7 @@
 
     <!-- AUTOPILOT: mode pill + synthetic track point + metrics + linear off-course/off-track (amber = display-only, s.sim) -->
     <div class="ins-panel p-autopilot">
-      <div class="ins-hdr"><span>Autopilot</span></div>
+      <div class="ins-hdr"><span>Autopilot</span><span id="pill-autopilot" class="stat-pill sim">SIM</span></div>
       <div class="ap-top">
         <div class="ap-mode-cell">
           <div class="ins-label">Mode</div>
@@ -368,7 +371,7 @@
     </div>
     <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
     <div class="ins-panel p-alerts">
-      <div class="ins-hdr"><span>Alerts</span><button id="alerts-silence" class="small">Silence</button></div>
+      <div class="ins-hdr"><span>Alerts</span><span id="pill-alerts" class="stat-pill sim">SIM</span><button id="alerts-silence" class="small">Silence</button></div>
       <div id="alerts-list" class="alerts-list"><div class="hint">No active alerts</div></div>
     </div>
     </div><!-- /conn-col-right -->
@@ -639,6 +642,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=31"></script>
+<script src="/static/app.js?v=32"></script>
 </body>
 </html>
