@@ -853,6 +853,13 @@ class Broker:
         """
         self._emit({"event": "nmea", "data": {"channel": channel_id, "line": line}})
 
+    def publish_input(self, input_id: str, line: str) -> None:
+        """Thread-safe: enqueue one RECEIVED input line (incl. malformed) for the streams tab.
+        Rides the SAME bus as ``nmea`` under a distinct event so the existing pump/subscribe path
+        fans it out unchanged. This exact signature is the engine's
+        ``input_monitor(input_id, line)`` seam. Drops on a full bridge (never blocks)."""
+        self._emit({"event": "input_nmea", "data": {"input": input_id, "line": line}})
+
     def publish_health(self, health: dict[str, Any]) -> None:
         """Enqueue a health frame for fan-out. Drops on a full bridge."""
         self._emit({"event": "health", "data": health})
@@ -979,7 +986,11 @@ class EngineManager:
         """Start the engine if stopped; no-op if already running."""
         if self._engine is not None:
             return
-        engine = Engine(self._config, monitor=self._broker.publish)
+        engine = Engine(
+            self._config,
+            monitor=self._broker.publish,
+            input_monitor=self._broker.publish_input,
+        )
         engine.start()
         self._engine = engine
         self._started_at = time.monotonic()

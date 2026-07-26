@@ -125,15 +125,50 @@
 
   .view { display: none; }
   .view.active { display: block; flex: 1 1 auto; min-height: 0; }
-  /* non-conning views scroll their own content within the locked viewport */
-  .view.active:not(#view-conning) { overflow-y: auto; }
+  /* non-conning views scroll their own content within the locked viewport
+     (#view-streams is a conning-style flex-fill instead — internal pane/feed scroll) */
+  .view.active:not(#view-conning):not(#view-streams) { overflow-y: auto; }
 
-  main {
+  .panes-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr));
     gap: 12px;
     padding: 12px;
   }
+
+  /* ---- NMEA Streams tab: two stacked sections (inputs / outputs) filling the tab ---- */
+  #view-streams.active { display: flex; overflow: hidden; }
+  .streams-wrap {
+    display: flex; flex-direction: column;
+    min-height: 0; flex: 1 1 auto;
+    gap: 12px; padding: 12px; width: 100%;
+  }
+  .streams-section { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
+  /* each section's pane grid is the vertical scroll valve: when the stacked sections overflow the
+     locked viewport (e.g. default config's 3 inputs + 4 outputs = 2 pane rows each at 1366×768,
+     which minmax(440px) fits as 2 columns), the section flex-shrinks and its grid scrolls
+     internally so lower pane rows stay reachable instead of being clipped by overflow:hidden */
+  .streams-section .panes-grid { overflow-y: auto; min-height: 0; }
+  .streams-h { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+  #view-streams .pane { min-height: 0; }
+  #view-streams .feed { min-height: 0; max-height: 32vh; }   /* tune 28–34vh so INPUTS + OUTPUTS both fit 1366×768 */
+
+  /* empty-state note — shown only when the input section is flagged .no-inputs */
+  .empty-state {
+    display: none;
+    padding: 14px; color: var(--muted); font-style: italic;
+    border: 1px dashed var(--border); border-radius: 8px;
+  }
+  #streams-in-section.no-inputs .panes-grid { display: none; }
+  #streams-in-section.no-inputs .empty-state { display: block; }
+
+  /* compact single-line input stats strip + mini error meter + inventory disclosure */
+  .stats-compact { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; align-items: center; gap: 8px 14px; }
+  .stats-compact .errwrap { display: inline-flex; align-items: center; gap: 6px; }
+  .meter-mini { width: 44px; height: 6px; display: inline-block; vertical-align: middle; }
+  .inv-details { font-size: 11px; color: var(--muted); }
+  .inv-details > summary { cursor: pointer; }
+  .pane-input .pane-hdr .dot { margin-left: auto; }   /* push live dot to the right of the header */
   .pane {
     display: flex;
     flex-direction: column;

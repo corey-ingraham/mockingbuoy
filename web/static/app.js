@@ -62,6 +62,7 @@
   let channelMeta = {};             // channel_id -> {role, talker}
   let channelOrder = [];            // channel_id[]
   let aggState = null;              // consolidated (aggregate-tap) pane state, or null
+  let inPanes = {};                 // input_id -> live input pane state (Streams tab, auto mode only)
   let cfg = null;                   // last /api/config
   let lastHealth = null;            // last health event
   let lastState = null;             // last state event
@@ -153,6 +154,7 @@
     // per-tab pollers
     stopDiagPoll(); stopSecPoll();
     if (view === "maintenance") startDiagPoll();
+    if (view === "streams") { updateInputSection(); }
     if (view === "config") { refreshInputs(); }
     if (view === "security") { startSecPoll(); }
   }
@@ -971,7 +973,83 @@
     });
 
     panes[ch.id] = state;
-    $("panes").appendChild(pane);
+    $("panes-out").appendChild(pane);
+  }
+
+  // Live INPUT pane (Streams tab, auto mode). Mirrors an output pane's freeze/clear semantics but
+  // shows the raw RECEIVED feed for one configured input, with a compact single-line stats strip
+  // (msgs/s, bus load, checksum-error rate + mini meter, talkers) and an inventory <details>.
+  // Per-pane state lives in inPanes[inp.id] (NOT DOM getElementById on dynamic ids), exactly like
+  // output panes use panes[ch.id]; pushLine reuses the {feed, frozen, count} shape verbatim.
+  function buildInputPane(inp) {
+    const fn = String(inp.function || "").toLowerCase();
+    const pane = el("div", "pane pane-input");
+    pane.setAttribute("data-input", inp.id);
+
+    const hdr = el("div", "pane-hdr");
+    const roleEl = el("div", "role");
+    roleEl.appendChild(el("span", null, String(inp.id || "").toUpperCase()));
+    if (inp.function) roleEl.appendChild(el("span", "talker", "  " + inp.function));
+    hdr.appendChild(roleEl);
+    hdr.appendChild(el("span", "badge " + fn, fn));
+    const dotEl = el("span", "dot " + (inp.live ? "live" : "dead"));
+    hdr.appendChild(dotEl);
+    pane.appendChild(hdr);
+
+    const stats = el("div", "stats stats-compact");
+    const aliveEl = el("span", "stat-alive" + (inp.live ? " up" : ""), inp.live ? "receiving" : "idle");
+    const sMsgs = document.createElement("span"); sMsgs.innerHTML = 'msgs/s <b>—</b>';
+    const msgsEl = sMsgs.querySelector("b");
+    const sBus = document.createElement("span"); sBus.innerHTML = 'bus <b>—</b>%';
+    const busEl = sBus.querySelector("b");
+    const sErr = el("span", "errwrap"); sErr.innerHTML = 'err <b>—</b>%';
+    const errEl = sErr.querySelector("b");
+    const errMeter = el("div", "meter meter-mini");
+    const errBar = document.createElement("span");
+    errMeter.appendChild(errBar);
+    sErr.appendChild(errMeter);
+    const sTalkers = document.createElement("span"); sTalkers.innerHTML = 'talkers <b>—</b>';
+    const talkersEl = sTalkers.querySelector("b");
+    const invDetails = el("details", "inv-details");
+    invDetails.appendChild(el("summary", null, "inventory"));
+    const invTable = el("table", "kvtable");
+    const invEl = document.createElement("tbody");
+    invTable.appendChild(invEl);
+    invDetails.appendChild(invTable);
+    stats.appendChild(aliveEl);
+    stats.appendChild(sMsgs);
+    stats.appendChild(sBus);
+    stats.appendChild(sErr);
+    stats.appendChild(sTalkers);
+    stats.appendChild(invDetails);
+    pane.appendChild(stats);
+
+    const feed = el("div", "feed");
+    pane.appendChild(feed);
+
+    const ctl = el("div", "pane-ctl");
+    const btnFreeze = el("button", "small", "Freeze view");
+    const btnClear = el("button", "small", "Clear");
+    const frozenTag = el("span", "frozen-tag", "");
+    ctl.appendChild(btnFreeze);
+    ctl.appendChild(btnClear);
+    ctl.appendChild(frozenTag);
+    pane.appendChild(ctl);
+
+    const state = {
+      pane, feed, frozen: false, count: 0,
+      dotEl, msgsEl, busEl, errEl, errBar, talkersEl, invEl, aliveEl, frozenTag, btnFreeze,
+    };
+    btnFreeze.addEventListener("click", () => {
+      state.frozen = !state.frozen;
+      btnFreeze.textContent = state.frozen ? "Resume view" : "Freeze view";
+      feed.classList.toggle("frozen", state.frozen);
+      frozenTag.textContent = state.frozen ? "VIEW FROZEN (log paused)" : "";
+    });
+    btnClear.addEventListener("click", () => { feed.textContent = ""; state.count = 0; });
+
+    inPanes[inp.id] = state;
+    $("panes-in").appendChild(pane);
   }
 
   // The consolidated pane: a live mirror of the aggregate TCP tap — every channel's sentences
@@ -1018,7 +1096,7 @@
     btnClear.addEventListener("click", () => { feed.textContent = ""; state.count = 0; });
 
     aggState = state;
-    $("panes").appendChild(pane);
+    $("panes-out").appendChild(pane);
   }
 
   function pushLine(p, line) {
@@ -1040,6 +1118,12 @@
     // the aggregate TCP tap by showing every channel's sentences merged, live.
     pushLine(panes[chId], line);
     pushLine(aggState, line);
+  }
+
+  // Route one RECEIVED input line to its live input pane (Streams tab). pushLine no-ops on an
+  // undefined/frozen pane, so lines for an input without a pane (or while frozen) are dropped.
+  function appendInputLine(inputId, line) {
+    pushLine(inPanes[inputId], line);
   }
 
   // Derive the active alert set from the last health frame + state-frame flags. Each alert carries a
@@ -1141,6 +1225,8 @@
     updateSourceStrip();
     updateConfigChannelSources();
     renderAlerts();
+    // a runtime mode change (simulate/replay -> auto) flips the Streams input section live
+    updateInputSection();
   }
 
   /* =====================================================================
@@ -1154,6 +1240,10 @@
     es.addEventListener("nmea", (ev) => {
       let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d && d.channel != null) appendLine(d.channel, d.line != null ? d.line : "");
+    });
+    es.addEventListener("input_nmea", (ev) => {
+      let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d && d.input != null) appendInputLine(d.input, d.line != null ? d.line : "");
     });
     es.addEventListener("health", (ev) => {
       let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
@@ -1794,12 +1884,66 @@
   /* =====================================================================
    *  MAINTENANCE TAB (poll /api/diag while active)
    * ===================================================================== */
-  function startDiagPoll() { pollDiag(); diagTimer = setInterval(pollDiag, 2000); }
+  function startDiagPoll() { if (diagTimer) return; pollDiag(); diagTimer = setInterval(pollDiag, 2000); }
   function stopDiagPoll() { if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } }
+  // Live-mode gate for the Streams INPUTS section: inputs stream ONLY in auto mode. Read the LIVE
+  // mode off the health frame (never the boot-frozen cfg.mode) so a runtime mode change flips it.
+  function isAutoMode() {
+    return String((lastHealth && lastHealth.mode) || "").toLowerCase() === "auto";
+  }
+  // Show the INPUTS grid only in auto mode with built panes; otherwise collapse to the empty-state
+  // note (CSS-driven via .no-inputs — no direct JS style). Also keeps the Streams diag poll in step
+  // with a live mode change while the tab is open.
+  function updateInputSection() {
+    const sec = $("streams-in-section");
+    if (!sec) return;
+    const show = isAutoMode() && Object.keys(inPanes).length > 0;
+    sec.classList.toggle("no-inputs", !show);
+    if (activeTab === "streams") {
+      if (show && !diagTimer) startDiagPoll();
+      else if (!show && diagTimer) stopDiagPoll();
+    }
+  }
   async function pollDiag() {
     let d;
     try { const res = await fetch("/api/diag"); d = await res.json(); } catch (e) { return; }
-    renderDiag(d);
+    if (activeTab === "maintenance") renderDiag(d);
+    else if (activeTab === "streams") renderInputStats(d);
+  }
+  // Drive the compact per-input stats strips on the Streams tab from the same /api/diag payload
+  // the Maintenance tab uses (dispatched by active tab in pollDiag). One diag port -> one input pane.
+  function renderInputStats(d) {
+    const ports = (d && Array.isArray(d.ports)) ? d.ports : [];
+    for (const p of ports) {
+      const s = inPanes[p.port_id];
+      if (!s) continue;
+      // Liveness must track the live feed, not the frozen page-load /api/inputs value: a port is
+      // "receiving" when sentences are currently arriving. /api/diag carries no live flag, so derive
+      // it from the rolling rate (verdict "no-data" or zero rate => idle).
+      const up = String(p.verdict || "") !== "no-data" && (Number(p.sentences_per_s) || 0) > 0;
+      s.dotEl.className = "dot " + (up ? "live" : "dead");
+      s.aliveEl.className = "stat-alive" + (up ? " up" : "");
+      s.aliveEl.textContent = up ? "receiving" : "idle";
+      const structured = (Number(p.valid) || 0) + (Number(p.bad_checksum) || 0);
+      const errRate = structured ? (Number(p.bad_checksum) || 0) / structured : 0;
+      s.msgsEl.textContent = num(p.sentences_per_s, 2);
+      s.busEl.textContent = num(p.bus_load_pct, 1);
+      s.errEl.textContent = (errRate * 100).toFixed(1);
+      s.errBar.style.width = Math.min(100, errRate * 100).toFixed(1) + "%";
+      s.errBar.style.background = errRate > 0.2 ? "var(--down)" : (errRate > 0.02 ? "var(--warn)" : "var(--ok)");
+      const tk = (Array.isArray(p.talkers) && p.talkers.length) ? p.talkers.join(", ") : "—";
+      s.talkersEl.textContent = tk;
+      // inventory rows (formatter · rate Hz · last seen s) into s.invEl
+      s.invEl.textContent = "";
+      const inv = p.inventory || {};
+      for (const k of Object.keys(inv)) {
+        const info = inv[k] || {};
+        const tr = document.createElement("tr");
+        tr.appendChild(el("td", null, k));
+        tr.appendChild(el("td", null, num(info.rate_hz, 2) + " Hz · " + (info.last_seen_s == null ? "—" : num(info.last_seen_s, 1) + "s")));
+        s.invEl.appendChild(tr);
+      }
+    }
   }
   function verdictClass(v) {
     v = String(v || "");
@@ -2059,7 +2203,7 @@
       const res = await fetch("/api/config");
       cfg = await res.json();
     } catch (e) {
-      $("panes").appendChild(el("div", null, "Failed to load config: " + e.message));
+      $("panes-out").appendChild(el("div", null, "Failed to load config: " + e.message));
       return;
     }
     const tcpHost = cfg.tcp_tap_host || "127.0.0.1";
@@ -2074,6 +2218,14 @@
       buildPane(ch, tcpHost);
     }
     if (aggOn) buildAggregatePane(cfg.aggregate_tap.port, tcpHost);
+    // Input panes are built regardless of mode (/api/inputs lists configured slots in any mode);
+    // the section's .no-inputs class (via updateInputSection) governs grid-vs-empty-state display.
+    try {
+      const ir = await fetch("/api/inputs");
+      const inputs = await ir.json();
+      for (const inp of (Array.isArray(inputs) ? inputs : [])) buildInputPane(inp);
+    } catch (e) { /* leave inputs empty -> empty-state */ }
+    updateInputSection();
     buildConfigForms();
     buildConfigChannels();
     buildConfigSentences();

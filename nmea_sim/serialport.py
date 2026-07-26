@@ -97,6 +97,7 @@ class SerialPort:
         read_timeout: float = 0.5,
         on_rx: Callable[[str], None] | None = None,
         on_raw: Callable[[bytes], None] | None = None,
+        on_line: Callable[[str], None] | None = None,
         state_feed: Callable[[dict[str, float]], None] | None = None,
         rx_feeds_state: bool = False,
         rx_accept: list[str] | None = None,
@@ -115,6 +116,11 @@ class SerialPort:
         # engine attaches it to feed a per-input PortDiagnostics. It never influences framing,
         # checksum verification, state feed, or liveness — it is a pure best-effort observer.
         self._on_raw = on_raw
+        # Optional complete-decoded-RX-line tap, fired for EVERY received line INCLUDING
+        # malformed / bad-checksum lines, before checksum.verify. Left None on every existing
+        # caller; only the AUTO engine attaches it to forward received lines to the web layer.
+        # A pure best-effort observer — never influences framing, state, or liveness.
+        self._on_line = on_line
         self._state_feed = state_feed
         self._rx_feeds_state = rx_feeds_state
         self._rx_accept = list(rx_accept or [])
@@ -243,6 +249,10 @@ class SerialPort:
         if not line:
             return
         self.stats.rx_lines += 1
+        if self._on_line is not None:
+            with contextlib.suppress(Exception):
+                # complete RX line (incl. malformed); observer must never break the reader
+                self._on_line(line)
         if not checksum.verify(line):
             self.stats.rx_bad_checksum += 1
             return

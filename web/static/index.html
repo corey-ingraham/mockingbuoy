@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=40">
+<link rel="stylesheet" href="/static/app.css?v=41">
 </head>
 <body>
 
@@ -403,7 +403,19 @@
 
 <!-- ==================== TAB 2: NMEA STREAMS ==================== -->
 <section id="view-streams" class="view">
-  <main id="panes"></main>
+  <div class="streams-wrap">
+    <section class="streams-section" id="streams-in-section">
+      <h2 class="streams-h">Inputs</h2>
+      <div class="panes-grid" id="panes-in"></div>
+      <div class="empty-state" id="streams-in-empty">
+        Inputs stream only in <b>Auto</b> mode. The current mode has no live inputs.
+      </div>
+    </section>
+    <section class="streams-section" id="streams-out-section">
+      <h2 class="streams-h">Outputs</h2>
+      <div class="panes-grid" id="panes-out"></div>
+    </section>
+  </div>
 </section>
 
 <!-- ==================== TAB 3: CONFIG ==================== -->
@@ -779,6 +791,14 @@
         <tr><td>DBT / DPT</td><td>Depth below transducer / depth of water</td></tr>
         <tr><td>MWV / VHW</td><td>Wind speed + angle / water speed + heading</td></tr>
         <tr><td>VDM / VDO</td><td>AIS received report / own-vessel report</td></tr>
+        <tr><td>ZDA</td><td>UTC date &amp; time + local zone offset</td></tr>
+        <tr><td>MWD</td><td>Wind direction (true &amp; magnetic) + wind speed</td></tr>
+        <tr><td>XDR</td><td>Transducer measurements (temperature, pressure, attitude, generic)</td></tr>
+        <tr><td>RSA</td><td>Rudder sensor angle (port / starboard, degrees)</td></tr>
+        <tr><td>VDR</td><td>Set &amp; drift — water current direction + speed</td></tr>
+        <tr><td>PASHR</td><td>Attitude: heading, roll, pitch, heave (proprietary)</td></tr>
+        <tr><td>THS</td><td>True heading + mode / status indicator</td></tr>
+        <tr><td>HDM</td><td>Magnetic heading (degrees)</td></tr>
       </table>
       <h3>Wiring / pinout notes</h3>
       <table class="kvtable">
@@ -837,6 +857,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=40"></script>
+<script src="/static/app.js?v=41"></script>
 </body>
 </html>

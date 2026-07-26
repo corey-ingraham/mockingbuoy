@@ -1175,10 +1175,12 @@ class Engine:
         *,
         sink_hook: SinkHook | None = None,
         monitor: Callable[[str, str], None] | None = None,
+        input_monitor: Callable[[str, str], None] | None = None,
         strict_budget: bool = True,
     ) -> None:
         self._config = config
         self._monitor = monitor
+        self._input_monitor = input_monitor
         self._stop_event = threading.Event()
         self._status: queue.Queue[StatusMsg] = queue.Queue(maxsize=10000)
 
@@ -1350,6 +1352,7 @@ class Engine:
                         read_timeout=inp.read_timeout_s,
                         on_rx=self._make_dispatch(inp.id),
                         on_raw=self._make_raw_feed(inp.id),
+                        on_line=self._make_input_line_feed(inp.id),
                     )
                 )
 
@@ -1432,6 +1435,33 @@ class Engine:
             now = time.monotonic()
             diag.feed_bytes(chunk, now)
             self._tee_capture(input_id, chunk, now)
+
+        return feed
+
+    def _make_input_line_feed(self, input_id: str) -> Callable[[str], None]:
+        """Rate-limited on_line tap: forward complete received lines (incl. malformed) to the web
+        layer via input_monitor, capped by a per-port token bucket so a flood can't swamp the SSE
+        bus. Bucket state is a closure touched only by this port's single reader thread (no lock).
+        Uses a token bucket (capacity/burst 20, refill ~20/s) NOT a min-interval, so per-second NMEA
+        bursts are preserved rather than collapsed to one line."""
+        capacity = 20.0
+        refill_per_s = 20.0
+        tokens = capacity
+        last = time.monotonic()
+
+        def feed(line: str) -> None:
+            nonlocal tokens, last
+            monitor = self._input_monitor
+            if monitor is None:
+                return
+            now = time.monotonic()
+            tokens = min(capacity, tokens + (now - last) * refill_per_s)
+            last = now
+            if tokens < 1.0:
+                return  # empty bucket -> drop silently
+            tokens -= 1.0
+            with contextlib.suppress(Exception):
+                monitor(input_id, line)  # a slow/broken web sink must never break the reader
 
         return feed
 
