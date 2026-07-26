@@ -776,16 +776,16 @@
     const sx = x1 - 34, sy = surfY(x1 - 34);
     const ship = mk("path");
     ship.setAttribute("d",
-      // merchant-vessel side profile: long low hull, raked bow (right), blunt stern (left)
-      "M" + (sx - 20) + "," + (sy - 3) + " L" + (sx + 13) + "," + (sy - 3) + " L" + (sx + 24) + "," + (sy - 6) + " L" + (sx + 16) + "," + (sy + 2) + " L" + (sx - 18) + "," + (sy + 2) + " Z" +
-      // aft superstructure block (toward the stern) + funnel
-      " M" + (sx - 18) + "," + (sy - 3) + " L" + (sx - 18) + "," + (sy - 12) + " L" + (sx - 8) + "," + (sy - 12) + " L" + (sx - 8) + "," + (sy - 3) + " Z" +
-      " M" + (sx - 15) + "," + (sy - 12) + " L" + (sx - 15) + "," + (sy - 16) + " L" + (sx - 11) + "," + (sy - 16) + " L" + (sx - 11) + "," + (sy - 12) + " Z");
+      // container-ship side profile (shadow): long low hull, raked bow (right), transom stern (left)
+      "M" + (sx - 22) + "," + (sy - 2) + " L" + (sx + 15) + "," + (sy - 2) + " L" + (sx + 25) + "," + (sy - 4) + " L" + (sx + 17) + "," + (sy + 3) + " L" + (sx - 20) + "," + (sy + 3) + " Z" +
+      // aft accommodation block + funnel (toward the stern, left)
+      " M" + (sx - 20) + "," + (sy - 2) + " L" + (sx - 20) + "," + (sy - 11) + " L" + (sx - 12) + "," + (sy - 11) + " L" + (sx - 12) + "," + (sy - 2) + " Z" +
+      " M" + (sx - 17) + "," + (sy - 11) + " L" + (sx - 17) + "," + (sy - 15) + " L" + (sx - 14) + "," + (sy - 15) + " L" + (sx - 14) + "," + (sy - 11) + " Z");
     ship.setAttribute("fill", "#5a6675"); ship.setAttribute("opacity", "0.82");
-    // forward mast/derrick
+    // forward mast
     const mast = mk("line");
-    mast.setAttribute("x1", (sx + 4).toFixed(1)); mast.setAttribute("y1", (sy - 3).toFixed(1));
-    mast.setAttribute("x2", (sx + 4).toFixed(1)); mast.setAttribute("y2", (sy - 11).toFixed(1));
+    mast.setAttribute("x1", (sx + 8).toFixed(1)); mast.setAttribute("y1", (sy - 2).toFixed(1));
+    mast.setAttribute("x2", (sx + 8).toFixed(1)); mast.setAttribute("y2", (sy - 10).toFixed(1));
     mast.setAttribute("stroke", "#5a6675"); mast.setAttribute("stroke-width", "0.8"); mast.setAttribute("opacity", "0.82");
     dyn.appendChild(ship); dyn.appendChild(mast);
     // seabed trace points (surface at top → this depth), left→right
