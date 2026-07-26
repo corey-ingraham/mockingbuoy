@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=33">
+<link rel="stylesheet" href="/static/app.css?v=34">
 </head>
 <body>
 
@@ -53,7 +53,7 @@
       <stop offset="0%" stop-color="#4a92e6"/><stop offset="45%" stop-color="#1f6feb"/><stop offset="100%" stop-color="#0c3a7a"/>
     </linearGradient>
     <linearGradient id="diaGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#8dffc4"/><stop offset="50%" stop-color="#20d979"/><stop offset="100%" stop-color="#059a4c"/>
+      <stop offset="0%" stop-color="#1fb767"/><stop offset="50%" stop-color="#0f8f48"/><stop offset="100%" stop-color="#045b2c"/>
     </linearGradient>
     <filter id="needleShadow" x="-40%" y="-40%" width="180%" height="180%">
       <feDropShadow dx="1.5" dy="2.5" stdDeviation="1.5" flood-color="#000" flood-opacity="0.55"/>
@@ -101,8 +101,8 @@
     <!-- COORDINATES -->
     <div class="ins-panel p-coords">
       <div class="ins-hdr"><span>Coordinates</span><span id="pill-coords" class="stat-pill sim">SIM</span></div>
-      <div class="coord-row"><span class="coord-label">LAT</span><span id="ro-lat" class="coord-val v-live">---</span></div>
-      <div class="coord-row"><span class="coord-label">LONG</span><span id="ro-lon" class="coord-val v-live">---</span></div>
+      <div class="coord-row"><span class="coord-label">LAT</span><span class="coord-val v-live"><span id="ro-lat" class="coord-num">---</span><span id="ro-lat-h" class="coord-hemi"></span></span></div>
+      <div class="coord-row"><span class="coord-label">LONG</span><span class="coord-val v-live"><span id="ro-lon" class="coord-num">---</span><span id="ro-lon-h" class="coord-hemi"></span></span></div>
     </div>
     <!-- TIME -->
     <div class="ins-panel p-time">
@@ -132,7 +132,7 @@
             <ellipse cx="80" cy="58" rx="56" ry="36" fill="url(#glassGrad)"/>
             <g id="wtd-ticks"></g>
             <g id="wtd-needle" filter="url(#needleShadow)">
-              <polygon points="80,20 70,40 76,40 76,110 84,110 84,40 90,40" fill="#f4f7fa"/>
+              <polygon points="80,22 74,38 79,38 79,112 81,112 81,38 86,38" fill="#ff3b30"/>
             </g>
             <circle cx="80" cy="80" r="7" fill="url(#hubGrad)"/>
             <circle cx="77.5" cy="77.5" r="1.8" fill="#ffffff" fill-opacity="0.9"/>
@@ -161,7 +161,7 @@
             <path d="M100,64 C112,84 114,112 109,138 L91,138 C86,112 88,84 100,64 Z" fill="#3a4757" stroke="#9aa4b0" stroke-width="1.4"/>
             <!-- apparent wind (solid 3D needle) -->
             <g id="wind-app" filter="url(#needleShadow)">
-              <polygon points="100,26 88,50 95,50 95,138 105,138 105,50 112,50" fill="#f4f7fa"/>
+              <polygon points="100,26 93,44 98,44 98,140 102,140 102,44 107,44" fill="#ff3b30"/>
             </g>
             <circle cx="100" cy="100" r="8" fill="url(#hubGrad)"/>
             <circle cx="97" cy="97" r="2" fill="#ffffff" fill-opacity="0.9"/>
@@ -303,12 +303,14 @@
               <g id="incl-pitch-scale"></g>
               <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-pitch-glyph">
-                <!-- full side profile: deck, raked bow (right), rounded keel visible below (red) -->
-                <path d="M40,58 L108,58 L124,53 L121,64 Q113,82 80,83 Q47,82 40,64 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M40,64 Q47,82 80,83 Q113,82 121,64" fill="none" stroke="#ff3b30" stroke-width="2"/>
-                <path d="M56,58 L56,50 L68,50 L68,45 L82,45 L82,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M88,58 L88,52 L95,52 L95,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <line x1="61" y1="45" x2="61" y2="36" stroke="#c3ccd4" stroke-width="1.2"/>
+                <!-- side profile: solid RED antifouling hull below the waterline (y66) -->
+                <path d="M40,66 L120,66 Q116,80 80,81 Q44,80 40,66 Z" fill="#cc1f27" stroke="#7d1216" stroke-width="0.8"/>
+                <!-- grey topsides above the waterline + raked bow -->
+                <path d="M38,58 L106,58 L122,54 L120,66 L40,66 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.8"/>
+                <!-- superstructure (aft) + funnel + mast -->
+                <path d="M50,58 L50,48 L66,48 L66,43 L76,43 L76,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.8"/>
+                <path d="M80,58 L80,52 L86,52 L86,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.8"/>
+                <line x1="58" y1="43" x2="58" y2="34" stroke="#c3ccd4" stroke-width="1"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -329,11 +331,13 @@
               <g id="incl-roll-scale"></g>
               <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-roll-glyph">
-                <!-- front view: rounded (U) hull/keel, not pointy; keel shown red -->
-                <path d="M56,58 L104,58 L100,74 Q80,86 60,74 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <path d="M60,74 Q80,86 100,74" fill="none" stroke="#ff3b30" stroke-width="2"/>
-                <path d="M66,58 L66,50 L72,50 L74,44 L86,44 L88,50 L94,50 L94,58 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="1"/>
-                <line x1="80" y1="44" x2="80" y2="30" stroke="#c3ccd4" stroke-width="1.4"/>
+                <!-- front view: solid RED antifouling hull below the waterline (rounded bottom) -->
+                <path d="M60,66 L100,66 L96,78 Q80,84 64,78 Z" fill="#cc1f27" stroke="#7d1216" stroke-width="0.8"/>
+                <!-- grey flared topsides above the waterline -->
+                <path d="M58,57 L102,57 L100,66 L60,66 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.8"/>
+                <!-- stepped superstructure + mast -->
+                <path d="M66,57 L66,49 L72,49 L74,43 L86,43 L88,49 L94,49 L94,57 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.8"/>
+                <line x1="80" y1="43" x2="80" y2="32" stroke="#c3ccd4" stroke-width="1"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
@@ -646,6 +650,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=33"></script>
+<script src="/static/app.js?v=34"></script>
 </body>
 </html>

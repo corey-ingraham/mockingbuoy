@@ -695,8 +695,9 @@
     setTxt("pri-stw", num(s.stw_kn, 1));
     { const cg = Number(s.cog_deg); setTxt("pri-cog", Number.isFinite(cg) ? String((((Math.round(cg) % 360) + 360) % 360)).padStart(3, "0") : "---"); }
     setTxt("ro-hdg", num(s.heading_true_deg, 0) + " / " + num(s.heading_mag_deg, 0));
-    setTxt("ro-lat", fmtLat(s.lat));
-    setTxt("ro-lon", fmtLon(s.lon));
+    // split the hemisphere letter into its own fixed slot so the centred digits line up row-to-row
+    { const v = fmtLat(s.lat), m = v.match(/^(.*) ([NS])$/); setTxt("ro-lat", m ? m[1] : v); setTxt("ro-lat-h", m ? m[2] : ""); }
+    { const v = fmtLon(s.lon), m = v.match(/^(.*) ([EW])$/); setTxt("ro-lon", m ? m[1] : v); setTxt("ro-lon-h", m ? m[2] : ""); }
     setTxt("ro-depth", num(s.depth_m, 1));
     setTxt("ro-utc", fmtUtc(s.utc));
     setTxt("ro-local", fmtLocal(s.utc));
@@ -775,15 +776,16 @@
     const sx = x1 - 34, sy = surfY(x1 - 34);
     const ship = mk("path");
     ship.setAttribute("d",
-      // side-view hull, LONG raked bow rising up-and-forward to a point on the right; blunt stern left
-      "M" + (sx - 17) + "," + (sy - 4) + " L" + (sx + 4) + "," + (sy - 4) + " L" + (sx + 24) + "," + (sy - 7) + " L" + (sx + 15) + "," + (sy + 2) + " L" + (sx - 15) + "," + (sy + 2) + " L" + (sx - 17) + "," + (sy - 4) + " Z" +
-      // superstructure (toward the stern) + funnel
-      " M" + (sx - 9) + "," + (sy - 4) + " L" + (sx - 9) + "," + (sy - 10) + " L" + (sx - 2) + "," + (sy - 10) + " L" + (sx - 2) + "," + (sy - 4) + " Z" +
-      " M" + (sx + 1) + "," + (sy - 4) + " L" + (sx + 1) + "," + (sy - 8) + " L" + (sx + 5) + "," + (sy - 8) + " L" + (sx + 5) + "," + (sy - 4) + " Z");
+      // merchant-vessel side profile: long low hull, raked bow (right), blunt stern (left)
+      "M" + (sx - 20) + "," + (sy - 3) + " L" + (sx + 13) + "," + (sy - 3) + " L" + (sx + 24) + "," + (sy - 6) + " L" + (sx + 16) + "," + (sy + 2) + " L" + (sx - 18) + "," + (sy + 2) + " Z" +
+      // aft superstructure block (toward the stern) + funnel
+      " M" + (sx - 18) + "," + (sy - 3) + " L" + (sx - 18) + "," + (sy - 12) + " L" + (sx - 8) + "," + (sy - 12) + " L" + (sx - 8) + "," + (sy - 3) + " Z" +
+      " M" + (sx - 15) + "," + (sy - 12) + " L" + (sx - 15) + "," + (sy - 16) + " L" + (sx - 11) + "," + (sy - 16) + " L" + (sx - 11) + "," + (sy - 12) + " Z");
     ship.setAttribute("fill", "#5a6675"); ship.setAttribute("opacity", "0.82");
+    // forward mast/derrick
     const mast = mk("line");
-    mast.setAttribute("x1", (sx - 5).toFixed(1)); mast.setAttribute("y1", (sy - 10).toFixed(1));
-    mast.setAttribute("x2", (sx - 5).toFixed(1)); mast.setAttribute("y2", (sy - 15).toFixed(1));
+    mast.setAttribute("x1", (sx + 4).toFixed(1)); mast.setAttribute("y1", (sy - 3).toFixed(1));
+    mast.setAttribute("x2", (sx + 4).toFixed(1)); mast.setAttribute("y2", (sy - 11).toFixed(1));
     mast.setAttribute("stroke", "#5a6675"); mast.setAttribute("stroke-width", "0.8"); mast.setAttribute("opacity", "0.82");
     dyn.appendChild(ship); dyn.appendChild(mast);
     // seabed trace points (surface at top → this depth), left→right
