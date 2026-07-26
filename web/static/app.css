@@ -195,7 +195,11 @@
     overflow: hidden;
     min-height: 320px;
   }
-  .pane.ch-off { opacity: 0.5; }
+  /* A disabled channel dims its CONTENT (header/stats/tap/feed + the view controls) but NOT the
+     Output toggle — opacity on the whole pane would flatten the button too and make it look
+     unclickable. Dimming per-section keeps the red "Output: OFF" button fully lit + obviously live. */
+  .pane.ch-off .pane-hdr, .pane.ch-off .stats, .pane.ch-off .tcp, .pane.ch-off .feed,
+  .pane.ch-off .pane-ctl > *:not(.out-toggle) { opacity: 0.5; }
   .pane-hdr {
     display: flex;
     align-items: center;
@@ -241,6 +245,14 @@
   .src-sim { color: var(--warn); border: 1px dashed var(--warn); background: rgba(210,153,34,.10); }
   .src-off { color: var(--muted); border: 1px dotted var(--muted); background: rgba(139,148,158,.08); }
   .src-time { color: var(--accent); border: 1px solid var(--accent); background: rgba(88,166,255,.10); }
+
+  /* Streams-tab pane source pill (SIM/LIVE/OFF) matches the Conning tab's solid .stat-pill look. */
+  #view-streams .pane-hdr .src {
+    font-family: var(--sans); font-size: 11px; font-weight: 800; padding: 1px 8px; text-transform: none;
+  }
+  #view-streams .pane-hdr .src.src-live { background: var(--ok); color: #04120a; border: 1px solid #00b866; }
+  #view-streams .pane-hdr .src.src-sim { background: var(--warn); color: #1c1102; border: 1px solid #cc7a00; }
+  #view-streams .pane-hdr .src.src-off { background: rgba(139,148,158,.18); color: var(--muted); border: 1px solid var(--border); }
 
   .stats {
     display: flex;

@@ -909,7 +909,6 @@
     roleEl.appendChild(el("span", null, ch.id));
     if (ch.talker) roleEl.appendChild(el("span", "talker", "  " + ch.talker));
     hdr.appendChild(roleEl);
-    hdr.appendChild(el("span", "badge " + role, role));
     if (ch.port) hdr.appendChild(el("span", "com-port", "TX " + ch.port));
     const srcBadge = el("span", "src src-off", "OFF");
     hdr.appendChild(srcBadge);
@@ -1003,7 +1002,6 @@
     roleEl.appendChild(el("span", null, String(inp.id || "").toUpperCase()));
     if (inp.function) roleEl.appendChild(el("span", "talker", "  " + inp.function));
     hdr.appendChild(roleEl);
-    hdr.appendChild(el("span", "badge " + fn, fn));
     if (inp.port) hdr.appendChild(el("span", "com-port", "RX " + inp.port));
     const dotEl = el("span", "dot " + (inp.live ? "live" : "dead"));
     hdr.appendChild(dotEl);
