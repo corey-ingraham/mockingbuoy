@@ -1,41 +1,33 @@
-# mockingbuoy — native Caddy reverse proxy (TLS termination + Basic auth).
+# mockingbuoy — Caddy SITE SNIPPET, imported by the shared host Caddyfile.
+#
+# setup.sh installs this file to /etc/caddy/conf.d/mockingbuoy.caddy; the shared
+# /etc/caddy/Caddyfile does `import /etc/caddy/conf.d/*.caddy`, so this block coexists with
+# NetBox and any other reverse-proxy sites on the box. This file holds ONE site block and NO
+# global options (globals like `admin off` live in the shared main Caddyfile — a global block
+# inside an imported snippet is invalid).
 #
 # SSE + auth interaction (why Basic-at-proxy works for the live stream):
-#   The UI streams sentences over Server-Sent Events via the browser's EventSource,
-#   which CANNOT set request headers — so it can't attach an Authorization header of
-#   its own. Basic auth enforced HERE (at the proxy) still works because, once the
-#   user has authenticated the origin, the browser automatically re-sends the cached
-#   Basic credentials on every subsequent same-origin request, EventSource included.
-#   No client-side auth code is needed. flush_interval -1 disables response buffering
-#   so streamed events reach the browser immediately.
+#   The UI streams sentences over Server-Sent Events via the browser's EventSource, which CANNOT
+#   set request headers. Basic auth enforced HERE still works because, once the user has
+#   authenticated the origin, the browser re-sends the cached Basic credentials on every
+#   same-origin request, EventSource included. flush_interval -1 disables response buffering so
+#   streamed events reach the browser immediately.
 #
-# Publishes the LAN NIC IP on :443 ONLY — never 0.0.0.0. Override the address with
-# the MOCKINGBUOY_SITE env var (e.g. a local hostname once you have one).
+# Addresses: the primary is the friendly hostname (MOCKINGBUOY_SITE, e.g. mockingbuoy.eemslab);
+# the second is a raw-IP alias (MOCKINGBUOY_SITE_ALIAS = the box LAN IP) so the UI stays reachable
+# by IP even before local DNS resolves the name. setup.sh composes both into service.env and dedups
+# them (alias falls back to 127.0.0.1 when it would duplicate the primary).
 #
-# Secrets: the Basic password HASH is produced on-device with `caddy hash-password`
-# and injected via MOCKINGBUOY_BASIC_HASH (kept in git-ignored secrets/, never here).
+# Secrets: the Basic password HASH is produced on-device with `caddy hash-password` and injected via
+# MOCKINGBUOY_BASIC_HASH (kept in git-ignored secrets/, never here).
 
-# --- Global options ----------------------------------------------------------
-# Disable Caddy's admin API. By default Caddy exposes an UNAUTHENTICATED admin
-# endpoint on 127.0.0.1:2019 that can rewrite the entire running config (and load
-# arbitrary reverse-proxy targets). That is the one loopback path by which the
-# proxied app — or any other local process — could reconfigure the front door.
-# WHY it's safe to turn off here: this is a STATIC-config deployment. The config
-# lives in this file and is changed by editing it and RESTARTING caddy
-# (systemctl restart caddy), never by pushing config to the admin API at runtime.
-# With admin off there is nothing to reload against, which is why the caddy
-# override ships a RESTART flow instead of `caddy reload` (see ops/caddy.service.d).
-{
-	admin off
-}
-
-{$MOCKINGBUOY_SITE:<LAN_IP>}:443 {
-	# Local-only TLS: Caddy's internal issuer signs from a custom local root CA.
-	# Never public ACME — this host is LAN-only and may have no public DNS.
+{$MOCKINGBUOY_SITE:mockingbuoy.eemslab.internal}:443, {$MOCKINGBUOY_SITE_ALIAS:127.0.0.1}:443 {
+	# Local-only TLS: Caddy's internal issuer signs from a custom local root CA (trust the root on
+	# client devices for a green padlock). Never public ACME — this host is LAN-only.
 	tls internal
 
-	# HTTP Basic guarding everything. User/hash come from the environment; the hash is
-	# a bcrypt string from `caddy hash-password` living in git-ignored secrets/.
+	# HTTP Basic guarding everything. User/hash come from the environment; the hash is a bcrypt
+	# string from `caddy hash-password` living in git-ignored secrets/.
 	basic_auth {
 		{$MOCKINGBUOY_BASIC_USER:<you>} {$MOCKINGBUOY_BASIC_HASH}
 	}
@@ -49,23 +41,21 @@
 		# inline <script> or on* handlers remain, so scripts can never be injected inline).
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
 		X-Frame-Options DENY
-		# Measured HSTS: 1 year, this host only. No preload / no includeSubDomains
-		# because this is an IP/LAN host that may share a parent domain with others.
+		# Measured HSTS: 1 year, this host only. No preload / no includeSubDomains.
 		Strict-Transport-Security "max-age=31536000"
 		# Don't advertise the server software.
 		-Server
 	}
 
-	# Unix-socket app bind (shipped default). Caddy reaches the socket by being a
-	# member of the mockingbuoy group (SupplementaryGroups=mockingbuoy in the caddy
-	# override); the socket is created by the app's RuntimeDirectory. flush_interval
-	# -1 => stream SSE unbuffered.
+	# Unix-socket app bind (shipped default). Caddy reaches the socket by being a member of the
+	# mockingbuoy group (SupplementaryGroups=mockingbuoy in the caddy override); the socket is
+	# created by the app's RuntimeDirectory. flush_interval -1 => stream SSE unbuffered.
 	reverse_proxy unix//run/mockingbuoy/app.sock {
 		flush_interval -1
 	}
 	# --- TCP LOOPBACK FALLBACK (commented) ---------------------------------------
-	# If the service is switched back to a loopback-TCP bind (see the commented
-	# ExecStart in ops/mockingbuoy.service), use this target instead:
+	# If the service is switched back to a loopback-TCP bind (see the commented ExecStart in
+	# ops/mockingbuoy.service), use this target instead:
 	# reverse_proxy 127.0.0.1:{$MOCKINGBUOY_APP_PORT:8000} {
 	# 	flush_interval -1
 	# }

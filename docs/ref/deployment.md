@@ -34,7 +34,8 @@ non-default knobs. Unset values fall back to sensible defaults:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `MOCKINGBUOY_SITE` | LAN address Caddy publishes on `:443` (NIC IP or local hostname; never `0.0.0.0`) | `<LAN_IP>` |
+| `MOCKINGBUOY_SITE` | Primary site hostname/IP for mockingbuoy's Caddy vhost (`:443`). Operator value wins; a persisted one is preserved on re-run; else defaults to the friendly hostname | `mockingbuoy.eemslab.internal` |
+| `MOCKINGBUOY_SITE_ALIAS` | Auto-set raw-IP alias (box's primary LAN IP) so the UI stays reachable by IP before local DNS resolves the name; dedups to `127.0.0.1` | auto (box IP) |
 | `ALLOW_SUBNET` | Management subnet allowed through UFW to `443` (and the tap ports) | LAN `<subnet>` |
 | `APP_PORT` | Loopback port the app binds; Caddy reverse-proxies to it | `8000` |
 | `TAP_PORTS` | Per-channel raw NMEA-over-TCP tap ports (`nc`/OpenCPN) | per-channel list |
@@ -63,9 +64,17 @@ Two native systemd services:
   > **⚠ Validate on target hardware:** the unix-socket bind + Caddy-over-socket wiring is **not yet
   > validated on the target hardware**. On first deploy, confirm the socket path, its ownership/group and
   > `0660` perms, and that Caddy can proxy to it before treating the socket path as proven.
-- **`caddy.service`** (native package) — TLS termination + Basic auth (see security.md), with the **admin
-  API disabled** (`admin off`), so a config change is a **restart**, not an API reload. Has
-  `cap_net_bind_service` to bind 443 and publishes `<LAN_IP>:443` only.
+- **`caddy.service`** (native package) — TLS termination + Basic auth (see security.md). **Multi-site
+  coexistence:** the systemd drop-in points Caddy at the **shared `/etc/caddy/Caddyfile`**, which
+  `import`s every site under `/etc/caddy/conf.d/*.caddy`. mockingbuoy owns ONLY
+  `/etc/caddy/conf.d/mockingbuoy.caddy`, so NetBox and any other reverse-proxy sites on the box survive a
+  mockingbuoy redeploy (setup.sh writes only that one snippet + adds the `import` line once, never
+  rewriting the shared file, and validates the combined config with rollback before restarting). The
+  **admin API stays disabled** (`admin off` in the shared globals), so a config change is a **restart**,
+  not an API reload — a mockingbuoy redeploy/rotation briefly (~1 s) bounces all sites on the shared
+  Caddy. The drop-in keeps `--adapter caddyfile` and deliberately **omits `--environ`** (which would
+  print the Basic-auth hash to the journal). Deploying on a foreign LAN with friendly names + trusted
+  TLS + a DNS container: see `ops/lan/README.md`.
 
 > **Serial gotcha:** do **not** set `PrivateDevices=yes` on the service — it hides `/dev/tty*`. Grant
 > serial access via the `dialout` group plus explicit `DeviceAllow=` rules for the char devices.

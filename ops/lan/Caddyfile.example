@@ -1,0 +1,17 @@
+# Shared host Caddyfile — /etc/caddy/Caddyfile
+#
+# This is the single entry file the native caddy.service loads (the mockingbuoy systemd drop-in points
+# ExecStart at it). It holds ONLY global options + the conf.d import; every actual site lives in its own
+# /etc/caddy/conf.d/*.caddy snippet (mockingbuoy.caddy, netbox.caddy, ...). setup.sh creates this file
+# if it is absent and otherwise only ensures the `import` line exists — it never rewrites it, so your
+# other sites are safe across a mockingbuoy redeploy.
+#
+# admin off: no admin API, so config changes are applied by `systemctl restart caddy` (a ~1 s blip on
+# all sites), never a live API reload. This matches mockingbuoy's hardening; keep it unless you have a
+# reason to enable graceful reload (see ops/lan/README.md).
+
+{
+	admin off
+}
+
+import /etc/caddy/conf.d/*.caddy

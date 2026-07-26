@@ -309,7 +309,28 @@ upsert_env() {
     sed -i "/^${key}=/d" "${SVC_ENV}"
     printf '%s=%s\n' "${key}" "${val}" >> "${SVC_ENV}"
 }
-upsert_env "MOCKINGBUOY_SITE" "${MOCKINGBUOY_SITE}"
+# Site address(es) for the imported Caddy snippet. Precedence: an operator value passed THIS run
+# (MOCKINGBUOY_SITE != placeholder) wins; else PRESERVE a persisted non-placeholder value (never
+# silently flip a working IP install to a hostname before DNS exists); else default to the friendly
+# hostname. MOCKINGBUOY_SITE is a single host/IP (no port) — the snippet adds :443. A raw-IP alias
+# (the box's primary LAN IP) is always emitted so the UI stays reachable by IP even before local DNS
+# resolves the name; it falls back to 127.0.0.1 when undetected or when it would duplicate the primary.
+if [ "${MOCKINGBUOY_SITE}" != "<LAN_IP>" ]; then
+    _site="${MOCKINGBUOY_SITE}"
+else
+    _existing_site="$(sed -n 's/^MOCKINGBUOY_SITE=//p' "${SVC_ENV}" | tr -d '"' | head -n1)"
+    if [ -n "${_existing_site}" ] && [ "${_existing_site}" != "<LAN_IP>" ]; then
+        _site="${_existing_site}"
+    else
+        _site="mockingbuoy.eemslab.internal"
+    fi
+fi
+_site="${_site%:443}"   # snippet re-adds :443; guard against host:443:443
+_box_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+_alias="${_box_ip:-127.0.0.1}"
+[ "${_alias}" = "${_site}" ] && _alias="127.0.0.1"
+upsert_env "MOCKINGBUOY_SITE" "${_site}"
+upsert_env "MOCKINGBUOY_SITE_ALIAS" "${_alias}"
 upsert_env "MOCKINGBUOY_BASIC_USER" "${MOCKINGBUOY_BASIC_USER}"
 upsert_env "MOCKINGBUOY_BACKUP_DEST" "${BACKUP_DEST}"
 upsert_env "MOCKINGBUOY_APP_PORT" "${APP_PORT}"
@@ -382,22 +403,56 @@ fi
 
 systemctl daemon-reload
 
-log "validating Caddyfile ..."
+log "installing mockingbuoy Caddy site snippet (coexists with other conf.d sites) ..."
+CADDY_MAIN="/etc/caddy/Caddyfile"
+CADDY_CONFD="/etc/caddy/conf.d"
+CADDY_SNIPPET="${CADDY_CONFD}/mockingbuoy.caddy"
+install -d -m 0755 "${CADDY_CONFD}"
+
+# Ensure a SHARED main Caddyfile that imports every conf.d site. Create it (globals + import) ONLY
+# if absent; if it already exists (e.g. NetBox set it up), append the import line only if missing and
+# NEVER rewrite the file — that is what keeps the other reverse-proxy sites intact across a
+# mockingbuoy redeploy.
+_import_line="import ${CADDY_CONFD}/*.caddy"
+if [ ! -f "${CADDY_MAIN}" ]; then
+    printf '{\n\tadmin off\n}\n\n%s\n' "${_import_line}" > "${CADDY_MAIN}"
+    chmod 0644 "${CADDY_MAIN}"
+    log "created shared ${CADDY_MAIN} (admin off + conf.d import)"
+elif ! grep -qxF "${_import_line}" "${CADDY_MAIN}"; then
+    # guarantee a trailing newline so the appended line can't glue onto the last existing line
+    [ -n "$(tail -c1 "${CADDY_MAIN}" 2>/dev/null)" ] && printf '\n' >> "${CADDY_MAIN}"
+    printf '%s\n' "${_import_line}" >> "${CADDY_MAIN}"
+    log "added conf.d import to existing ${CADDY_MAIN} (other sites untouched)"
+fi
+
+# Back up any existing snippet for rollback, then install ours.
+_snippet_bak=""
+if [ -f "${CADDY_SNIPPET}" ]; then _snippet_bak="$(mktemp)"; cp -p "${CADDY_SNIPPET}" "${_snippet_bak}"; fi
+install -m 0644 "${APP_DIR}/Caddyfile" "${CADDY_SNIPPET}"
+
+log "validating combined Caddy config (${CADDY_MAIN}) ..."
 # Read the bcrypt hash as raw data (NOT by sourcing service.env — bash would expand the
 # $-delimited hash segments and validate a corrupted value), then inject via `env` so no
 # shell expansion touches it.
 _val_hash="$(sed -n 's/^MOCKINGBUOY_BASIC_HASH=//p' "${SVC_ENV}" | tr -d '"')"
-if env MOCKINGBUOY_SITE="${MOCKINGBUOY_SITE}" \
+if env MOCKINGBUOY_SITE="${_site}" \
+       MOCKINGBUOY_SITE_ALIAS="${_alias}" \
        MOCKINGBUOY_BASIC_USER="${MOCKINGBUOY_BASIC_USER}" \
        MOCKINGBUOY_APP_PORT="${APP_PORT}" \
        MOCKINGBUOY_BASIC_HASH="${_val_hash}" \
-       caddy validate --config "${APP_DIR}/Caddyfile" --adapter caddyfile >/dev/null 2>&1; then
-    log "Caddyfile is valid"
+       caddy validate --config "${CADDY_MAIN}" --adapter caddyfile >/dev/null 2>&1; then
+    log "combined Caddy config is valid"
+    [ -n "${_snippet_bak}" ] && rm -f "${_snippet_bak}"
 else
-    # FATAL: never restart Caddy into a config it rejected — that takes down TLS + Basic
-    # auth for the whole UI. Fail loudly here, before the restart below.
+    # ROLLBACK: never leave a broken snippet armed to take down ALL sites at the next restart.
+    # Restore the prior snippet (or remove ours if there was none), then fail loudly before restart.
+    if [ -n "${_snippet_bak}" ]; then
+        cp -p "${_snippet_bak}" "${CADDY_SNIPPET}"; rm -f "${_snippet_bak}"
+    else
+        rm -f "${CADDY_SNIPPET}"
+    fi
     unset _val_hash
-    die "Caddyfile validation FAILED — refusing to restart Caddy into a broken config. Inspect: caddy validate --config ${APP_DIR}/Caddyfile --adapter caddyfile"
+    die "combined Caddy config validation FAILED — rolled back mockingbuoy.caddy, refusing to restart. Inspect: caddy validate --config ${CADDY_MAIN} --adapter caddyfile"
 fi
 unset _val_hash
 

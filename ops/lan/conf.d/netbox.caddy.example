@@ -1,0 +1,25 @@
+# Example additional site — /etc/caddy/conf.d/netbox.caddy
+#
+# Copy to /etc/caddy/conf.d/netbox.caddy (drop the .example suffix), edit the upstream port, then
+# `sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl restart caddy`.
+#
+# This is how EVERY extra service coexists with mockingbuoy: one snippet per site, each at its own
+# subdomain. The DNS wildcard (*.eemslab.internal -> box IP, see ops/lan/README.md) resolves the name;
+# THIS block is what actually serves it — a new service needs BOTH.
+#
+# NetBox behind a reverse proxy requires, in NetBox's own config (netbox/configuration.py or env):
+#   ALLOWED_HOSTS = ["netbox.eemslab.internal", "<box-ip>"]
+#   CSRF_TRUSTED_ORIGINS = ["https://netbox.eemslab.internal"]
+# Do NOT copy mockingbuoy's strict same-origin Content-Security-Policy here — NetBox's UI loads its own
+# assets and that CSP would break it. Add only the headers a given app actually needs.
+
+netbox.eemslab.internal {
+	# Caddy's local internal CA (same trust story as mockingbuoy; trust the root once per device).
+	tls internal
+
+	# Upstream = the NetBox container, published on the LOOPBACK ONLY (127.0.0.1:<port>). NEVER publish
+	# fronted containers on 0.0.0.0 — Docker's port rules bypass UFW and would expose NetBox's plain-HTTP,
+	# unauthenticated port directly to the LAN, defeating the TLS/front-door. In the NetBox compose use
+	# e.g. `ports: ["127.0.0.1:8080:8080"]`.
+	reverse_proxy 127.0.0.1:8080
+}

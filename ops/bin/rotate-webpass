@@ -12,7 +12,9 @@ SVC_ENV="${APP_DIR}/secrets/service.env"
 DATA_DIR="${APP_DIR}/data"
 REQ="${DATA_DIR}/webpass-request.json"
 RESULT="${DATA_DIR}/webpass-result.json"
-CADDYFILE="${APP_DIR}/Caddyfile"
+# Validate the SHARED host config (imports every conf.d site incl. mockingbuoy.caddy), matching the
+# coexistence deploy — not mockingbuoy's old single-site file.
+CADDYFILE="/etc/caddy/Caddyfile"
 CADDY="$(command -v caddy || echo /usr/bin/caddy)"
 
 # Nothing to do if the request vanished (e.g. a coalesced re-trigger after we consumed it).
@@ -78,6 +80,7 @@ fi
 # --- 3. Read the non-secret keys + capture the PRIOR hash (for rollback) ------------------------
 # Read individual keys via sed (NEVER source service.env — bash would expand the $-delimited hash).
 SITE="$(sed -n 's/^MOCKINGBUOY_SITE=//p' "${SVC_ENV}" | tr -d '"')"
+ALIAS="$(sed -n 's/^MOCKINGBUOY_SITE_ALIAS=//p' "${SVC_ENV}" | tr -d '"')"
 BUSER="$(sed -n 's/^MOCKINGBUOY_BASIC_USER=//p' "${SVC_ENV}" | tr -d '"')"
 PORT="$(sed -n 's/^MOCKINGBUOY_APP_PORT=//p' "${SVC_ENV}" | tr -d '"')"
 PRIOR_HASH="$(sed -n 's/^MOCKINGBUOY_BASIC_HASH=//p' "${SVC_ENV}" | tr -d '"')"
@@ -97,6 +100,7 @@ write_env_hash "${HASH}"
 
 # --- 5. Validate the Caddy config with the NEW hash injected via env (mirrors setup.sh) --------
 if ! env MOCKINGBUOY_SITE="${SITE}" \
+         MOCKINGBUOY_SITE_ALIAS="${ALIAS}" \
          MOCKINGBUOY_BASIC_USER="${BUSER}" \
          MOCKINGBUOY_APP_PORT="${PORT}" \
          MOCKINGBUOY_BASIC_HASH="${HASH}" \
@@ -115,12 +119,15 @@ systemd-run --on-active=2s /bin/systemctl restart caddy >/dev/null 2>&1 || true
 # Any HTTP status (401 included) proves caddy is serving. We do NOT credential-probe: this unit has
 # only the hash, not the plaintext; the password itself is user-verified on re-login.
 health_ok() {
-    # With a real SITE, prove caddy is SERVING (any HTTP status, 401 included). Without one (empty or
-    # the <LAN_IP> placeholder) we cannot HTTP-probe — but must NOT fail open: fall back to asserting
-    # the caddy unit is actually active, so a caddy that died on the new config still trips rollback.
+    # With a real SITE, prove caddy is SERVING (any HTTP status, 401 included). Force the connection
+    # to the loopback with --resolve so the probe never depends on the box resolving a `.eemslab`
+    # hostname (a hostname SITE would otherwise NXDOMAIN here and falsely trip rollback); curl still
+    # sends the SNI/Host of SITE so the real vhost is exercised. Without a SITE (empty or the
+    # <LAN_IP> placeholder) we cannot HTTP-probe — but must NOT fail open: fall back to asserting the
+    # caddy unit is actually active, so a caddy that died on the new config still trips rollback.
     if [ -n "${SITE}" ] && [ "${SITE}" != "<LAN_IP>" ]; then
         local code
-        code="$(curl -sk -o /dev/null -w '%{http_code}' "https://${SITE}/" 2>/dev/null || echo 000)"
+        code="$(curl -sk --resolve "${SITE}:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://${SITE}/" 2>/dev/null || echo 000)"
         [ "${code}" != "000" ]
     else
         systemctl is-active --quiet caddy
