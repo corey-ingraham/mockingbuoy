@@ -3,7 +3,8 @@
   const MAX_LINES = 300;
   const STALE_MS = 3500;
   const DEPTH_CAP = 180;    // 1 Hz depth samples => 3-minute history window
-  const ALERT_DEPTH_M = 50;  // display-only shallow-water alert threshold (amber)
+  let ALERT_DEPTH_M = 50;  // display-only shallow-water alert threshold (amber); A6: overridable via cfg-depth-alert (localStorage)
+  try { const _ad = Number((window.localStorage && localStorage.getItem("mb.alertDepthM"))); if (Number.isFinite(_ad) && _ad > 0) ALERT_DEPTH_M = _ad; } catch (e) {}
 
   // Manual-field range table mirroring the server's _UPDATE_RANGES (client-side pre-check only).
   const RANGES = {
@@ -14,8 +15,12 @@
     wind_dir_deg: [0, 360], sea_state: [0, 9], rudder_angle_deg: [-45, 45], set_deg: [0, 360],
     drift_kn: [0, 100],
   };
-  // Fields the Save-as-defaults endpoint accepts (server allow-list).
-  const INITIAL_FIELDS = ["stw_kn","depth_m","rot_dpm","wind_speed_kn","wind_dir_deg","sea_state","rudder_angle_deg","set_deg","drift_kn"];
+  // Fields the Save-as-defaults endpoint accepts (server allow-list). A3: widened with the 11
+  // nav/GNSS keys so the per-card Save can persist them (fix_quality/satellites are ints server-side).
+  const INITIAL_FIELDS = [
+    "stw_kn","depth_m","rot_dpm","wind_speed_kn","wind_dir_deg","sea_state","rudder_angle_deg","set_deg","drift_kn",
+    "lat","lon","sog_kn","cog_deg","heading_true_deg","heading_mag_deg","mag_variation_deg","altitude_m","fix_quality","satellites","hdop",
+  ];
 
   const SEA_STATES = [
     "0 — Calm (glassy)","1 — Calm (rippled)","2 — Smooth","3 — Slight","4 — Moderate",
@@ -1159,7 +1164,7 @@
       lastState = d; lastStateTs = Date.now();
       sampleDepth(d);
       if (activeTab === "conning") requestConningPaint();
-      else if (activeTab === "config") renderRouteProgress(d.route || null);
+      else if (activeTab === "config") { renderRouteProgress(d.route || null); applyDrivenFields(d.driven_fields); }
     });
   }
 
@@ -1197,43 +1202,51 @@
   /* =====================================================================
    *  CONFIG TAB
    * ===================================================================== */
+  // A2: value editors regrouped into 8 cards mirroring the Conning section names. Each entry is a
+  // slug -> [[wire_key, label], ...] list of wire-backed (data-field, action=update) inputs. The
+  // container ids are "grp-<slug>" (owned by index.html); sea_state renders as a <select>. Cards
+  // that only carry non-data-field controls (time-source, overrides, depth-sim toggle) have their
+  // special inputs authored in index.html and are read/written directly by the handlers below.
   const CFG_FIELDS = {
-    nav: [
-      ["lat", "Latitude"], ["lon", "Longitude"], ["sog_kn", "SOG (kn)"], ["cog_deg", "COG (°)"],
+    "coordinates": [["lat", "Latitude"], ["lon", "Longitude"]],
+    "heading-motion": [
       ["heading_true_deg", "Heading T (°)"], ["heading_mag_deg", "Heading M (°)"], ["mag_variation_deg", "Variation (°)"],
+      ["sog_kn", "SOG (kn)"], ["cog_deg", "COG (°)"], ["rot_dpm", "ROT (°/min)"], ["stw_kn", "STW (kn)"],
     ],
-    inst: [
-      ["stw_kn", "STW (kn)"], ["depth_m", "Depth (m)"], ["rot_dpm", "ROT (°/min)"],
-      ["wind_speed_kn", "Wind spd (kn)"], ["wind_dir_deg", "Wind dir (°)"],
-    ],
-    gps: [
-      ["altitude_m", "Altitude (m)"], ["fix_quality", "Fix quality"], ["satellites", "Satellites"], ["hdop", "HDOP"],
-    ],
+    "environment": [["sea_state", "Sea state (0–9)"], ["wind_speed_kn", "Wind spd (kn)"], ["wind_dir_deg", "Wind dir (°)"]],
+    "depth": [["depth_m", "Depth (m)"]],
+    "ship-helm": [["rudder_angle_deg", "Rudder (°)"]],
+    "current": [["set_deg", "Set (°)"], ["drift_kn", "Drift (kn)"]],
+    "gnss": [["altitude_m", "Altitude (m)"], ["fix_quality", "Fix quality"], ["satellites", "Satellites"], ["hdop", "HDOP"]],
+    "time": [],
   };
   function buildConfigForms() {
-    const mk = (containerId, fields) => {
-      const c = $(containerId); c.textContent = "";
-      for (const [key, label] of fields) {
-        const f = el("div", "field");
-        f.appendChild(el("label", null, label));
-        const inp = document.createElement("input");
-        inp.type = "number"; inp.step = "any"; inp.id = "cfg-" + key; inp.dataset.field = key;
-        f.appendChild(inp);
-        c.appendChild(f);
-      }
+    const mkNumber = (key, label) => {
+      const f = el("div", "field");
+      f.appendChild(el("label", null, label));
+      const inp = document.createElement("input");
+      inp.type = "number"; inp.step = "any"; inp.id = "cfg-" + key; inp.dataset.field = key;
+      f.appendChild(inp);
+      return f;
     };
-    mk("grp-nav", CFG_FIELDS.nav);
-    mk("grp-inst", CFG_FIELDS.inst);
-    mk("grp-gps", CFG_FIELDS.gps);
-    // Environment: sea-state selector
-    const env = $("grp-env"); env.textContent = "";
-    const f = el("div", "field");
-    f.appendChild(el("label", null, "Sea state (0–9)"));
-    const sel = document.createElement("select"); sel.id = "cfg-sea_state"; sel.dataset.field = "sea_state";
-    sel.style.width = "200px";
-    SEA_STATES.forEach((lbl, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = lbl; sel.appendChild(o); });
-    f.appendChild(sel);
-    env.appendChild(f);
+    const mkSeaState = () => {
+      const f = el("div", "field");
+      f.appendChild(el("label", null, "Sea state (0–9)"));
+      const sel = document.createElement("select"); sel.id = "cfg-sea_state"; sel.dataset.field = "sea_state";
+      sel.style.width = "200px";
+      SEA_STATES.forEach((lbl, i) => { const o = document.createElement("option"); o.value = String(i); o.textContent = lbl; sel.appendChild(o); });
+      f.appendChild(sel);
+      return f;
+    };
+    for (const slug of Object.keys(CFG_FIELDS)) {
+      const c = $("grp-" + slug);
+      if (!c) continue;              // index.html owns the card scaffolding; skip a missing container
+      c.textContent = "";
+      for (const [key, label] of CFG_FIELDS[slug]) {
+        c.appendChild(key === "sea_state" ? mkSeaState() : mkNumber(key, label));
+      }
+    }
+    bindConfigCards();
   }
 
   function allCfgInputs() {
@@ -1524,92 +1537,238 @@
     if (sea && s.sea_state != null) sea.value = String(Math.max(0, Math.min(9, Math.round(Number(s.sea_state)))));
   }
 
-  $("cfg-apply").addEventListener("click", async () => {
+  // Per-card status line (A2). Writes to "cfg-msg-<slug>"; falls back to a toast if absent.
+  function setCardMsg(slug, t, c) {
+    const m = $("cfg-msg-" + slug);
+    if (m) { m.textContent = t || ""; m.className = "msg" + (c ? " " + c : ""); }
+    else if (t) toast(t);
+  }
+
+  // A2: Apply (live) for one section -> POST /api/control {action:"update", <that card's data-field
+  // inputs>}. Reuses validateCfgField; sea_state comes off its <select>. The Time card has no
+  // wire-backed fields (time-source applies on next Start), so its Apply just informs.
+  async function cardApply(slug) {
+    if (slug === "time") { setCardMsg(slug, "Time source applies on next Start — use Save as defaults.", ""); return; }
+    const fields = (CFG_FIELDS[slug] || []).map((f) => f[0]);
     const body = { action: "update" };
     let any = false;
-    for (const node of allCfgInputs()) {
-      const key = node.dataset.field;
-      if (key === "sea_state") continue; // handled below (it is a select, always valued)
+    for (const key of fields) {
+      if (key === "sea_state") {
+        const sea = $("cfg-sea_state");
+        if (sea && sea.value !== "") { body.sea_state = Number(sea.value); any = true; }
+        continue;
+      }
       const v = validateCfgField(key);
-      if (v.present && v.ok === false) { setCfgMsg(v.msg, "err"); return; }
+      if (v.present && v.ok === false) { setCardMsg(slug, v.msg, "err"); return; }
       if (v.present && v.ok) { body[key] = v.value; any = true; }
     }
-    // sea_state from selector
-    const sea = $("cfg-sea_state");
-    if (sea && sea.value !== "") { body.sea_state = Number(sea.value); any = true; }
-    if (!any) { setCfgMsg("Enter at least one field to apply.", "err"); return; }
-    try { await control(body); setCfgMsg("Applied to running engine.", "ok"); }
-    catch (e) { setCfgMsg("Apply failed: " + e.message, "err"); }
-  });
+    if (!any) { setCardMsg(slug, "Enter at least one field to apply.", "err"); return; }
+    try { await control(body); setCardMsg(slug, "Applied to running engine.", "ok"); }
+    catch (e) { setCardMsg(slug, "Apply failed: " + e.message, "err"); }
+  }
 
-  $("cfg-save").addEventListener("click", async () => {
+  // A2/A4/A5/A6: Save as defaults for one section -> POST /api/config/initial-state with only that
+  // card's fields (partial, skip-on-empty). Env/Ship-Helm also fold in display_overrides (A4); Time
+  // adds the time-source fields (A5); Depth adds the depth_sim toggle (A6). Every wire key is guarded
+  // by the INITIAL_FIELDS allow-list so a stray field can never be posted.
+  async function cardSave(slug) {
+    const fields = (CFG_FIELDS[slug] || []).map((f) => f[0]);
     const body = {};
-    // allow-listed manual fields only
-    for (const key of INITIAL_FIELDS) {
-      if (key === "sea_state") { const sea = $("cfg-sea_state"); if (sea && sea.value !== "") body.sea_state = Number(sea.value); continue; }
+    let any = false;
+    for (const key of fields) {
+      if (INITIAL_FIELDS.indexOf(key) < 0) continue;
+      if (key === "sea_state") {
+        const sea = $("cfg-sea_state");
+        if (sea && sea.value !== "") { body.sea_state = Number(sea.value); any = true; }
+        continue;
+      }
       const v = validateCfgField(key);
-      if (v.present && v.ok === false) { setCfgMsg(v.msg, "err"); return; }
-      if (v.present && v.ok) body[key] = v.value;
+      if (v.present && v.ok === false) { setCardMsg(slug, v.msg, "err"); return; }
+      if (v.present && v.ok) { body[key] = v.value; any = true; }
     }
-    // mode
+    // A4: display overrides ride the Environment + Ship/Helm cards (display-only — not on NMEA).
+    // Save MIRRORS the override boxes: a filled box persists its value, a blank box sends null so a
+    // cleared override is actually removed from the saved config (not resurrected on next restart).
+    if (slug === "environment" || slug === "ship-helm") {
+      const ov = overridesForSave();
+      if (ov === null) { setCardMsg(slug, "Override values must be numeric.", "err"); return; }
+      if (Object.keys(ov).length) { body.display_overrides = ov; any = true; }
+    }
+    // A5: time-source persist (mode / epoch / rate) on the Time card.
+    if (slug === "time") {
+      const modeSel = $("cfg-time_source_mode");
+      if (modeSel && modeSel.value) { body.time_source_mode = modeSel.value; any = true; }
+      const ep = $("cfg-time_source_epoch");
+      if (ep && String(ep.value).trim() !== "") { body.time_source_epoch = String(ep.value).trim(); any = true; }
+      const rt = $("cfg-time_source_rate");
+      if (rt && String(rt.value).trim() !== "") { const n = Number(rt.value); if (Number.isFinite(n)) { body.time_source_rate = n; any = true; } }
+    }
+    // A6: depth-sim enable toggle -> {enabled} block; server defaults fill the rest.
+    if (slug === "depth") {
+      const en = $("cfg-depth_sim-enabled");
+      if (en) { body.depth_sim = { enabled: !!en.checked }; any = true; }
+    }
+    if (!any) { setCardMsg(slug, "Nothing to save in this section.", "err"); return; }
+    const r = await postJson("/api/config/initial-state", body);
+    if (r.ok) setCardMsg(slug, "Saved as defaults (applies on next Start).", "ok");
+    else setCardMsg(slug, "Save failed: " + ((r.data && r.data.detail) || ("HTTP " + r.status)), "err");
+  }
+
+  // A4: collect the display-override inputs (data-override; cosmetic, NOT data-field). Only present,
+  // finite values are returned so a blank input leaves that key on auto.
+  function collectOverrides() {
+    const out = {};
+    for (const node of document.querySelectorAll("[data-override]")) {
+      const raw = String(node.value).trim();
+      if (raw === "") continue;
+      const n = Number(raw);
+      if (Number.isFinite(n)) out[node.dataset.override] = n;
+    }
+    return out;
+  }
+  // A4 (persist): mirror the override boxes for Save-as-defaults — filled box -> value, blank box ->
+  // null (removes that key from the saved config). Returns null if any box holds a non-numeric value.
+  function overridesForSave() {
+    const out = {};
+    for (const node of document.querySelectorAll("[data-override]")) {
+      const raw = String(node.value).trim();
+      if (raw === "") { out[node.dataset.override] = null; continue; }
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return null;
+      out[node.dataset.override] = n;
+    }
+    return out;
+  }
+  function overrideMsg(t, c) { setCardMsg("environment", t, c); setCardMsg("ship-helm", t, c); }
+  async function overrideApply() {
+    const overrides = collectOverrides();
+    if (!Object.keys(overrides).length) { overrideMsg("Enter at least one display value to override.", "err"); return; }
+    try { await control({ action: "display_override", overrides }); overrideMsg("Display overrides applied (display-only — not on NMEA).", "ok"); }
+    catch (e) { overrideMsg("Override failed: " + e.message, "err"); }
+  }
+  async function overrideClear() {
+    try { await control({ action: "display_override", clear: true }); overrideMsg("Display overrides cleared (back to auto).", "ok"); }
+    catch (e) { overrideMsg("Clear failed: " + e.message, "err"); }
+  }
+
+  // A3b: grey out inputs the engine overwrites each tick (route -> cog/sog, auto-RX -> rx_accept,
+  // depth-sim -> depth_m). Reads state.driven_fields from /api/state and every SSE state frame.
+  function applyDrivenFields(list) {
+    const driven = new Set(Array.isArray(list) ? list : []);
+    for (const node of allCfgInputs()) {
+      const on = driven.has(node.dataset.field);
+      node.disabled = on;
+      node.classList.toggle("driven", on);
+      if (on) node.title = "Driven by route / auto input / depth sim — manual edits won't stick";
+      else node.removeAttribute("title");
+    }
+  }
+
+  // A6: client-side shallow-water alert threshold persisted to localStorage, overriding ALERT_DEPTH_M.
+  function onDepthAlertChange() {
+    const da = $("cfg-depth-alert");
+    if (!da) return;
+    const raw = String(da.value).trim();
+    const n = Number(raw);
+    if (raw === "" || !Number.isFinite(n) || n <= 0) return;
+    ALERT_DEPTH_M = n;
+    try { localStorage.setItem("mb.alertDepthM", String(n)); } catch (e) {}
+    const lbl = $("depth-alert"); if (lbl) lbl.textContent = ALERT_DEPTH_M.toFixed(1);
+    renderDepthGraph(); renderAlerts();
+  }
+
+  // Load persisted A4/A5/A6 values into their (index.html-owned) inputs.
+  function loadTimeSourceIntoConfig() {
+    const ts = (cfg && cfg.time_source) || {};
+    const modeSel = $("cfg-time_source_mode"); if (modeSel && ts.mode) modeSel.value = ts.mode;
+    const ep = $("cfg-time_source_epoch"); if (ep) ep.value = ts.epoch || "";
+    const rt = $("cfg-time_source_rate"); if (rt && ts.rate != null) rt.value = ts.rate;
+  }
+  function loadDisplayOverridesIntoConfig() {
+    const ov = (cfg && cfg.display_overrides) || {};
+    for (const node of document.querySelectorAll("[data-override]")) {
+      const key = node.dataset.override;
+      node.value = (ov && ov[key] != null) ? ov[key] : "";
+    }
+  }
+  function loadDepthSimIntoConfig() {
+    const en = $("cfg-depth_sim-enabled");
+    if (en) { const ds = (cfg && cfg.depth_sim) || null; en.checked = !!(ds && ds.enabled); }
+    const da = $("cfg-depth-alert"); if (da && String(da.value).trim() === "") da.value = ALERT_DEPTH_M.toFixed(1);
+  }
+
+  // Legacy config-level Save (mode / channels / inputs / route / replay / AIS). Not part of the A2
+  // value-editor cards; preserved and bound only if a "cfg-save" trigger still exists in the DOM.
+  async function saveConfigLevel() {
+    const body = {};
     const modeR = document.querySelector('input[name="cfg-mode"]:checked');
     if (modeR) body.mode = modeR.value;
-    // channels (+ F4 per-sentence emit overrides)
     const emitMap = collectEmitOverrides();
     body.channels = channelOrder.map((id) => {
-      const entry = { id, enabled: $("cfg-ch-" + id).checked };
+      const cb = $("cfg-ch-" + id);
+      const entry = { id, enabled: cb ? cb.checked : true };
       const em = emitMap[id];
       if (em && em.length) entry.emit = em;
       return entry;
     });
-    // inputs (only if any selectors present)
     const inputSels = Array.from(document.querySelectorAll("[data-slot]"));
     if (inputSels.length) body.inputs = inputSels.map((s) => ({ id: s.dataset.slot, function: s.value }));
-    // F1 route block (persist when enabled or any waypoints supplied)
-    const routeEnabled = $("cfg-route-enabled").checked;
+    const routeEnabled = !!($("cfg-route-enabled") && $("cfg-route-enabled").checked);
     const wpts = parseWaypoints();
     if (routeEnabled || wpts.length) {
-      const spRaw = String($("cfg-route-speed").value).trim();
+      const spRaw = String(($("cfg-route-speed") || {}).value || "").trim();
       body.route = {
-        enabled: routeEnabled,
-        waypoints: wpts,
+        enabled: routeEnabled, waypoints: wpts,
         speed_kn: spRaw === "" ? 0 : Number(spRaw),
-        loop: $("cfg-route-loop").checked,
+        loop: !!($("cfg-route-loop") && $("cfg-route-loop").checked),
       };
     }
-    // F2 replay block (persist when replay mode or a file is named)
-    const replayFile = $("cfg-replay-file").value.trim();
+    const replayFileNode = $("cfg-replay-file");
+    const replayFile = replayFileNode ? String(replayFileNode.value).trim() : "";
     if (body.mode === "replay" || replayFile) {
-      const spRaw = String($("cfg-replay-speed").value).trim();
+      const spRaw = String(($("cfg-replay-speed") || {}).value || "").trim();
       body.replay = {
-        enabled: body.mode === "replay",
-        file: replayFile,
-        loop: $("cfg-replay-loop").checked,
+        enabled: body.mode === "replay", file: replayFile,
+        loop: !!($("cfg-replay-loop") && $("cfg-replay-loop").checked),
         speed: spRaw === "" ? 1.0 : Number(spRaw),
-        scope: $("cfg-replay-scope").value,
+        scope: ($("cfg-replay-scope") || {}).value || "full",
       };
     }
-    // Scope B: AIS synthetic-traffic block (feeds the SAME allow-listed persist call). M10: only
-    // send it when the config actually HAS an ais-role channel — otherwise every save 400s on a
-    // no-AIS config. profile_path is the dropdown's basename and is sent ONLY for a real selection
-    // (never null), so a failed /api/profiles fetch can't silently revert a saved profile to the
-    // neutral default; target_count only when a number is given.
     const aisCh = (cfg && Array.isArray(cfg.channels))
       ? cfg.channels.find((c) => String(c.role || "").toLowerCase() === "ais") : null;
     if (aisCh) {
-      const at = { enabled: $("cfg-ais-enabled").checked };
-      const profile = $("cfg-ais-profile").value;
-      if (profile) at.profile_path = profile;
-      const countRaw = String($("cfg-ais-count").value).trim();
-      if (countRaw !== "" && Number.isFinite(Number(countRaw))) at.target_count = Number(countRaw);
-      body.ais_traffic = at;
+      const aisEnabled = $("cfg-ais-enabled");
+      if (aisEnabled) {
+        const at = { enabled: aisEnabled.checked };
+        const profile = ($("cfg-ais-profile") || {}).value;
+        if (profile) at.profile_path = profile;
+        const countRaw = String(($("cfg-ais-count") || {}).value || "").trim();
+        if (countRaw !== "" && Number.isFinite(Number(countRaw))) at.target_count = Number(countRaw);
+        body.ais_traffic = at;
+      }
     }
     const r = await postJson("/api/config/initial-state", body);
-    if (r.ok) setCfgMsg("Saved as defaults (applies on next Start).", "ok");
+    if (r.ok) setCfgMsg("Saved mode / channels / route / replay / AIS defaults.", "ok");
     else setCfgMsg("Save failed: " + ((r.data && r.data.detail) || ("HTTP " + r.status)), "err");
-  });
+  }
 
-  $("cfg-load").addEventListener("click", loadConfigCurrent);
+  // Wire the per-card + override + depth-alert + legacy triggers once. Every lookup is guarded so a
+  // card the index.html author has not (yet) placed simply stays unbound instead of throwing at load.
+  let _cardsBound = false;
+  function bindConfigCards() {
+    if (_cardsBound) return;
+    _cardsBound = true;
+    for (const slug of Object.keys(CFG_FIELDS)) {
+      const ap = $("cfg-apply-" + slug); if (ap) ap.addEventListener("click", () => cardApply(slug));
+      const sv = $("cfg-save-" + slug); if (sv) sv.addEventListener("click", () => cardSave(slug));
+    }
+    const ovA = $("cfg-override-apply"); if (ovA) ovA.addEventListener("click", overrideApply);
+    const ovC = $("cfg-override-clear"); if (ovC) ovC.addEventListener("click", overrideClear);
+    const da = $("cfg-depth-alert"); if (da) da.addEventListener("change", onDepthAlertChange);
+    const cl = $("cfg-load"); if (cl) cl.addEventListener("click", loadConfigCurrent);
+    const cs = $("cfg-save"); if (cs) cs.addEventListener("click", saveConfigLevel);
+  }
+
   async function loadConfigCurrent() {
     try {
       const [stRes, cfgRes] = await Promise.all([fetch("/api/state"), fetch("/api/config")]);
@@ -1621,12 +1780,16 @@
       for (const ch of (cfg.channels || [])) { const cb = $("cfg-ch-" + ch.id); if (cb) cb.checked = ch.enabled !== false; }
       buildConfigSentences();
       loadRouteReplayIntoConfig();
+      loadTimeSourceIntoConfig();            // A5
+      loadDisplayOverridesIntoConfig();      // A4
+      loadDepthSimIntoConfig();              // A6
+      applyDrivenFields(s && s.driven_fields); // A3b: grey out engine-driven inputs
       await loadAisTrafficIntoConfig();
       await refreshInputs();
       setCfgMsg((s && s.running !== false) ? "Loaded current state + config." : "Loaded config (engine stopped — no live state).", "ok");
     } catch (e) { setCfgMsg("Load failed: " + e.message, "err"); }
   }
-  function setCfgMsg(t, c) { const m = $("cfg-msg"); m.textContent = t || ""; m.className = "msg" + (c ? " " + c : ""); }
+  function setCfgMsg(t, c) { const m = $("cfg-msg"); if (m) { m.textContent = t || ""; m.className = "msg" + (c ? " " + c : ""); } else if (t) toast(t); }
 
   /* =====================================================================
    *  MAINTENANCE TAB (poll /api/diag while active)
@@ -1837,6 +2000,9 @@
     buildConfigChannels();
     buildConfigSentences();
     loadRouteReplayIntoConfig();
+    loadTimeSourceIntoConfig();            // A5
+    loadDisplayOverridesIntoConfig();      // A4
+    loadDepthSimIntoConfig();              // A6
     await loadAisTrafficIntoConfig();
     setMode(cfg.mode || "simulate");
     connectStream();

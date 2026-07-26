@@ -36,7 +36,15 @@ from geographiclib.geodesic import Geodesic
 from . import budget, rx
 from .ais_generator import AisGenerator
 from .classify import CLASS_TO_ROLE, sentence_class
-from .config import AisSpec, ChannelSpec, EngineConfig, RouteSpec, TimeSourceSpec
+from .config import (
+    AisSpec,
+    ChannelSpec,
+    DepthSimSpec,
+    EngineConfig,
+    RouteSpec,
+    TimeSourceSpec,
+)
+from .depthsim import depth_sim
 from .diagnostics import CaptureSession, PortDiagnostics
 from .gps_generator import GpsGenerator, zda_from_datetime
 from .heading_generator import HeadingGenerator
@@ -409,9 +417,17 @@ class _Clock(Protocol):
 class PhysicsEngine:
     """Pure position/clock integrator — no threading, so it is deterministically testable."""
 
-    def __init__(self, movement_mode: str, time_source: _Clock) -> None:
+    def __init__(
+        self,
+        movement_mode: str,
+        time_source: _Clock,
+        depth_sim: DepthSimSpec | None = None,
+    ) -> None:
         self._mode = movement_mode
         self._time = time_source
+        # None (the default) keeps every existing construction byte-identical: no depth_m write, so
+        # depth_m tracks whatever the initial state / RX seam set it to, exactly as before.
+        self._depth_sim = depth_sim
 
     def advance(self, state: VesselState, dt_s: float) -> dict[str, object]:
         """Return the field changes for advancing ``state`` by ``dt_s`` seconds."""
@@ -427,6 +443,13 @@ class PhysicsEngine:
         pitch, roll = sea_state_motion(state.sea_state, new_utc.timestamp())
         changes["pitch_deg"] = pitch
         changes["roll_deg"] = roll
+        # Optional deterministic depth-under-keel: when enabled, drive the wire-backed depth_m off
+        # the same absolute clock (new_utc.timestamp()) the pitch/roll write uses, so advance stays
+        # pure and deterministic. depth_m is wire-backed, so DPT/DBT and the depth chart track it.
+        if self._depth_sim is not None and self._depth_sim.enabled:
+            changes["depth_m"] = depth_sim(
+                self._depth_sim.base_depth_m, new_utc.timestamp(), self._depth_sim
+            )
         return changes
 
 
@@ -1208,7 +1231,9 @@ class Engine:
         ):
             self._route_driver = _RouteDriver(config.route)
 
-        self._physics_engine = PhysicsEngine(config.movement.mode, clock)
+        self._physics_engine = PhysicsEngine(
+            config.movement.mode, clock, depth_sim=config.depth_sim
+        )
         self._physics = _PhysicsThread(
             self._shared,
             self._physics_engine,

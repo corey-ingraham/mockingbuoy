@@ -735,3 +735,34 @@
     padding: 1px 5px;
     color: var(--accent);
   }
+
+  /* ================= CONFIG — mode settings + value editors ================= */
+  /* A1: wrapper heading over the mode-context cards (Input / Route / Fault) */
+  #cfg-mode-settings { margin-bottom: 4px; }
+  .mode-settings-head,
+  .editors-head {
+    font-size: 13px;
+    margin: 4px 12px 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+    font-weight: 700;
+  }
+  /* the editors-head sits in a flex row, keep it from picking up the row's baseline gap */
+  .editors-head { margin: 0; }
+  /* A2: per-card Apply / Save action row */
+  .cfg-card-actions { margin-top: 12px; align-items: center; }
+  /* per-card wire/display notes — small marker before the text */
+  .drives-note { margin: 8px 0 0; }
+  .drives-note::before { content: "◈ "; color: var(--accent); }
+  .display-only-note { margin: 6px 0 0; }
+  .display-only-note::before { content: "◈ "; color: var(--warn); }
+  /* A3b: engine-driven fields greyed out — manual edits won't stick */
+  .field input:disabled,
+  .field select:disabled,
+  input.driven,
+  select.driven {
+    opacity: 0.5;
+    cursor: not-allowed;
+    border-style: dashed;
+  }

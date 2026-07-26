@@ -106,6 +106,9 @@ _STATE_RANGES: dict[str, tuple[float | None, float | None]] = {
     "heading_true_deg": (0.0, 360.0),
     "heading_mag_deg": (0.0, 360.0),
     "mag_variation_deg": (-180.0, 180.0),
+    # Unbounded on both sides (below sea level is legal), but present so a persisted altitude_m
+    # is finiteness-checked instead of slipping through unvalidated. _STATE_FIELDS already lists it.
+    "altitude_m": (None, None),
     "fix_quality": (0.0, None),
     "satellites": (0.0, None),
     "hdop": (0.0, None),
@@ -592,6 +595,49 @@ def _validate_route_replay(config: EngineConfig, errors: list[str]) -> None:
         )
 
 
+def _validate_depth_sim(config: EngineConfig, errors: list[str]) -> None:
+    """Cross-field checks for the deterministic depth-sim seam (A6).
+
+    Validated whenever the block is present (not only when ``enabled``) so a bad saved block fails
+    loud at validate/start rather than the first time it is toggled on. Every period must be finite
+    and strictly positive (a zero period divides by zero in ``depth_sim``); every amplitude and both
+    depth bounds must be finite and non-negative.
+    """
+    depth = config.depth_sim
+    if depth is None:
+        return
+
+    for name in ("drift_period_s", "shoal_period_s", "ripple_period_s"):
+        value = getattr(depth, name)
+        if not math.isfinite(value) or value <= 0:
+            errors.append(f"depth_sim.{name} must be a finite number > 0, got {value!r}")
+    for name in (
+        "drift_amp_m",
+        "shoal_amp_m",
+        "ripple_amp_m",
+        "base_depth_m",
+        "min_depth_m",
+    ):
+        value = getattr(depth, name)
+        if not math.isfinite(value) or value < 0:
+            errors.append(f"depth_sim.{name} must be a finite number >= 0, got {value!r}")
+
+
+def _validate_display_overrides(config: EngineConfig, errors: list[str]) -> None:
+    """Light finiteness check for the display-override seam (A4).
+
+    Values are bounded by the persist handler, but validate whenever the block exists so a
+    directly-constructed or hand-edited config with a non-finite override fails loud. Not required
+    for engine start (overrides only ride the SSE frame), so this stays advisory-cheap.
+    """
+    overrides = config.display_overrides
+    if overrides is None:
+        return
+    for key, value in overrides.to_dict().items():
+        if not math.isfinite(value):
+            errors.append(f"display_overrides.{key} must be a finite number, got {value!r}")
+
+
 def _validate_globals(config: EngineConfig, errors: list[str]) -> None:
     host = config.tcp_tap_host.strip()
     if host in ("", "0.0.0.0"):  # noqa: S104 - explicitly rejecting the wildcard bind
@@ -700,6 +746,8 @@ def validate(config: EngineConfig) -> list[str]:
     _validate_cross_channel(config, errors)
     _validate_sources(config, errors)
     _validate_route_replay(config, errors)
+    _validate_depth_sim(config, errors)
+    _validate_display_overrides(config, errors)
     return errors
 
 

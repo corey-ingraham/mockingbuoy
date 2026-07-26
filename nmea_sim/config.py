@@ -45,6 +45,8 @@ _ENGINE_CONFIG_KEYS = frozenset(
         "route",
         "replay",
         "aggregate_tap",
+        "display_overrides",
+        "depth_sim",
     }
 )
 
@@ -380,6 +382,97 @@ class VoltageSenseSpec:
 
 
 @dataclass(frozen=True)
+class DisplayOverridesSpec:
+    """Operator overrides for the six display-only cosmetic instruments.
+
+    These keys are NOT wire-backed — they ride the SSE ``sim`` frame only (no NMEA sentence).
+    Each field is optional: an absent (``None``) key means "auto" for that instrument (the pure
+    :func:`web.display_sim.simulate_display_instruments` value is used unchanged). ``to_dict``
+    emits ONLY the set keys, so a block that overrode nothing round-trips as ``{}``.
+    """
+
+    water_temp_c: float | None = None
+    air_temp_c: float | None = None
+    humidity_pct: float | None = None
+    pressure_hpa: float | None = None
+    fuel_total_l: float | None = None
+    fuel_rate_lph: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DisplayOverridesSpec:
+        def _opt(key: str) -> float | None:
+            v = data.get(key)
+            return float(v) if v is not None else None
+
+        return cls(
+            water_temp_c=_opt("water_temp_c"),
+            air_temp_c=_opt("air_temp_c"),
+            humidity_pct=_opt("humidity_pct"),
+            pressure_hpa=_opt("pressure_hpa"),
+            fuel_total_l=_opt("fuel_total_l"),
+            fuel_rate_lph=_opt("fuel_rate_lph"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        # Emit only non-None keys so a config that overrode nothing round-trips as {} and the
+        # manager can seed its live dict straight from this (dict[str, float], no None values).
+        out: dict[str, Any] = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if value is not None:
+                out[f.name] = value
+        return out
+
+
+@dataclass(frozen=True)
+class DepthSimSpec:
+    """Deterministic depth-under-keel simulation (see :mod:`nmea_sim.depthsim`).
+
+    When ``enabled`` is false (the default) nothing drives ``depth_m`` and behaviour is
+    byte-identical to a config with no depth-sim block. When enabled, the physics tick writes a
+    live ``depth_m`` computed by :func:`nmea_sim.depthsim.depth_sim` from three summed sinusoids
+    around ``base_depth_m``. All values are cross-checked in :mod:`nmea_sim.validate`.
+    """
+
+    enabled: bool = False
+    base_depth_m: float = 50.0  # mean depth the sim oscillates around
+    drift_amp_m: float = 20.0  # slow bathymetric drift amplitude
+    drift_period_s: float = 1800.0  # 30 min
+    shoal_amp_m: float = 15.0  # gentle shoaling/deepening runs
+    shoal_period_s: float = 600.0  # 10 min
+    ripple_amp_m: float = 0.6  # small swell ripple
+    ripple_period_s: float = 8.0
+    min_depth_m: float = 0.0  # hard floor (bounded >= 0)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DepthSimSpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            base_depth_m=float(data.get("base_depth_m", 50.0)),
+            drift_amp_m=float(data.get("drift_amp_m", 20.0)),
+            drift_period_s=float(data.get("drift_period_s", 1800.0)),
+            shoal_amp_m=float(data.get("shoal_amp_m", 15.0)),
+            shoal_period_s=float(data.get("shoal_period_s", 600.0)),
+            ripple_amp_m=float(data.get("ripple_amp_m", 0.6)),
+            ripple_period_s=float(data.get("ripple_period_s", 8.0)),
+            min_depth_m=float(data.get("min_depth_m", 0.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "base_depth_m": self.base_depth_m,
+            "drift_amp_m": self.drift_amp_m,
+            "drift_period_s": self.drift_period_s,
+            "shoal_amp_m": self.shoal_amp_m,
+            "shoal_period_s": self.shoal_period_s,
+            "ripple_amp_m": self.ripple_amp_m,
+            "ripple_period_s": self.ripple_period_s,
+            "min_depth_m": self.min_depth_m,
+        }
+
+
+@dataclass(frozen=True)
 class InputSpec:
     """One physical INPUT slot a channel may draw live NMEA from in ``auto`` mode.
 
@@ -566,6 +659,14 @@ class EngineConfig:
     # multiplexer feed. None (the default) means "no aggregate tap". Binds on ``tcp_tap_host``;
     # its port must not collide with any per-channel ``tcp_tap`` port (enforced in ``validate``).
     aggregate_tap: TcpTapSpec | None = None
+    # Optional operator overrides for the six display-only cosmetic instruments (temps/fuel/etc).
+    # None (the default) means "no overrides" — every instrument tracks its auto value. Applied at
+    # the SSE assembly site only; never wire-backed. Round-trips byte-identically when absent.
+    display_overrides: DisplayOverridesSpec | None = None
+    # Optional deterministic depth-under-keel simulation. None (the default) means "no depth sim",
+    # byte-identical to a config that never mentioned it. When enabled the physics tick drives the
+    # wire-backed ``depth_m`` (DPT/DBT/chart track it). Cross-field rules live in ``validate``.
+    depth_sim: DepthSimSpec | None = None
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
@@ -603,6 +704,16 @@ class EngineConfig:
             replay=(ReplaySpec.from_dict(rp) if (rp := data.get("replay")) is not None else None),
             aggregate_tap=(
                 TcpTapSpec.from_dict(at) if (at := data.get("aggregate_tap")) is not None else None
+            ),
+            # Absent -> None (no overrides / no depth sim), so configs written before these seams
+            # are unchanged and round-trip byte-identically.
+            display_overrides=(
+                DisplayOverridesSpec.from_dict(do)
+                if (do := data.get("display_overrides")) is not None
+                else None
+            ),
+            depth_sim=(
+                DepthSimSpec.from_dict(ds) if (ds := data.get("depth_sim")) is not None else None
             ),
         )
 
@@ -678,6 +789,12 @@ class EngineConfig:
             out["replay"] = self.replay.to_dict()
         if self.aggregate_tap is not None:
             out["aggregate_tap"] = self.aggregate_tap.to_dict()
+        # Emit the display-overrides/depth-sim seams only when present, so a config that never
+        # opted into either round-trips byte-identically.
+        if self.display_overrides is not None:
+            out["display_overrides"] = self.display_overrides.to_dict()
+        if self.depth_sim is not None:
+            out["depth_sim"] = self.depth_sim.to_dict()
         return out
 
     def save(self, path: str | Path) -> None:

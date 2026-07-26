@@ -23,7 +23,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import web.app as web_app
-from web.app import Broker, SubscriberLimitError, create_app
+from web.app import (
+    _DISPLAY_OVERRIDE_KEYS,
+    Broker,
+    SubscriberLimitError,
+    _driven_fields,
+    create_app,
+)
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
@@ -1193,6 +1199,49 @@ def test_persist_route_block_is_allow_listed_and_written(tmp_config: Path) -> No
     assert reloaded.route.loop is True
 
 
+def test_persist_depth_sim_toggle_is_allow_listed_and_written(tmp_config: Path) -> None:
+    """A6 regression: the ``depth_sim`` block is allow-listed on the persist seam. Saving
+    ``{"depth_sim": {"enabled": true}}`` returns 200 (not 422 extra_forbidden) and the reloaded
+    config has ``depth_sim.enabled`` True — the only server path to persist the depth-sim toggle."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"depth_m": 42.0, "depth_sim": {"enabled": True}},
+        )
+        assert resp.status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert reloaded.depth_sim is not None
+    assert reloaded.depth_sim.enabled is True
+
+
+def test_persist_depth_sim_toggle_preserves_tuned_params(tmp_config: Path) -> None:
+    """The persist merge flips only ``enabled`` and preserves any hand-tuned sinusoid params: a
+    config with a tuned ``base_depth_m`` survives a UI on/off re-save (skip-on-None merge)."""
+    from nmea_sim.config import EngineConfig
+
+    # Seed a tuned depth_sim block (enabled off, non-default base depth) into the config file.
+    base = json.loads(tmp_config.read_text())
+    base["depth_sim"] = {"enabled": False, "base_depth_m": 77.0}
+    tmp_config.write_text(json.dumps(base))
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"depth_sim": {"enabled": True}},
+        )
+        assert resp.status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert reloaded.depth_sim is not None
+    assert reloaded.depth_sim.enabled is True
+    assert reloaded.depth_sim.base_depth_m == pytest.approx(77.0)
+
+
 def test_persist_enabled_route_under_static_movement_is_rejected(tmp_config: Path) -> None:
     """An enabled route needs simulate+underway; the shipped config is ``static``, so the merged
     config fails deep validation and the write is refused with the validator's message (400)."""
@@ -1638,3 +1687,350 @@ def test_update_with_no_recognized_fields_is_bad_request(client: TestClient) -> 
     no-op 200."""
     resp = client.post("/api/control", json={"action": "update"})
     assert resp.status_code == 400
+
+
+# --- Phase A: driven_fields (A3b), display overrides (A4), widened persist (A3/A5) ---
+
+
+class _FakeManager:
+    """Minimal duck-typed stand-in for ``EngineManager`` exercising ``_driven_fields`` directly.
+
+    ``_driven_fields`` reads only ``.config`` and ``.route_status()``, so a stub pins the frozen
+    computation rules without booting an engine."""
+
+    def __init__(self, config: Any, route: Any = None) -> None:
+        self.config = config
+        self._route = route
+
+    def route_status(self) -> Any:
+        return self._route
+
+
+def test_driven_fields_empty_for_plain_simulate_config() -> None:
+    from nmea_sim.config import EngineConfig
+
+    cfg = EngineConfig.from_dict(json.loads(CONFIG_PATH.read_text()))
+    assert _driven_fields(_FakeManager(cfg)) == []
+
+
+def test_driven_fields_depth_sim_owns_depth_m_only_when_enabled() -> None:
+    from nmea_sim.config import EngineConfig
+
+    raw = json.loads(CONFIG_PATH.read_text())
+    raw["depth_sim"] = {"enabled": True}
+    assert "depth_m" in _driven_fields(_FakeManager(EngineConfig.from_dict(raw)))
+
+    raw["depth_sim"] = {"enabled": False}
+    assert "depth_m" not in _driven_fields(_FakeManager(EngineConfig.from_dict(raw)))
+
+
+def test_driven_fields_route_owns_cog_and_sog() -> None:
+    from nmea_sim.config import EngineConfig
+
+    cfg = EngineConfig.from_dict(json.loads(CONFIG_PATH.read_text()))
+    # No route driver -> route_status None -> neither field driven.
+    assert "cog_deg" not in _driven_fields(_FakeManager(cfg, route=None))
+    # An active route driver (route_status not None) owns both.
+    driven = _driven_fields(_FakeManager(cfg, route={"active": True}))
+    assert "cog_deg" in driven and "sog_kn" in driven
+
+
+def test_driven_fields_auto_mode_rx_feeds_state() -> None:
+    from nmea_sim.config import EngineConfig
+
+    raw = json.loads(CONFIG_PATH.read_text())
+    raw["mode"] = "auto"
+    raw["channels"][0]["rx_feeds_state"] = True
+    raw["channels"][0]["rx_accept"] = ["heading_true_deg", "sog_kn"]
+    driven = _driven_fields(_FakeManager(EngineConfig.from_dict(raw)))
+    assert set(driven) == {"heading_true_deg", "sog_kn"}
+
+
+def test_state_endpoint_carries_driven_fields(client: TestClient) -> None:
+    """``GET /api/state`` always attaches ``driven_fields`` as a list (empty for a plain simulate
+    config)."""
+    body = client.get("/api/state").json()
+    assert body["driven_fields"] == []
+
+
+def test_state_endpoint_driven_fields_reflects_depth_sim(tmp_path: Path) -> None:
+    base = json.loads(CONFIG_PATH.read_text())
+    base["depth_sim"] = {"enabled": True}
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(base))
+    with TestClient(create_app(str(dest))) as c:
+        assert "depth_m" in c.get("/api/state").json()["driven_fields"]
+
+
+def test_sse_state_frame_carries_driven_fields() -> None:
+    """Each SSE ``state`` frame carries ``driven_fields`` so the editor grey-out stays live.
+
+    Same direct-ASGI harness as ``test_sse_stream_emits_state_event`` (the sync TestClient buffers
+    an infinite stream and deadlocks), bounded by ``wait_for``."""
+
+    async def scenario() -> None:
+        app = create_app(str(CONFIG_PATH))
+        async with app.router.lifespan_context(app):
+            captured: dict[str, Any] = {"body": b""}
+            got = asyncio.Event()
+            disconnect = asyncio.Event()
+
+            async def receive() -> dict[str, Any]:
+                await disconnect.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(message: Any) -> None:
+                if message["type"] == "http.response.body":
+                    captured["body"] += message.get("body", b"")
+                    if b"event: state" in captured["body"]:
+                        got.set()
+
+            scope: dict[str, Any] = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/stream",
+                "raw_path": b"/api/stream",
+                "query_string": b"",
+                "root_path": "",
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("127.0.0.1", 80),
+            }
+
+            task = asyncio.create_task(app(scope, receive, send))
+            try:
+                await asyncio.wait_for(got.wait(), timeout=8.0)
+            finally:
+                disconnect.set()
+                await asyncio.wait_for(task, timeout=5.0)
+
+            body = captured["body"]
+            marker = b"event: state\ndata: "
+            start = body.index(marker) + len(marker)
+            end = body.index(b"\n\n", start)
+            payload = json.loads(body[start:end].decode())
+            assert "driven_fields" in payload
+            assert isinstance(payload["driven_fields"], list)
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+
+# --- Phase A: display_override control action (A4) ----------------------------------
+
+
+def test_display_override_set_merges_and_clear_reverts(client: TestClient) -> None:
+    r = client.post(
+        "/api/control",
+        json={
+            "action": "display_override",
+            "overrides": {"water_temp_c": 25.5, "fuel_total_l": 1234.0},
+        },
+    )
+    assert r.status_code == 200
+    do = r.json()["display_overrides"]
+    assert do["water_temp_c"] == pytest.approx(25.5)
+    assert do["fuel_total_l"] == pytest.approx(1234.0)
+
+    # A second set MERGES (does not replace) the earlier keys.
+    r2 = client.post(
+        "/api/control", json={"action": "display_override", "overrides": {"air_temp_c": 18.0}}
+    )
+    do2 = r2.json()["display_overrides"]
+    assert do2["water_temp_c"] == pytest.approx(25.5)
+    assert do2["air_temp_c"] == pytest.approx(18.0)
+
+    # Clear reverts ALL keys to auto.
+    r3 = client.post("/api/control", json={"action": "display_override", "clear": True})
+    assert r3.status_code == 200
+    assert r3.json()["display_overrides"] == {}
+
+
+def test_display_override_unknown_key_is_bad_request(client: TestClient) -> None:
+    r = client.post(
+        "/api/control", json={"action": "display_override", "overrides": {"rpm_port": 800.0}}
+    )
+    assert r.status_code == 400
+
+
+def test_display_override_requires_overrides_or_clear(client: TestClient) -> None:
+    r = client.post("/api/control", json={"action": "display_override"})
+    assert r.status_code == 400
+
+
+def test_display_override_while_stopped_conflicts(client: TestClient) -> None:
+    assert client.post("/api/control", json={"action": "stop"}).status_code == 200
+    r = client.post(
+        "/api/control", json={"action": "display_override", "overrides": {"water_temp_c": 20.0}}
+    )
+    assert r.status_code == 409
+
+
+def test_display_override_non_finite_is_rejected(client: TestClient) -> None:
+    """A non-finite override value must never reach the live dict (handler ``math.isfinite`` guard);
+    whether pydantic (422) or the handler (400) refuses it, the value is rejected."""
+    r = client.post(
+        "/api/control",
+        content='{"action":"display_override","overrides":{"water_temp_c":Infinity}}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code in (400, 422)
+
+
+def test_display_override_keys_are_the_six_cosmetics_and_subset_of_sim(sample_state: Any) -> None:
+    """The override allow-list equals the six cosmetic keys, and every one already exists in the
+    pure ``sim`` dict -- so ``sim.update(overrides)`` can only overwrite, never add a key (the
+    pinned 19-key set is preserved)."""
+    from web.display_sim import simulate_display_instruments
+
+    assert (
+        frozenset(
+            {
+                "water_temp_c",
+                "air_temp_c",
+                "humidity_pct",
+                "pressure_hpa",
+                "fuel_total_l",
+                "fuel_rate_lph",
+            }
+        )
+        == _DISPLAY_OVERRIDE_KEYS
+    )
+    sim = simulate_display_instruments(sample_state)
+    keys_before = set(sim)
+    sim.update(dict.fromkeys(_DISPLAY_OVERRIDE_KEYS, 1.0))
+    # Applying every override overwrites values but adds NO new key.
+    assert set(sim) == keys_before
+    assert keys_before >= _DISPLAY_OVERRIDE_KEYS
+
+
+# --- Phase A: widened Save-as-defaults allow-list (A3 nav/GNSS, A5 time-source, A4) ---
+
+
+def test_persist_nav_gnss_fields_keep_int_types(tmp_config: Path) -> None:
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "lat": 12.34,
+                "lon": -56.78,
+                "sog_kn": 7.5,
+                "cog_deg": 123.0,
+                "heading_true_deg": 100.0,
+                "heading_mag_deg": 98.0,
+                "mag_variation_deg": -2.0,
+                "altitude_m": -15.0,
+                "fix_quality": 2,
+                "satellites": 11,
+                "hdop": 0.9,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["saved"] is True
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    isr = reloaded.initial_state_raw
+    assert float(isr["lat"]) == pytest.approx(12.34)
+    assert float(isr["altitude_m"]) == pytest.approx(-15.0)  # below sea level, unbounded
+    # fix_quality / satellites persist as int (a float model would silently truncate on round-trip).
+    assert isr["fix_quality"] == 2
+    assert isinstance(isr["fix_quality"], int)
+    assert isr["satellites"] == 11
+    assert isinstance(isr["satellites"], int)
+
+
+def test_persist_time_source_fields(tmp_config: Path) -> None:
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "time_source_mode": "simulated",
+                "time_source_epoch": "2024-01-01T00:00:00+00:00",
+                "time_source_rate": 2.0,
+            },
+        )
+        assert resp.status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert reloaded.time_source.mode == "simulated"
+    assert reloaded.time_source.rate == pytest.approx(2.0)
+    assert reloaded.time_source.epoch == "2024-01-01T00:00:00+00:00"
+
+
+def test_persist_bad_time_source_mode_is_bad_request(tmp_config: Path) -> None:
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post("/api/config/initial-state", json={"time_source_mode": "manual"})
+        assert resp.status_code == 400
+
+
+def test_persist_display_overrides(tmp_config: Path) -> None:
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"display_overrides": {"water_temp_c": 22.5, "fuel_total_l": 999.0}},
+        )
+        assert resp.status_code == 200
+
+    reloaded = EngineConfig.load(str(tmp_config))
+    assert reloaded.display_overrides is not None
+    assert reloaded.display_overrides.water_temp_c == pytest.approx(22.5)
+    assert reloaded.display_overrides.fuel_total_l == pytest.approx(999.0)
+    assert reloaded.display_overrides.air_temp_c is None  # untouched key stays auto
+
+
+def test_persist_display_override_null_removes_key(tmp_config: Path) -> None:
+    """A null value removes a previously-persisted override (so a cleared override stays cleared
+    across restart); emptying every key drops the block entirely."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        # Persist two overrides, then null one out and confirm the other survives.
+        assert (
+            c.post(
+                "/api/config/initial-state",
+                json={"display_overrides": {"water_temp_c": 22.5, "fuel_total_l": 999.0}},
+            ).status_code
+            == 200
+        )
+        assert (
+            c.post(
+                "/api/config/initial-state",
+                json={"display_overrides": {"water_temp_c": None, "fuel_total_l": 999.0}},
+            ).status_code
+            == 200
+        )
+        mid = EngineConfig.load(str(tmp_config))
+        assert mid.display_overrides is not None
+        assert mid.display_overrides.water_temp_c is None
+        assert mid.display_overrides.fuel_total_l == pytest.approx(999.0)
+
+        # Null out the last one — the block empties and is dropped.
+        assert (
+            c.post(
+                "/api/config/initial-state",
+                json={"display_overrides": {"water_temp_c": None, "fuel_total_l": None}},
+            ).status_code
+            == 200
+        )
+    end = EngineConfig.load(str(tmp_config))
+    assert end.display_overrides is None
+
+
+def test_persist_bad_display_override_key_is_bad_request(tmp_config: Path) -> None:
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post("/api/config/initial-state", json={"display_overrides": {"rpm_port": 800.0}})
+        assert resp.status_code == 400

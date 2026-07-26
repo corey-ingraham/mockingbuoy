@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=37">
+<link rel="stylesheet" href="/static/app.css?v=38">
 </head>
 <body>
 
@@ -439,25 +439,210 @@
     <p class="hint" style="margin:6px 0 0;">Replay file must exist when Replay is the mode (checked on Save / Start). Persisted via Save as defaults.</p>
   </div>
 
-  <div class="card">
-    <h2>Navigation</h2>
-    <div class="ctl-row" id="grp-nav"></div>
-    <h2 style="margin-top:14px;">Instruments</h2>
-    <div class="ctl-row" id="grp-inst"></div>
-    <h2 style="margin-top:14px;">Environment</h2>
-    <div class="ctl-row" id="grp-env"></div>
-    <h2 style="margin-top:14px;">GPS</h2>
-    <div class="ctl-row" id="grp-gps"></div>
-    <div class="ctl-row" style="margin-top:14px;">
-      <button id="cfg-apply" class="primary">Apply (live)</button>
-      <button id="cfg-save">Save as defaults</button>
-      <button id="cfg-load" class="small">Load current</button>
-      <span id="cfg-msg" class="msg"></span>
+  <!-- A1: mode-context cards moved directly under Operating Mode. setMode() still toggles
+       these by id (cfg-inputs-card / cfg-route-card / cfg-fault-card) — ids kept intact. -->
+  <div id="cfg-mode-settings">
+    <h2 class="mode-settings-head">Settings for selected mode</h2>
+
+    <div class="card" id="cfg-inputs-card">
+      <h2>Input Assignment <span class="hint">(Auto mode)</span></h2>
+      <div id="cfg-inputs" class="ctl-row" style="gap:16px;"></div>
+      <p class="hint" id="cfg-inputs-note" style="margin-top:8px;">Switch to Auto mode to assign provisioned input slots.</p>
     </div>
-    <p class="hint" style="margin:8px 0 0;">
-      Apply pushes editable fields to the running engine. Save as defaults persists the instrument
-      manual fields, sea state, operating mode, channel enables and input assignments for the next Start.
-    </p>
+
+    <div class="card" id="cfg-route-card">
+      <h2>Route playback <span class="hint">(simulate mode)</span></h2>
+      <div class="ctl-row" style="align-items:flex-start;">
+        <div class="field" style="flex:1;min-width:240px;">
+          <label for="cfg-route-wpts">Waypoints — one "lat, lon" per line (≥ 2)</label>
+          <textarea id="cfg-route-wpts" rows="4" style="width:100%;" placeholder="0.000, 0.000&#10;0.000, 0.000"></textarea>
+        </div>
+        <div class="field"><label for="cfg-route-speed">Speed (kn)</label><input id="cfg-route-speed" type="number" step="any"></div>
+        <label class="switch"><input type="checkbox" id="cfg-route-enabled"> Enabled</label>
+        <label class="switch"><input type="checkbox" id="cfg-route-loop"> Loop</label>
+      </div>
+      <div class="ctl-row" style="margin-top:10px;">
+        <button id="route-start" class="primary small">Start</button>
+        <button id="route-pause" class="small">Pause</button>
+        <button id="route-reset" class="small">Reset</button>
+        <span id="route-progress" class="hint">No active route.</span>
+      </div>
+      <p class="hint mode-note" style="margin:6px 0 0;display:none;">Switch to Simulate mode to drive own-ship along a route.</p>
+      <p class="hint" style="margin:6px 0 0;">
+        Enabled + waypoints + speed persist via Save as defaults (needs Simulate mode, movement
+        underway, ≥ 2 waypoints). Start / Pause / Reset control the live cursor after the engine starts.
+      </p>
+    </div>
+
+    <div class="card" id="cfg-fault-card">
+      <h2>Fault injection <span class="hint">(simulate mode · testing tool)</span></h2>
+      <div class="warnbox" style="margin-bottom:10px;">
+        Simulate-only bench testing tool. Injects GPS faults into the running engine to exercise
+        no-fix / degraded-fix handling. Refused (409) outside Simulate mode.
+      </div>
+      <div class="ctl-row" style="align-items:flex-end;">
+        <button id="fault-no_fix" class="small">No fix</button>
+        <button id="fault-restore_fix" class="small">Restore fix</button>
+        <div class="field"><label for="fault-hdop-val">HDOP (0–99)</label><input id="fault-hdop-val" type="number" step="any" value="20"></div>
+        <button id="fault-hdop_spike" class="small">HDOP spike</button>
+        <div class="field"><label for="fault-sats-val">Satellites (0–64)</label><input id="fault-sats-val" type="number" step="any" value="2"></div>
+        <button id="fault-drop_sats" class="small">Drop sats</button>
+        <button id="fault-gps_kill" class="danger small">GPS kill</button>
+        <button id="fault-gps_restore" class="small">GPS restore</button>
+        <span id="fault-msg" class="msg"></span>
+      </div>
+      <p class="hint mode-note" style="margin:8px 0 0;display:none;">Switch to Simulate mode to inject GPS faults.</p>
+    </div>
+  </div>
+
+  <!-- A2: per-section value editors, one card per Conning section. app.js builds the
+       wire-backed data-field inputs into each grp-* container; index.html owns the card
+       scaffolding, per-card Apply/Save/msg, the display-only override inputs, the time
+       controls and the depth-sim toggle. -->
+  <div class="cfg-editors">
+    <div class="ctl-row" style="margin:4px 12px 8px;align-items:center;">
+      <h2 class="editors-head">Value editors</h2>
+      <span class="hint">Apply pushes a card's editable fields to the running engine; Save persists them as start-up defaults.</span>
+      <span class="spacer" style="flex:1"></span>
+      <span id="cfg-msg" class="msg"></span>
+      <button id="cfg-load" class="small">Load current</button>
+      <button id="cfg-save" class="small">Save mode / channels / route / replay / AIS defaults</button>
+    </div>
+
+    <!-- Coordinates -->
+    <div class="card">
+      <h2>Coordinates</h2>
+      <div class="ctl-row" id="grp-coordinates"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-coordinates" class="primary small">Apply (live)</button>
+        <button id="cfg-save-coordinates" class="small">Save as defaults</button>
+        <span id="cfg-msg-coordinates" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: GGA, RMC, GLL.</p>
+    </div>
+
+    <!-- Heading & Motion -->
+    <div class="card">
+      <h2>Heading &amp; Motion</h2>
+      <div class="ctl-row" id="grp-heading-motion"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-heading-motion" class="primary small">Apply (live)</button>
+        <button id="cfg-save-heading-motion" class="small">Save as defaults</button>
+        <span id="cfg-msg-heading-motion" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: HDT, THS, HDM, HDG, RMC, VTG, ROT, VHW.</p>
+    </div>
+
+    <!-- Environment (+ display-only readouts) -->
+    <div class="card">
+      <h2>Environment</h2>
+      <div class="ctl-row" id="grp-environment"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-environment" class="primary small">Apply (live)</button>
+        <button id="cfg-save-environment" class="small">Save as defaults</button>
+        <span id="cfg-msg-environment" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: MWV, MWD (wind); sea state drives motion.</p>
+
+      <h3>Display-only readouts</h3>
+      <div class="ctl-row">
+        <div class="field"><label for="cfg-water_temp_c">Water temp (°C)</label><input id="cfg-water_temp_c" data-override="water_temp_c" type="number" step="any"></div>
+        <div class="field"><label for="cfg-air_temp_c">Air temp (°C)</label><input id="cfg-air_temp_c" data-override="air_temp_c" type="number" step="any"></div>
+        <div class="field"><label for="cfg-humidity_pct">Humidity (%)</label><input id="cfg-humidity_pct" data-override="humidity_pct" type="number" step="any"></div>
+        <div class="field"><label for="cfg-pressure_hpa">Pressure (hPa)</label><input id="cfg-pressure_hpa" data-override="pressure_hpa" type="number" step="any"></div>
+      </div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-override-apply" class="small">Apply overrides</button>
+        <button id="cfg-override-clear" class="small">Clear overrides</button>
+      </div>
+      <p class="hint display-only-note">Display-only — not emitted on NMEA. Apply / Clear also covers the fuel readouts on the Ship / Helm card.</p>
+    </div>
+
+    <!-- Depth (+ depth-sim toggle) -->
+    <div class="card">
+      <h2>Depth</h2>
+      <div class="ctl-row" id="grp-depth"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-depth" class="primary small">Apply (live)</button>
+        <button id="cfg-save-depth" class="small">Save as defaults</button>
+        <span id="cfg-msg-depth" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: DPT, DBT.</p>
+
+      <h3>Depth simulation</h3>
+      <div class="ctl-row" style="align-items:center;">
+        <label class="switch"><input type="checkbox" id="cfg-depth_sim-enabled"> Enable depth sim (engine drives depth each tick)</label>
+        <div class="field"><label for="cfg-depth-alert">Shallow alert (m)</label><input id="cfg-depth-alert" type="number" step="any"></div>
+      </div>
+      <p class="hint">Depth sim persists with Save as defaults and applies on next Start (when on, manual depth edits will not stick). Shallow alert is a client-side threshold stored in this browser.</p>
+    </div>
+
+    <!-- Ship / Helm (+ fuel display-only readouts) -->
+    <div class="card">
+      <h2>Ship / Helm</h2>
+      <div class="ctl-row" id="grp-ship-helm"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-ship-helm" class="primary small">Apply (live)</button>
+        <button id="cfg-save-ship-helm" class="small">Save as defaults</button>
+        <span id="cfg-msg-ship-helm" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: RSA (rudder).</p>
+
+      <h3>Display-only readouts</h3>
+      <div class="ctl-row">
+        <div class="field"><label for="cfg-fuel_total_l">Fuel total (L)</label><input id="cfg-fuel_total_l" data-override="fuel_total_l" type="number" step="any"></div>
+        <div class="field"><label for="cfg-fuel_rate_lph">Fuel rate (L/h)</label><input id="cfg-fuel_rate_lph" data-override="fuel_rate_lph" type="number" step="any"></div>
+      </div>
+      <p class="hint display-only-note">Display-only — not emitted on NMEA. Use Apply / Clear overrides in the Environment card.</p>
+    </div>
+
+    <!-- Current -->
+    <div class="card">
+      <h2>Current</h2>
+      <div class="ctl-row" id="grp-current"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-current" class="primary small">Apply (live)</button>
+        <button id="cfg-save-current" class="small">Save as defaults</button>
+        <span id="cfg-msg-current" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: VDR (set &amp; drift).</p>
+    </div>
+
+    <!-- GNSS -->
+    <div class="card">
+      <h2>GNSS</h2>
+      <div class="ctl-row" id="grp-gnss"></div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-gnss" class="primary small">Apply (live)</button>
+        <button id="cfg-save-gnss" class="small">Save as defaults</button>
+        <span id="cfg-msg-gnss" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA: GGA (altitude, fix quality, satellites, HDOP).</p>
+    </div>
+
+    <!-- Time (A5) -->
+    <div class="card">
+      <h2>Time</h2>
+      <div class="ctl-row" id="grp-time"></div>
+      <div class="ctl-row">
+        <div class="field">
+          <label for="cfg-time_source_mode">Time source mode</label>
+          <select id="cfg-time_source_mode">
+            <option value="system_utc">System UTC</option>
+            <option value="simulated">Simulated</option>
+            <option value="hold">Hold</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1;min-width:220px;"><label for="cfg-time_source_epoch">Epoch (ISO 8601)</label><input id="cfg-time_source_epoch" type="text" style="width:100%;" placeholder="2026-01-01T00:00:00Z"></div>
+        <div class="field"><label for="cfg-time_source_rate">Rate ×</label><input id="cfg-time_source_rate" type="number" step="any"></div>
+      </div>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-apply-time" class="primary small">Apply (live)</button>
+        <button id="cfg-save-time" class="small">Save as defaults</button>
+        <span id="cfg-msg-time" class="msg"></span>
+      </div>
+      <p class="hint drives-note">Drives NMEA timestamps: ZDA, RMC, GGA. Epoch is required when mode is Simulated; changes apply on next Start.</p>
+    </div>
   </div>
 
   <div class="card">
@@ -496,56 +681,6 @@
       region-neutral profile. Target count overrides the profile's own count when set. Persists via
       Save as defaults (applies on next Start).
     </p>
-  </div>
-
-  <div class="card" id="cfg-route-card">
-    <h2>Route playback <span class="hint">(simulate mode)</span></h2>
-    <div class="ctl-row" style="align-items:flex-start;">
-      <div class="field" style="flex:1;min-width:240px;">
-        <label for="cfg-route-wpts">Waypoints — one "lat, lon" per line (≥ 2)</label>
-        <textarea id="cfg-route-wpts" rows="4" style="width:100%;" placeholder="0.000, 0.000&#10;0.000, 0.000"></textarea>
-      </div>
-      <div class="field"><label for="cfg-route-speed">Speed (kn)</label><input id="cfg-route-speed" type="number" step="any"></div>
-      <label class="switch"><input type="checkbox" id="cfg-route-enabled"> Enabled</label>
-      <label class="switch"><input type="checkbox" id="cfg-route-loop"> Loop</label>
-    </div>
-    <div class="ctl-row" style="margin-top:10px;">
-      <button id="route-start" class="primary small">Start</button>
-      <button id="route-pause" class="small">Pause</button>
-      <button id="route-reset" class="small">Reset</button>
-      <span id="route-progress" class="hint">No active route.</span>
-    </div>
-    <p class="hint mode-note" style="margin:6px 0 0;display:none;">Switch to Simulate mode to drive own-ship along a route.</p>
-    <p class="hint" style="margin:6px 0 0;">
-      Enabled + waypoints + speed persist via Save as defaults (needs Simulate mode, movement
-      underway, ≥ 2 waypoints). Start / Pause / Reset control the live cursor after the engine starts.
-    </p>
-  </div>
-
-  <div class="card" id="cfg-fault-card">
-    <h2>Fault injection <span class="hint">(simulate mode · testing tool)</span></h2>
-    <div class="warnbox" style="margin-bottom:10px;">
-      Simulate-only bench testing tool. Injects GPS faults into the running engine to exercise
-      no-fix / degraded-fix handling. Refused (409) outside Simulate mode.
-    </div>
-    <div class="ctl-row" style="align-items:flex-end;">
-      <button id="fault-no_fix" class="small">No fix</button>
-      <button id="fault-restore_fix" class="small">Restore fix</button>
-      <div class="field"><label for="fault-hdop-val">HDOP (0–99)</label><input id="fault-hdop-val" type="number" step="any" value="20"></div>
-      <button id="fault-hdop_spike" class="small">HDOP spike</button>
-      <div class="field"><label for="fault-sats-val">Satellites (0–64)</label><input id="fault-sats-val" type="number" step="any" value="2"></div>
-      <button id="fault-drop_sats" class="small">Drop sats</button>
-      <button id="fault-gps_kill" class="danger small">GPS kill</button>
-      <button id="fault-gps_restore" class="small">GPS restore</button>
-      <span id="fault-msg" class="msg"></span>
-    </div>
-    <p class="hint mode-note" style="margin:8px 0 0;display:none;">Switch to Simulate mode to inject GPS faults.</p>
-  </div>
-
-  <div class="card" id="cfg-inputs-card">
-    <h2>Input Assignment <span class="hint">(Auto mode)</span></h2>
-    <div id="cfg-inputs" class="ctl-row" style="gap:16px;"></div>
-    <p class="hint" id="cfg-inputs-note" style="margin-top:8px;">Switch to Auto mode to assign provisioned input slots.</p>
   </div>
 </section>
 
@@ -651,6 +786,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=37"></script>
+<script src="/static/app.js?v=38"></script>
 </body>
 </html>

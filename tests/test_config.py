@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import pytest
 
 from nmea_sim.config import (
     ChannelSpec,
+    DepthSimSpec,
+    DisplayOverridesSpec,
     EmitSpec,
     EngineConfig,
     InputSpec,
@@ -459,3 +462,128 @@ def test_epoch_datetime_parses_and_defaults() -> None:
     cfg = EngineConfig(time_source=TimeSourceSpec(mode="simulated", epoch="2024-06-21T12:00:00"))
     dt = cfg.epoch_datetime()
     assert dt is not None and dt.tzinfo is not None
+
+
+# --- Phase A: display_overrides + depth_sim config blocks ---------------------------
+
+
+def _baseline_raw() -> dict[str, object]:
+    """The tracked baseline config as a mutable raw dict (a valid config to graft blocks onto)."""
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def test_display_overrides_spec_emits_only_set_keys() -> None:
+    """``to_dict`` emits ONLY the non-None keys, so a block that overrode nothing round-trips as
+    ``{}`` and the manager can seed a clean ``dict[str, float]`` (no None values)."""
+    spec = DisplayOverridesSpec.from_dict({"water_temp_c": 21.5, "fuel_total_l": 1234.0})
+    assert spec.to_dict() == {"water_temp_c": 21.5, "fuel_total_l": 1234.0}
+    assert DisplayOverridesSpec.from_dict({}).to_dict() == {}
+    # Round-trips through from_dict/to_dict unchanged.
+    assert DisplayOverridesSpec.from_dict(spec.to_dict()) == spec
+
+
+def test_display_overrides_round_trips_through_engine_config() -> None:
+    raw = _baseline_raw()
+    raw["display_overrides"] = {"water_temp_c": 21.5, "fuel_total_l": 1234.0}
+    cfg = EngineConfig.from_dict(raw)
+    assert cfg.display_overrides is not None
+    assert cfg.display_overrides.water_temp_c == pytest.approx(21.5)
+    assert cfg.display_overrides.air_temp_c is None  # untouched key stays auto
+    restored = EngineConfig.from_dict(cfg.to_dict())
+    assert restored.to_dict()["display_overrides"] == {
+        "water_temp_c": 21.5,
+        "fuel_total_l": 1234.0,
+    }
+
+
+def test_depth_sim_round_trips_through_engine_config() -> None:
+    raw = _baseline_raw()
+    raw["depth_sim"] = {"enabled": True, "base_depth_m": 42.0}
+    cfg = EngineConfig.from_dict(raw)
+    assert cfg.depth_sim is not None
+    assert cfg.depth_sim.enabled is True
+    assert cfg.depth_sim.base_depth_m == pytest.approx(42.0)
+    emitted = cfg.to_dict()["depth_sim"]
+    # to_dict emits all 9 keys (defaults filled), and the round-trip is stable.
+    assert set(emitted) == {
+        "enabled",
+        "base_depth_m",
+        "drift_amp_m",
+        "drift_period_s",
+        "shoal_amp_m",
+        "shoal_period_s",
+        "ripple_amp_m",
+        "ripple_period_s",
+        "min_depth_m",
+    }
+    assert EngineConfig.from_dict(cfg.to_dict()).to_dict()["depth_sim"] == emitted
+
+
+def test_config_without_new_blocks_round_trips_byte_identically() -> None:
+    """A config that opted into neither block emits neither key and round-trips unchanged (no
+    noise for configs that never set them)."""
+    cfg = EngineConfig.from_dict(_baseline_raw())
+    as_dict = cfg.to_dict()
+    assert "display_overrides" not in as_dict
+    assert "depth_sim" not in as_dict
+    assert EngineConfig.from_dict(as_dict).to_dict() == as_dict
+
+
+def test_unknown_top_level_key_still_raises() -> None:
+    raw = _baseline_raw()
+    raw["not_a_real_block"] = {"x": 1}
+    with pytest.raises(ValueError):
+        EngineConfig.from_dict(raw)
+
+
+def test_new_blocks_survive_save_and_load(tmp_path: Path) -> None:
+    raw = _baseline_raw()
+    raw["display_overrides"] = {"air_temp_c": 18.0}
+    raw["depth_sim"] = {"enabled": True, "base_depth_m": 30.0, "min_depth_m": 2.0}
+    cfg = EngineConfig.from_dict(raw)
+    dest = tmp_path / "config.json"
+    cfg.save(dest)
+    reloaded = EngineConfig.load(dest)
+    assert reloaded.display_overrides is not None
+    assert reloaded.display_overrides.air_temp_c == pytest.approx(18.0)
+    assert reloaded.depth_sim is not None
+    assert reloaded.depth_sim.enabled is True
+    assert reloaded.depth_sim.min_depth_m == pytest.approx(2.0)
+    assert reloaded.to_dict() == cfg.to_dict()
+
+
+def test_altitude_m_is_unbounded_and_validates() -> None:
+    """``altitude_m`` is in ``_STATE_RANGES`` as ``(None, None)`` -- a below-sea-level value is
+    legal and validates cleanly (the baseline otherwise validates to no errors)."""
+    raw = _baseline_raw()
+    raw.setdefault("initial_state", {})
+    assert isinstance(raw["initial_state"], dict)
+    raw["initial_state"]["altitude_m"] = -1234.0
+    assert validate(EngineConfig.from_dict(raw)) == []
+
+
+def test_depth_sim_bad_period_fails_validation() -> None:
+    raw = _baseline_raw()
+    raw["depth_sim"] = {"enabled": True, "drift_period_s": 0.0}
+    errors = validate(EngineConfig.from_dict(raw))
+    assert any("depth_sim.drift_period_s" in e for e in errors)
+
+
+def test_depth_sim_bad_amplitude_fails_validation() -> None:
+    raw = _baseline_raw()
+    raw["depth_sim"] = {"enabled": True, "shoal_amp_m": -5.0}
+    errors = validate(EngineConfig.from_dict(raw))
+    assert any("depth_sim.shoal_amp_m" in e for e in errors)
+
+
+def test_depth_sim_default_block_validates_clean() -> None:
+    raw = _baseline_raw()
+    raw["depth_sim"] = {"enabled": True}
+    assert [e for e in validate(EngineConfig.from_dict(raw)) if "depth_sim" in e] == []
+
+
+def test_depth_sim_spec_defaults_match_contract() -> None:
+    spec = DepthSimSpec()
+    assert spec.enabled is False
+    assert spec.base_depth_m == pytest.approx(50.0)
+    assert spec.min_depth_m == pytest.approx(0.0)
