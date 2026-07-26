@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=35">
+<link rel="stylesheet" href="/static/app.css?v=36">
 </head>
 <body>
 
@@ -69,8 +69,8 @@
       <!-- heading tape: POC-style linear scale, big centred heading, scrolls as she turns -->
       <svg id="heading-tape" viewBox="0 0 700 200" aria-label="heading">
         <rect x="0.5" y="0.5" width="699" height="199" rx="6" fill="url(#faceGrad)" stroke="#1c2530"/>
-        <text id="heading-big" x="328" y="54" fill="#f2f6fa" font-size="56" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
-        <text x="388" y="50" fill="#8792a0" font-size="16" font-family="Segoe UI, system-ui, sans-serif" text-anchor="start">deg</text>
+        <text id="heading-big" x="350" y="54" fill="#f2f6fa" font-size="56" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
+        <text x="402" y="50" fill="#8792a0" font-size="16" font-family="Segoe UI, system-ui, sans-serif" text-anchor="start">deg</text>
         <clipPath id="htClip"><rect x="6" y="74" width="688" height="124"/></clipPath>
         <g clip-path="url(#htClip)"><g id="hdg-arc"></g></g>
         <polygon points="350,90 342,74 358,74" fill="#00e07a"/>
@@ -303,20 +303,20 @@
               <g id="incl-pitch-scale"></g>
               <rect x="8" y="66" width="144" height="72" fill="url(#seaGrad)" fill-opacity="0.92"/>
               <g id="incl-pitch-glyph">
-                <!-- container-ship side profile: grey topsides + raked bow (right) -->
-                <path d="M34,58 L114,58 L127,55 L125,67 L34,67 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.7"/>
-                <!-- dark-red antifouling band low on the hull (below waterline y67) -->
-                <path d="M34,67 L125,67 L123,73 Q120,75 112,75 L44,75 Q36,75 34,71 Z" fill="#8f201a" stroke="#560f0b" stroke-width="0.7"/>
+                <!-- container-ship side profile: grey topsides + raked bow (right) — scaled ~0.72 -->
+                <path d="M46.9,59.1 L104.5,59.1 L113.8,57.0 L112.4,65.6 L46.9,65.6 Z" fill="#c3ccd4" stroke="#6b7580" stroke-width="0.6"/>
+                <!-- dark-red antifouling band low on the hull (below waterline) -->
+                <path d="M46.9,65.6 L112.4,65.6 L111.0,69.9 Q108.8,71.4 103.0,71.4 L54.1,71.4 Q48.3,71.4 46.9,68.5 Z" fill="#8f201a" stroke="#560f0b" stroke-width="0.6"/>
                 <!-- aft accommodation block + funnel -->
-                <path d="M40,58 L40,48 L54,48 L54,58 Z" fill="#dfe4e8" stroke="#8b95a3" stroke-width="0.7"/>
-                <path d="M45,48 L45,43 L50,43 L50,48 Z" fill="#c3ccd4" stroke="#8b95a3" stroke-width="0.7"/>
-                <line x1="112" y1="58" x2="112" y2="50" stroke="#c3ccd4" stroke-width="0.9"/>
+                <path d="M51.2,59.1 L51.2,51.9 L61.3,51.9 L61.3,59.1 Z" fill="#dfe4e8" stroke="#8b95a3" stroke-width="0.6"/>
+                <path d="M54.8,51.9 L54.8,48.3 L58.4,48.3 L58.4,51.9 Z" fill="#c3ccd4" stroke="#8b95a3" stroke-width="0.6"/>
+                <line x1="103.0" y1="59.1" x2="103.0" y2="53.4" stroke="#c3ccd4" stroke-width="0.8"/>
               </g>
               <ellipse cx="80" cy="42" rx="42" ry="24" fill="url(#glassGrad)"/>
               <line x1="80" y1="16" x2="80" y2="116" stroke="#ff3b30" stroke-width="1" stroke-opacity="0.55"/>
             </g>
-            <text x="20" y="106" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">STN</text>
-            <text x="140" y="106" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="end">BOW</text>
+            <text x="14" y="116" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700">STN</text>
+            <text x="146" y="116" fill="#8792a0" font-size="9" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="end">BOW</text>
           </svg>
         </div>
         <div class="incl-dial">
@@ -651,6 +651,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=35"></script>
+<script src="/static/app.js?v=36"></script>
 </body>
 </html>

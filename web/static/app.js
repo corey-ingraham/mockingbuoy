@@ -365,7 +365,7 @@
         const lp = pt(a, R + 16);
         const t = document.createElementNS(NS, "text");
         t.setAttribute("x", lp[0].toFixed(1)); t.setAttribute("y", (lp[1] + 3).toFixed(1));
-        t.setAttribute("fill", "#8792a0"); t.setAttribute("font-size", "11");
+        t.setAttribute("fill", "#8792a0"); t.setAttribute("font-size", "9");
         t.setAttribute("font-family", "Segoe UI, system-ui, sans-serif"); t.setAttribute("text-anchor", "middle");
         t.textContent = String(Math.abs(a));
         g.appendChild(t);
@@ -773,7 +773,7 @@
     // organic ocean-surface profile (two combined waves); drawn as a white line below, over the water fill
     const surfY = (xx) => y0 + Math.sin((xx - x0) / 9) * 1.7 + Math.sin((xx - x0) / 4.2) * 0.9;
     // small shadowed side-view ship (pitch-gauge silhouette family) sitting ON the surface, top-right
-    const sx = x1 - 34, sy = surfY(x1 - 34);
+    const sx = x1 - 34, sy = surfY(x1 - 34) - 3; // lift so the hull rides higher on the surface
     const ship = mk("path");
     ship.setAttribute("d",
       // container-ship side profile (shadow): long low hull, raked bow (right), transom stern (left)
