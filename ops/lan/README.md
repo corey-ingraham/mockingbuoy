@@ -32,8 +32,14 @@ and the raw-IP Caddy alias both point here; if it moves, everything breaks.
 
 ```bash
 sudo cp ops/lan/conf.d/netbox.caddy.example /etc/caddy/conf.d/netbox.caddy   # then edit the upstream port
-sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl restart caddy
+sudo /opt/mockingbuoy/ops/bin/caddy-validate && sudo systemctl restart caddy
 ```
+
+> Use `ops/bin/caddy-validate`, NOT a bare `caddy validate`. mockingbuoy.caddy references
+> `{$MOCKINGBUOY_BASIC_HASH}` etc., which only exist in caddy.service's environment (from
+> `secrets/service.env`); a plain-shell `caddy validate` sees them empty and fails with a misleading
+> `basic_auth: username and password cannot be empty` error even when the config is fine. The helper
+> injects that environment the same way the service does.
 
 **Publish every fronted container on the loopback only** (`ports: ["127.0.0.1:8080:8080"]`) — Docker's port
 rules bypass UFW, so a `0.0.0.0` publish exposes the app's plain-HTTP port straight to the LAN. Only DNS `:53`
@@ -92,6 +98,6 @@ nslookup mockingbuoy.eemslab.internal      # -> BOX_IP
 # browser: https://mockingbuoy.eemslab.internal  (padlock after CA trust; basic-auth prompt)
 #          https://netbox.eemslab.internal
 #          https://<box-ip>/                (always works — the raw-IP fallback)
-# on the box:
-sudo caddy validate --config /etc/caddy/Caddyfile
+# on the box (injects caddy.service's env; a bare `caddy validate` falsely fails on the empty hash):
+sudo /opt/mockingbuoy/ops/bin/caddy-validate
 ```

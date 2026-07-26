@@ -1,7 +1,9 @@
 # Example additional site — /etc/caddy/conf.d/netbox.caddy
 #
 # Copy to /etc/caddy/conf.d/netbox.caddy (drop the .example suffix), edit the upstream port, then
-# `sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl restart caddy`.
+# `sudo /opt/mockingbuoy/ops/bin/caddy-validate && sudo systemctl restart caddy`.
+# (Use caddy-validate, NOT a bare `caddy validate`: mockingbuoy.caddy needs caddy.service's env —
+#  from secrets/service.env — or validation falsely fails on the empty basic_auth hash.)
 #
 # This is how EVERY extra service coexists with mockingbuoy: one snippet per site, each at its own
 # subdomain. The DNS wildcard (*.eemslab.internal -> box IP, see ops/lan/README.md) resolves the name;

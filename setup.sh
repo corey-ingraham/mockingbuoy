@@ -388,6 +388,9 @@ install -m 0644 "${APP_DIR}/ops/systemd/mockingbuoy-webpass.path" \
 install -m 0644 "${APP_DIR}/ops/systemd/mockingbuoy-webpass.service" \
     /etc/systemd/system/mockingbuoy-webpass.service
 chmod 0755 "${APP_DIR}/ops/bin/rotate-webpass"
+# caddy-validate: operator helper to validate the shared Caddy config with caddy.service's env
+# injected (a bare `caddy validate` falsely fails on mockingbuoy.caddy's env-sourced basic_auth).
+chmod 0755 "${APP_DIR}/ops/bin/caddy-validate" 2>/dev/null || true
 
 # The app binds a unix socket at /run/mockingbuoy/app.sock (created by the unit's
 # RuntimeDirectory=mockingbuoy, group-accessible via UMask=0007). Caddy reverse-proxies
@@ -452,7 +455,7 @@ else
         rm -f "${CADDY_SNIPPET}"
     fi
     unset _val_hash
-    die "combined Caddy config validation FAILED — rolled back mockingbuoy.caddy, refusing to restart. Inspect: caddy validate --config ${CADDY_MAIN} --adapter caddyfile"
+    die "combined Caddy config validation FAILED — rolled back mockingbuoy.caddy, refusing to restart. Inspect: sudo ${APP_DIR}/ops/bin/caddy-validate (injects the service env; a bare 'caddy validate' falsely fails on the empty basic_auth hash)"
 fi
 unset _val_hash
 

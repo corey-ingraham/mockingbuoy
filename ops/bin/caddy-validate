@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# caddy-validate — validate the SHARED Caddy config the way the systemd service runs it.
+#
+# Why this exists: a bare `caddy validate --config /etc/caddy/Caddyfile` FAILS on this box with
+#   parsing caddyfile tokens for 'basic_auth': username and password cannot be empty or missing
+# because mockingbuoy.caddy references {$MOCKINGBUOY_BASIC_USER}/{$MOCKINGBUOY_BASIC_HASH} (and
+# {$MOCKINGBUOY_SITE} ...). Those live in secrets/service.env and are injected into caddy ONLY by
+# the systemd drop-in's EnvironmentFile — a plain shell has none of them, so they expand empty and
+# validation aborts. That is a false alarm about the VALIDATION context, not the config: the running
+# (systemd) caddy is fine.
+#
+# This helper injects the same environment caddy.service gets — reading each key as RAW data (it
+# NEVER sources service.env; bash would expand the $-delimited bcrypt hash and validate a corrupted
+# value) — so `validate` reflects exactly what caddy actually runs. Run it with sudo (service.env is
+# root-only 0600). Overridable via env: MOCKINGBUOY_SVC_ENV, MOCKINGBUOY_CADDYFILE.
+set -euo pipefail
+
+SVC_ENV="${MOCKINGBUOY_SVC_ENV:-/opt/mockingbuoy/secrets/service.env}"
+CADDYFILE="${MOCKINGBUOY_CADDYFILE:-/etc/caddy/Caddyfile}"
+CADDY="$(command -v caddy || echo /usr/bin/caddy)"
+
+if [ ! -r "${SVC_ENV}" ]; then
+    echo "caddy-validate: cannot read ${SVC_ENV} (run with sudo)" >&2
+    exit 1
+fi
+
+# Build the env injection from every MOCKINGBUOY_* key. `read` does not perform expansion, so the
+# hash's $ segments survive verbatim; each value is stored in an array element passed to `env` and
+# is never re-parsed by the shell. The hash is a bcrypt HASH (not plaintext) and only appears
+# transiently in this validate process's argv — the same pattern setup.sh / rotate-webpass use.
+env_args=()
+while IFS='=' read -r key val; do
+    [ -n "${key}" ] || continue
+    val="${val%\"}"; val="${val#\"}"   # strip a single pair of surrounding quotes
+    env_args+=("${key}=${val}")
+done < <(grep -E '^MOCKINGBUOY_[A-Z0-9_]+=' "${SVC_ENV}")
+
+exec env "${env_args[@]}" "${CADDY}" validate --config "${CADDYFILE}" --adapter caddyfile
