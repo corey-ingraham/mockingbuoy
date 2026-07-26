@@ -293,8 +293,12 @@ fi
 # --------------------------------------------------------------------------- #
 # 6. Secrets: on-device web password/hash (0600, git-ignored)                 #
 # --------------------------------------------------------------------------- #
+# secrets/ is ROOT-owned 0700: systemd reads EnvironmentFile as root PRE-drop, so the app (which
+# reads only os.environ) needs no access. Root ownership kills the app-owned-dir symlink/TOCTOU
+# vector on the file the root path-unit rewrites.
+install -d -m 0700 -o root -g root "$(dirname "${SVC_ENV}")"
 touch "${SVC_ENV}"
-chown "${APP_USER}:${APP_GROUP}" "${SVC_ENV}"
+chown root:root "${SVC_ENV}"
 chmod 0600 "${SVC_ENV}"
 
 # Upsert the NON-secret keys (never touches the bcrypt hash line). Delete-then-append so
@@ -331,7 +335,7 @@ else
     # Append the hash to the file (never echoed to the terminal/journal).
     printf 'MOCKINGBUOY_BASIC_HASH="%s"\n' "${_hash}" >> "${SVC_ENV}"
     chmod 0600 "${SVC_ENV}"
-    chown "${APP_USER}:${APP_GROUP}" "${SVC_ENV}"
+    chown root:root "${SVC_ENV}"
     unset _hash
     PW_JUST_GENERATED="true"
     printf '\n'
@@ -354,6 +358,15 @@ install -m 0644 "${APP_DIR}/ops/caddy.service.d/override.conf" \
     /etc/systemd/system/caddy.service.d/override.conf
 install -m 0644 "${APP_DIR}/ops/mockingbuoy-backup.service" /etc/systemd/system/mockingbuoy-backup.service
 install -m 0644 "${APP_DIR}/ops/mockingbuoy-backup.timer"   /etc/systemd/system/mockingbuoy-backup.timer
+
+# In-app web-password rotation: a root path-unit watches data/webpass-request.json (the only file
+# the sandboxed app can write) and runs ops/bin/rotate-webpass to do the privileged rewrite +
+# caddy restart the app itself cannot.
+install -m 0644 "${APP_DIR}/ops/systemd/mockingbuoy-webpass.path" \
+    /etc/systemd/system/mockingbuoy-webpass.path
+install -m 0644 "${APP_DIR}/ops/systemd/mockingbuoy-webpass.service" \
+    /etc/systemd/system/mockingbuoy-webpass.service
+chmod 0755 "${APP_DIR}/ops/bin/rotate-webpass"
 
 # The app binds a unix socket at /run/mockingbuoy/app.sock (created by the unit's
 # RuntimeDirectory=mockingbuoy, group-accessible via UMask=0007). Caddy reverse-proxies
@@ -390,6 +403,8 @@ unset _val_hash
 
 log "enabling + (re)starting services ..."
 systemctl enable mockingbuoy.service caddy >/dev/null 2>&1 || true
+# Start watching for in-app web-password rotation requests (root path-unit).
+systemctl enable --now mockingbuoy-webpass.path >/dev/null 2>&1 || true
 systemctl restart mockingbuoy.service
 systemctl restart caddy
 

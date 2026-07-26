@@ -1937,6 +1937,8 @@
     return t;
   }
   function renderSecurity(d) {
+    const banner = $("sec-default-banner");
+    if (banner) banner.style.display = d.password_is_default ? "" : "none";
     const tbl = $("sec-table"); tbl.textContent = "";
     const row = (k, node) => {
       const tr = document.createElement("tr");
@@ -1971,6 +1973,46 @@
       tr.appendChild(td); t.appendChild(tr);
     }
     tapsWrap.appendChild(t);
+  }
+
+  // --- Change-web-password card + first-login banner (wired ONCE at init, not per poll) ----------
+  function setPwStatus(t) { const s = $("sec-pw-status"); if (s) s.textContent = t; }
+
+  async function submitPwChange() {
+    const pw = $("sec-pw-new").value, cf = $("sec-pw-confirm").value;
+    if (pw.length < 12) { setPwStatus("Minimum 12 characters."); return; }
+    if (pw !== cf)      { setPwStatus("Passwords do not match."); return; }
+    setPwStatus("Applying…");
+    const CHANGING = "Password changing — you'll be asked to sign in again with the new password in a few seconds.";
+    try {
+      const r = await postJson("/api/security/rotate-password", { new_password: pw });
+      if (r.data && r.data.status === "failure") setPwStatus("Change failed: " + (r.data.detail || "unknown"));
+      else setPwStatus(CHANGING);           // ok OR pending: caddy is bouncing; browser will re-prompt
+    } catch (e) {
+      setPwStatus(CHANGING);                // connection dropped by the caddy restart == success path
+    } finally {
+      $("sec-pw-new").value = ""; $("sec-pw-confirm").value = "";   // never keep plaintext in the DOM
+    }
+  }
+
+  {
+    const bChange = $("sec-banner-change");
+    if (bChange) bChange.addEventListener("click", () => {
+      $("sec-pw-card").scrollIntoView({ behavior: "smooth" });
+      $("sec-pw-new").focus();
+    });
+    const bDismiss = $("sec-banner-dismiss");
+    if (bDismiss) bDismiss.addEventListener("click", async () => {
+      try {
+        const r = await postJson("/api/security/dismiss-default-prompt", {});
+        if (r.data && r.data.status === "ok") {
+          const banner = $("sec-default-banner"); if (banner) banner.style.display = "none";
+          pollSecurity();
+        }
+      } catch (e) { /* leave banner in place on failure */ }
+    });
+    const submit = $("sec-pw-submit");
+    if (submit) submit.addEventListener("click", submitPwChange);
   }
 
   /* =====================================================================

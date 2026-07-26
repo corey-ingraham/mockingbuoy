@@ -27,6 +27,8 @@ import logging
 import math
 import os
 import secrets
+import shutil
+import subprocess
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -95,6 +97,17 @@ _DIAG_COOLDOWN_S = 5.0
 #: Where diagnostics captures are written — the sole writable path (``data/``, git-ignored). Every
 #: capture filename is SERVER-generated under here (R18); a caller can never supply a path.
 _DIAG_DATA_DIR = "data"
+
+#: In-app web-password rotation files, all under the app's one writable dir (``data/``). The app
+#: (sandboxed, cannot write ``secrets/`` or restart caddy) drops a hash+nonce REQUEST here; a ROOT
+#: systemd path-unit performs the privileged rewrite + caddy restart and writes back a RESULT the
+#: app polls. Only a bcrypt HASH ever touches disk — never plaintext (Global CLAUDE.md §9).
+_WEBPASS_REQUEST = "webpass-request.json"  # app -> root, in data/, mode 0600, hash-only
+_WEBPASS_RESULT = "webpass-result.json"  # root -> app, in data/, written by the root unit
+_WEBPASS_MARKER = ".webpass_changed"  # app-written marker; existence => password changed
+_WEBPASS_MIN_LEN = 12  # length policy for a new web password
+_WEBPASS_POLL_TIMEOUT_S = 15.0  # app bound waiting for the root unit's result
+_WEBPASS_POLL_INTERVAL_S = 0.5  # result-file poll cadence
 
 #: At most this many raw captures may run at once (web-layer cap; per-file byte + wall-clock caps
 #: live in ``CaptureSession``, the total-``data/`` quota is checked below).
@@ -441,6 +454,66 @@ def _resolve_profile_basename(name: str) -> str:
     raise HTTPException(status_code=400, detail=f"unknown profile: {name!r}")
 
 
+# --- in-app web-password rotation (hash-only; plaintext never persisted) -----------
+
+
+def _caddy_hash(plaintext: str) -> str:
+    """Produce a bcrypt hash for ``plaintext`` by shelling to caddy, feeding the plaintext on STDIN
+    (never argv). No new Python dependency. The plaintext is used only here and never logged; caddy
+    stderr is NOT surfaced (it could, in principle, echo input) — errors are raised generically."""
+    caddy = shutil.which("caddy") or "/usr/bin/caddy"
+    proc = subprocess.run(
+        [caddy, "hash-password", "--algorithm", "bcrypt"],
+        input=(plaintext + "\n").encode(),  # caddy needs a newline-TERMINATED line (else EOF abort)
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("caddy hash-password failed")  # no plaintext, no stderr in the message
+    out = proc.stdout.decode().strip()
+    if not out.startswith(("$2a$", "$2b$", "$2y$")):
+        raise RuntimeError("unexpected hash format")
+    return out
+
+
+def _write_webpass_request(record: dict[str, Any]) -> None:
+    """Atomically write ``data/webpass-request.json`` (hash+nonce+ts; NO plaintext) at 0600."""
+    path = Path(_DIAG_DATA_DIR) / _WEBPASS_REQUEST
+    tmp = path.with_suffix(".json.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(record).encode())
+    finally:
+        os.close(fd)
+    os.replace(str(tmp), str(path))  # atomic; preserves the 0600 mode of tmp
+
+
+def _read_webpass_result(nonce: str) -> dict[str, Any] | None:
+    """Return the result record iff ``data/webpass-result.json`` exists and its nonce matches; else
+    None. A torn/partial read (JSONDecodeError) returns None so the caller keeps polling."""
+    path = Path(_DIAG_DATA_DIR) / _WEBPASS_RESULT
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
+    if isinstance(data, dict) and data.get("nonce") == nonce:
+        return data
+    return None
+
+
+def _write_webpass_marker() -> None:
+    """Write the app-owned ``data/.webpass_changed`` marker (existence => not default)."""
+    path = Path(_DIAG_DATA_DIR) / _WEBPASS_MARKER
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.close(fd)
+
+
+def _delete_webpass_marker() -> None:
+    """Undo an OPTIMISTIC marker write when a rotation is later observed to fail."""
+    (Path(_DIAG_DATA_DIR) / _WEBPASS_MARKER).unlink(missing_ok=True)
+
+
 # --- control request model --------------------------------------------------------
 
 
@@ -711,6 +784,15 @@ class CaptureRequest(BaseModel):
 
     slot: str
     action: str
+
+
+class RotatePasswordRequest(BaseModel):
+    """Body of ``POST /api/security/rotate-password``. Plaintext is used ONCE (hashed via caddy on
+    stdin) then discarded; NEVER logged, persisted, or in argv (Global CLAUDE.md §9)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_password: str
 
 
 # --- broker: engine threads <-> event loop <-> SSE clients -------------------------
@@ -1671,6 +1753,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
             "tls": "internal",
             "caddy_basic": bool(os.environ.get("MOCKINGBUOY_BASIC_USER")),
             "app_basic": bool(os.environ.get("MOCKINGBUOY_APP_BASIC_USER")),
+            # First-run posture: true = the auto-generated first-run web password has NOT been
+            # changed in-app (marker absent). A bare existence probe — no secret, consistent with
+            # R19. Drives the first-login "change your password" banner.
+            "password_is_default": not (Path(_DIAG_DATA_DIR) / _WEBPASS_MARKER).exists(),
             # Report the actual bind so the posture is honest for the shipped unix-socket
             # bind. The systemd unit sets MOCKINGBUOY_APP_BIND to the socket path; default
             # stays "127.0.0.1" so dev / loopback-TCP output is unchanged.
@@ -1685,6 +1771,84 @@ def create_app(config_path: str | None = None) -> FastAPI:
             # are the reverse proxy's job); report the empty set honestly, not something misleading.
             "headers": [],
         }
+
+    @app.post("/api/security/rotate-password")
+    async def api_rotate_password(
+        body: RotatePasswordRequest, _: None = Depends(auth)
+    ) -> dict[str, Any]:
+        # In-app web-password change. The app is sandboxed (it cannot write ``secrets/service.env``
+        # nor restart caddy); it hashes the new password IN-PROCESS via caddy (stdin, never argv),
+        # drops a hash+nonce REQUEST in its one writable dir (``data/``), and a ROOT systemd
+        # path-unit performs the privileged rewrite + caddy restart and writes back a RESULT here.
+        #
+        # §9: the plaintext lives ONLY in this handler's memory and on caddy's stdin, then is
+        # discarded. It is NEVER logged, persisted, or in argv. Only a bcrypt HASH is written.
+        new_password = body.new_password
+        try:
+            # 1. Length policy. The 400 detail names the POLICY, never the value.
+            if len(new_password) < _WEBPASS_MIN_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"new password must be at least {_WEBPASS_MIN_LEN} characters",
+                )
+
+            # 2. Hash off the event loop. On any hashing error, a generic 500 (no plaintext, no
+            #    caddy stderr — which could echo the input — ever surfaces).
+            try:
+                hashed = await asyncio.to_thread(_caddy_hash, new_password)
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=500, detail="password hashing failed") from None
+        finally:
+            # §9: drop the plaintext the instant hashing is done. ``del`` clears this local, but the
+            # Pydantic ``body`` still references the SAME str and outlives us into the multi-second
+            # poll below — so blank that field too. No plaintext reference then survives past the
+            # hash (shrinks the memory-scrape / core-dump window to the hashing call itself).
+            del new_password
+            # Defensive: model is normally mutable, so this succeeds.
+            with contextlib.suppress(Exception):
+                object.__setattr__(body, "new_password", "")
+
+        # 3. Hand the HASH (never plaintext) + a fresh nonce to the root unit via a 0600 request.
+        nonce = secrets.token_hex(16)
+        record = {"hash": hashed, "nonce": nonce, "ts": time.time()}
+        await asyncio.to_thread(_write_webpass_request, record)
+
+        # 4. Write the "password changed" marker OPTIMISTICALLY now. The deferred caddy restart
+        #    (~T+2s) drops this connection and cancels this handler BEFORE the root unit's 'ok'
+        #    result exists (~T+3-9s), so a marker gated on observing 'ok' would essentially never
+        #    run and the banner would nag forever after a real change. Mark now (while we still run)
+        #    and UNDO it only if we survive long enough to observe a 'failure'.
+        await asyncio.to_thread(_write_webpass_marker)
+
+        # 5. Poll for the root unit's matching-nonce result. The dropped connection is expected; the
+        #    frontend treats it as success (the browser re-prompts against the new hash).
+        deadline = time.monotonic() + _WEBPASS_POLL_TIMEOUT_S
+        while time.monotonic() < deadline:
+            result = await asyncio.to_thread(_read_webpass_result, nonce)
+            if result is not None:
+                status = result.get("status")
+                if status == "ok":
+                    return {"status": "ok"}
+                if status == "failure":
+                    # Rollback happened; the password is UNCHANGED — retract the optimistic
+                    # marker so the banner correctly keeps nagging.
+                    await asyncio.to_thread(_delete_webpass_marker)
+                    return {
+                        "status": "failure",
+                        "detail": str(result.get("detail") or "rotation failed"),
+                    }
+            await asyncio.sleep(_WEBPASS_POLL_INTERVAL_S)
+        return {"status": "pending"}
+
+    @app.post("/api/security/dismiss-default-prompt")
+    async def api_dismiss_default_prompt(_: None = Depends(auth)) -> dict[str, Any]:
+        # "I've already changed it" — the operator rotated the password out-of-band (host CLI), so
+        # write the marker to silence the first-login banner. No request body; auth-gated like the
+        # rest. The marker is app-written (never root), per the C3 symlink-avoidance rule.
+        await asyncio.to_thread(_write_webpass_marker)
+        return {"status": "ok"}
 
     # -- diagnostics (Maintenance tab backend) ------------------------------
     # R23/R25 future home: a SAMPLED live raw-diag SSE stream (~10-20 lines/s/port, its OWN stream

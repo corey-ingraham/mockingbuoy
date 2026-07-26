@@ -371,10 +371,26 @@ by value** — it **never renders a secret**. It shows:
   unix socket).
 - **TCP-tap ports**, **subscriber count / cap**, **uptime**, and the active **security headers**.
 
-The **primary login is rotated at the host, not in the browser** — you change the web password
-with `caddy hash-password` and update the service env on the host; the UI has no
-password-change form because nothing secret is ever surfaced there. Underneath, the service runs
-with systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, an empty
+### Changing the web password
+
+You **can** change the web password from the browser: the Security tab has a **"Change web password"**
+card, and on first login a banner prompts you to change the auto-generated setup password (with
+**"Change now"** and **"I've already changed it"** buttons). Enter the new password (**minimum 12
+characters**) and submit. After you submit, **the page will drop and re-prompt you to sign in with the new
+password within a few seconds** — that is expected: the reverse proxy restarts to pick up the new hash, so
+your current connection is dropped and the browser asks you to re-authenticate. Sign in with the new
+password. If the change fails, the prior password still works and the banner stays up.
+
+The card never displays a secret — it only takes a *new* password. Under the hood the app hashes it
+locally (via `caddy hash-password`) and hands only the resulting **bcrypt hash** to a privileged host
+service that swaps it in and restarts the proxy; the **new password crosses the authenticated wire only
+once, and only a hash is ever stored** — the plaintext is discarded immediately after hashing.
+
+**Host CLI fallback:** you can still rotate the password on the host instead — run `caddy hash-password`,
+update `MOCKINGBUOY_BASIC_HASH` in the service env (`secrets/`, now root-owned), and `systemctl restart
+caddy`.
+
+Underneath, the service runs with systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, an empty
 `CapabilityBoundingSet`, explicit `DeviceAllow` rules, a `SystemCallFilter`), and dependencies
 are hash-locked with an offline wheelhouse for rebuild-free redeploy.
 

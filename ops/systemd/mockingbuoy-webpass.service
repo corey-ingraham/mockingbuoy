@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply a mockingbuoy web-password rotation (root: rewrite hash, validate, restart caddy)
+Documentation=file:///opt/mockingbuoy/docs/ref/security.md
+After=caddy.service
+
+[Service]
+# Oneshot, runs as root (no User=) so it may write secrets/service.env and restart caddy —
+# exactly the two privileged operations the app sandbox forbids. Triggered only by the .path unit;
+# it never has a network listener and touches only fixed, validated paths.
+Type=oneshot
+ExecStart=/opt/mockingbuoy/ops/bin/rotate-webpass

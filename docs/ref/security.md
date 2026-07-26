@@ -55,13 +55,44 @@ Caddyfile essentials (user and hash come from the environment — see `secrets/s
 
 ## Read-only Security tab
 
-The web UI's **Security** tab is a strictly **read-only posture panel** backed by `GET /api/security`,
+The web UI's **Security** tab is a **read-only posture panel** backed by `GET /api/security`,
 which returns **booleans only** — it reports each protection by **presence, not value**, and **never
 renders a secret** (no credential, hash, or key ever transits the UI). It surfaces: TLS active, which
 auth layers are on, the unix-socket (no-host-port) bind, the open TCP-tap ports, subscriber count vs cap,
-uptime, and the active security headers. The **primary login is rotated at the host, not the browser** —
-change the web password with `caddy hash-password` and update the service env on the host; there is
-deliberately no password-change form, so the primary secret never reaches the wire or the UI.
+uptime, and the active security headers. It also reports `password_is_default` (whether the auto-generated
+first-run password has been changed in-app), which drives a one-time first-login prompt.
+
+The one exception to "read-only" is the **web-password change** — the Security tab has a **"Change web
+password"** card (and a first-login banner that links to it). It never displays a secret; it only accepts
+a *new* password as input. The mechanism is deliberately structured so the sandboxed app never gains the
+privilege to write the secret or restart the proxy:
+
+1. The app **hashes the new password in-process** by shelling to `caddy hash-password --algorithm bcrypt`,
+   feeding the plaintext on **stdin (never argv)** — no new Python dependency. The plaintext lives only in
+   the single request handler's memory and on caddy's stdin, then is discarded; it is never logged, never
+   persisted, never placed in a process argument.
+2. The app writes **only a bcrypt hash + a nonce** to `data/webpass-request.json` (mode 0600) — its one
+   writable directory. No plaintext ever touches disk.
+3. A **root systemd path-unit** (`mockingbuoy-webpass.path` → `mockingbuoy-webpass.service` →
+   `ops/bin/rotate-webpass`) watches that file and performs the privileged work the app sandbox forbids:
+   it strictly validates the hash (anchored bcrypt regex) and nonce, rewrites `MOCKINGBUOY_BASIC_HASH` in
+   `secrets/service.env`, runs `caddy validate`, defers a `systemctl restart caddy` (a restart, not a
+   reload, because `admin off` — see above), health-probes that caddy is serving again, and **rolls back
+   to the prior hash on any failure**. It then writes `data/webpass-result.json`, which the app polls.
+   Because the deferred restart drops the in-flight connection, the browser re-prompts for Basic auth with
+   the new password — that reauth is the confirmation of success.
+
+**`secrets/` is now root-owned (0700, `service.env` root:root 0600).** systemd reads the `EnvironmentFile`
+as root *before* dropping to the `mockingbuoy` user, so the app needs no access to it — it only reads
+`os.environ` — and root ownership removes the app-owned-directory symlink/TOCTOU vector on the very file
+the root path-unit rewrites.
+
+**Security trade-off:** the new password crosses the authed TLS wire **exactly once** (in the
+`POST /api/security/rotate-password` body). From there on, **only a bcrypt hash** ever touches disk or the
+root path-unit; **plaintext never leaves the app process** except onto caddy's stdin for hashing, and is
+then discarded (Global CLAUDE.md §9). This is a conscious concession — the strictest posture would keep the
+secret entirely off the wire — traded for the operational value of rotating the password from the browser
+without host shell access. The host CLI method below remains available as a fallback.
 
 ## Process sandboxing
 
@@ -116,6 +147,14 @@ surface when absent.
   CA is managed by Caddy in its own data dir. Nothing secret is ever committed.
 - **First-run password:** setup generates a random password, stores only its hash, and prints the
   plaintext **once**. `config.json` holds non-secret settings only.
+- **Rotating the hash afterward:** the same `MOCKINGBUOY_BASIC_HASH` value (same bcrypt format) can be
+  rotated **in-app** from the Security tab — the app hashes via `caddy hash-password` (stdin) and a root
+  systemd path-unit (`mockingbuoy-webpass.path` → `.service` → `ops/bin/rotate-webpass`) rewrites the env,
+  validates, restarts caddy, and rolls back on failure (see *Read-only Security tab* above). Only a bcrypt
+  hash is ever written; plaintext never reaches disk. The host CLI path remains the fallback: run
+  `caddy hash-password`, edit `MOCKINGBUOY_BASIC_HASH` in `secrets/service.env`, then
+  `systemctl restart caddy` (a restart, not a reload, is required because `admin off`). Note `secrets/` is
+  now root-owned, so editing `service.env` by hand requires root.
 
 ## Network hardening (optional, config-driven)
 

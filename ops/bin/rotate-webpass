@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# rotate-webpass — root helper triggered by mockingbuoy-webpass.path when the sandboxed app drops
+# a web-password rotation request. Reads a bcrypt HASH + nonce (NEVER plaintext) from the request
+# file, rewrites MOCKINGBUOY_BASIC_HASH in secrets/service.env, validates the Caddy config, defers
+# a caddy restart (so the app's in-flight HTTP response can drain), health-probes that caddy is
+# serving the new config, and ROLLS BACK to the prior hash on any failure. Writes a result file the
+# app polls, then consumes the request. No plaintext ever touches this script (hash only).
+set -euo pipefail
+
+APP_DIR="/opt/mockingbuoy"
+SVC_ENV="${APP_DIR}/secrets/service.env"
+DATA_DIR="${APP_DIR}/data"
+REQ="${DATA_DIR}/webpass-request.json"
+RESULT="${DATA_DIR}/webpass-result.json"
+CADDYFILE="${APP_DIR}/Caddyfile"
+CADDY="$(command -v caddy || echo /usr/bin/caddy)"
+
+# Nothing to do if the request vanished (e.g. a coalesced re-trigger after we consumed it).
+[ -f "${REQ}" ] || exit 0
+
+NONCE=""   # populated after parse; used by write_result
+
+write_result() {
+    # $1 = ok|failure ; $2 = optional detail (fixed literal). The result lands in the APP-WRITABLE
+    # data/ dir, so a compromised app could pre-seed webpass-result.json as a symlink to a
+    # root-writable target (e.g. secrets/service.env) and race our write to make root clobber it.
+    # Defend exactly as the request read does: rm -f (drops a symlink, not its target), then create
+    # with O_CREAT|O_EXCL|O_NOFOLLOW so the write fails CLOSED if anything (symlink or file) was
+    # pre-created in the gap. nonce/status/detail are non-secret and passed via env, never argv.
+    local status="$1" detail="${2:-}"
+    rm -f "${RESULT}"
+    RW_NONCE="${NONCE}" RW_STATUS="${status}" RW_DETAIL="${detail}" \
+        python3 - "${RESULT}" <<'PY'
+import json, os, sys
+obj = {"nonce": os.environ.get("RW_NONCE", ""), "status": os.environ.get("RW_STATUS", "")}
+detail = os.environ.get("RW_DETAIL", "")
+if detail:
+    obj["detail"] = detail
+data = (json.dumps(obj) + "\n").encode("utf-8")
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+with os.fdopen(fd, "wb") as f:
+    f.write(data)
+PY
+}
+
+cleanup() { rm -f "${REQ}"; }
+trap cleanup EXIT
+
+# --- 1. Parse the request (hash + nonce) with O_NOFOLLOW; robust JSON via python3 ----------------
+mapfile -t FIELDS < <(python3 - "${REQ}" <<'PY'
+import json, os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    print(str(d.get("hash", "")))
+    print(str(d.get("nonce", "")))
+except Exception:
+    sys.exit(3)
+PY
+) || { echo "rotate-webpass: request parse failed" >&2; exit 0; }
+
+HASH="${FIELDS[0]:-}"
+NONCE="${FIELDS[1]:-}"
+
+# --- 2. Validate hash + nonce STRICTLY (the request comes from the app-writable dir) ------------
+# Canonical bcrypt: $2[aby]$<2-digit cost>$<53 chars of ./A-Za-z0-9>. Anchored => no newline/shell.
+if [[ ! "${HASH}" =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]]; then
+    write_result failure "bad-hash"
+    echo "rotate-webpass: rejecting malformed hash" >&2
+    exit 0
+fi
+if [[ ! "${NONCE}" =~ ^[0-9a-f]{16,64}$ ]]; then
+    echo "rotate-webpass: rejecting malformed nonce" >&2
+    exit 0
+fi
+
+# --- 3. Read the non-secret keys + capture the PRIOR hash (for rollback) ------------------------
+# Read individual keys via sed (NEVER source service.env — bash would expand the $-delimited hash).
+SITE="$(sed -n 's/^MOCKINGBUOY_SITE=//p' "${SVC_ENV}" | tr -d '"')"
+BUSER="$(sed -n 's/^MOCKINGBUOY_BASIC_USER=//p' "${SVC_ENV}" | tr -d '"')"
+PORT="$(sed -n 's/^MOCKINGBUOY_APP_PORT=//p' "${SVC_ENV}" | tr -d '"')"
+PRIOR_HASH="$(sed -n 's/^MOCKINGBUOY_BASIC_HASH=//p' "${SVC_ENV}" | tr -d '"')"
+
+# --- 4. Atomically rewrite the hash line (delete-then-append, preserving other keys) -----------
+write_env_hash() {
+    # $1 = bcrypt hash to install. Temp in the same (root-owned) dir => atomic os-level rename.
+    local newhash="$1" tmp
+    tmp="$(mktemp "${SVC_ENV}.XXXXXX")"
+    grep -v '^MOCKINGBUOY_BASIC_HASH=' "${SVC_ENV}" > "${tmp}" || true
+    printf 'MOCKINGBUOY_BASIC_HASH="%s"\n' "${newhash}" >> "${tmp}"
+    chown root:root "${tmp}"
+    chmod 0600 "${tmp}"
+    mv -f "${tmp}" "${SVC_ENV}"
+}
+write_env_hash "${HASH}"
+
+# --- 5. Validate the Caddy config with the NEW hash injected via env (mirrors setup.sh) --------
+if ! env MOCKINGBUOY_SITE="${SITE}" \
+         MOCKINGBUOY_BASIC_USER="${BUSER}" \
+         MOCKINGBUOY_APP_PORT="${PORT}" \
+         MOCKINGBUOY_BASIC_HASH="${HASH}" \
+         "${CADDY}" validate --config "${CADDYFILE}" --adapter caddyfile >/dev/null 2>&1; then
+    # Never restarted caddy yet => old creds still live. Roll the file back and report.
+    write_env_hash "${PRIOR_HASH}"
+    write_result failure "validate"
+    echo "rotate-webpass: caddy validate failed; restored prior hash" >&2
+    exit 0
+fi
+
+# --- 6. DEFER the restart so the app's in-flight HTTP response can drain (~2s) -------------------
+systemd-run --on-active=2s /bin/systemctl restart caddy >/dev/null 2>&1 || true
+
+# --- 7. Wait for caddy to come back serving the NEW config, then health-probe -------------------
+# Any HTTP status (401 included) proves caddy is serving. We do NOT credential-probe: this unit has
+# only the hash, not the plaintext; the password itself is user-verified on re-login.
+health_ok() {
+    # With a real SITE, prove caddy is SERVING (any HTTP status, 401 included). Without one (empty or
+    # the <LAN_IP> placeholder) we cannot HTTP-probe — but must NOT fail open: fall back to asserting
+    # the caddy unit is actually active, so a caddy that died on the new config still trips rollback.
+    if [ -n "${SITE}" ] && [ "${SITE}" != "<LAN_IP>" ]; then
+        local code
+        code="$(curl -sk -o /dev/null -w '%{http_code}' "https://${SITE}/" 2>/dev/null || echo 000)"
+        [ "${code}" != "000" ]
+    else
+        systemctl is-active --quiet caddy
+    fi
+}
+
+sleep 3   # let the deferred (--on-active=2s) restart fire and caddy begin serving
+PROBE_OK="false"
+for _ in $(seq 1 12); do
+    if health_ok; then PROBE_OK="true"; break; fi
+    sleep 0.5
+done
+
+# --- 8. Result + rollback -----------------------------------------------------------------------
+if [ "${PROBE_OK}" = "true" ]; then
+    write_result ok
+    exit 0
+fi
+
+# Health failed after the restart => restore the prior hash and restart caddy NOW (real rollback).
+write_env_hash "${PRIOR_HASH}"
+systemctl restart caddy >/dev/null 2>&1 || true
+write_result failure "health"
+echo "rotate-webpass: post-restart health probe failed; rolled back to prior hash" >&2
+exit 0

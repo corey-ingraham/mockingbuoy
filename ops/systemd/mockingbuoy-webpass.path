@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for mockingbuoy web-password rotation requests
+Documentation=file:///opt/mockingbuoy/docs/ref/security.md
+
+[Path]
+# The sandboxed app can only write data/. It drops a hash+nonce request here; this watcher
+# (root) triggers the privileged rotation the app itself cannot perform.
+PathChanged=/opt/mockingbuoy/data/webpass-request.json
+Unit=mockingbuoy-webpass.service
+
+[Install]
+WantedBy=multi-user.target

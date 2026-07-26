@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=38">
+<link rel="stylesheet" href="/static/app.css?v=39">
 </head>
 <body>
 
@@ -686,14 +686,31 @@
 
 <!-- ==================== TAB 4: MAINTENANCE ==================== -->
 <section id="view-maintenance" class="view">
+  <p class="tab-intro">Diagnostic tools, safest first: the top two sections only read or work offline — nothing here touches hardware until Active TX Controls, which is bench-only and clearly marked.</p>
+
   <div class="card">
     <h2>Port Diagnostics <span class="hint">(polled)</span></h2>
+    <div class="infobox">
+      <b>What this is:</b> a read-only health readout for each live input port — byte counts, framing and
+      checksum errors, and the last sentence seen. It never sends anything.<br>
+      <b>When to use it:</b> a physical feed looks dead or garbled and you want to see whether bytes are
+      arriving and parsing cleanly. Only populated in <b>Auto</b> mode with the engine running.<br>
+      <b>How to use it:</b> nothing to click — the tiles below refresh on their own. Empty tiles here are
+      normal in Simulate mode or with the engine stopped.
+    </div>
     <div class="diag-grid" id="diag-grid"></div>
     <p class="hint" id="diag-empty" style="margin-top:8px;">No per-port diagnostics — ports report only in Auto mode with a running engine.</p>
   </div>
 
   <div class="card">
     <h2>Click-to-decode</h2>
+    <div class="infobox">
+      <b>What this is:</b> an offline, field-by-field breakdown of any single NMEA 0183 or AIS sentence —
+      each field named and its value explained, checksum verified.<br>
+      <b>When to use it:</b> you have a line (from a log, a tap, or Port Diagnostics) and want to know what
+      it actually says. Safe at any time — it touches no hardware and changes nothing.<br>
+      <b>How to use it:</b> paste the line below and press <b>Decode</b>.
+    </div>
     <div class="ctl-row">
       <div class="field" style="flex:1;min-width:260px;">
         <label for="dec-line">NMEA line</label>
@@ -706,6 +723,16 @@
 
   <div class="card">
     <h2>Active TX Controls <span class="hint">(opt-in · bench ports only)</span></h2>
+    <div class="infobox">
+      <b>What this is:</b> bench tools that <b>write to a serial slot</b> — auto-baud sweep, send a test
+      sentence, loopback check, and raw capture. This is the only section on this tab that transmits.<br>
+      <b>When to use it:</b> only against a port flagged as a bench port, when checking wiring, baud rate,
+      or a device on the bench. Never against a port feeding real instruments.<br>
+      <b>How to use it:</b> enter the slot id, then type the <em>same</em> slot id again in the confirm box
+      to arm — a request with a missing or mismatched confirm is refused. If a request is refused:
+      <b>409</b> means the slot is an operational (non-bench) port and will never be driven from here;
+      <b>429</b> means the slot is in cooldown or already busy — wait a moment and retry.
+    </div>
     <div class="warnbox" style="margin-bottom:10px;">
       These drive a bench port. Type the slot id into the confirm box to arm. Operational ports are refused
       (409); a slot in cooldown or already busy is refused (429).
@@ -727,6 +754,13 @@
   </div>
 
   <div class="card">
+    <div class="infobox">
+      <b>What this is:</b> static lookup tables — common baud rates, sentence formatters, wiring symptoms,
+      and talker IDs. Pure reference; reads nothing, sends nothing.<br>
+      <b>When to use it:</b> as a memory-jog while diagnosing — e.g. matching a talker prefix to a device
+      type, or recognising a wiring fault from its symptom.<br>
+      <b>How to use it:</b> expand the section below and scan the tables.
+    </div>
     <details class="ref">
       <summary>Reference — baud / sentence / wiring / talker cheat-sheet</summary>
       <h3>Baud rates</h3>
@@ -767,6 +801,22 @@
 
 <!-- ==================== TAB 5: SECURITY ==================== -->
 <section id="view-security" class="view">
+  <div id="sec-default-banner" class="infobox" style="display:none;">
+    <b>You're still using the auto-generated setup password.</b>
+    Set your own web password so only you can reach this device.
+    <div style="margin-top:8px;">
+      <button id="sec-banner-change" class="primary small">Change now</button>
+      <button id="sec-banner-dismiss" class="small">I've already changed it</button>
+    </div>
+  </div>
+  <div class="card" id="sec-pw-card">
+    <h2>Change web password</h2>
+    <div class="field"><label for="sec-pw-new">New password</label><input id="sec-pw-new" type="password" autocomplete="new-password" style="width:100%;"></div>
+    <div class="field"><label for="sec-pw-confirm">Confirm password</label><input id="sec-pw-confirm" type="password" autocomplete="new-password" style="width:100%;"></div>
+    <p class="hint" id="sec-pw-hint">Minimum 12 characters.</p>
+    <button id="sec-pw-submit" class="primary small">Change web password</button>
+    <p class="hint" id="sec-pw-status"></p>
+  </div>
   <div class="card">
     <h2>Security Posture <span class="hint">(read-only · no secrets)</span></h2>
     <table class="kvtable" id="sec-table" style="max-width:640px;">
@@ -786,6 +836,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=38"></script>
+<script src="/static/app.js?v=39"></script>
 </body>
 </html>
