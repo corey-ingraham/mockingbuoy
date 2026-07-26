@@ -1,81 +1,49 @@
-# LAN appliance: friendly subdomains + trusted TLS on a foreign private network
+# Sharing the box's Caddy + optional name-based LAN access
 
-This turns the box into a self-contained appliance you can drop on **someone else's private LAN** and reach
-its services by name — `https://mockingbuoy.eemslab.internal`, `https://netbox.eemslab.internal` — with a
-real green padlock, no dependency on the host network's DNS/DHCP beyond a stable IP.
+mockingbuoy fronts its own UI with a natively-installed Caddy. That same Caddy is meant to be
+**shared** by every other service on the box (a NetBox stack, a DNS appliance, anything) — and a
+mockingbuoy redeploy must never clobber their config. This doc is the contract for that coexistence,
+plus an optional recipe for reaching services by friendly names with a trusted padlock.
 
-Everything is box-local: a shared Caddy fronts every service by subdomain (`tls internal` = Caddy's own
-local CA), and an AdGuard Home container answers a `*.eemslab.internal` wildcard pointing at the box.
+Nothing here is service-specific, and **no container stacks live in this repo** — every stack lives
+on the host under `/srv/docker/<name>/`, managed by you. mockingbuoy only owns the shared-Caddy
+mechanism.
 
-## Go / no-go precondition (read first)
+## The coexistence contract (how it works)
 
-Name + green-padlock access needs, on **each client device**: (1) DNS pointed at this box, and (2) the box's
-root CA installed & trusted. On a LAN you don't control (locked DHCP DNS, MDM-managed laptops/phones that
-block manual DNS or CA installs, non-rooted phones where a hosts file is impossible) this may be **impossible**
-per device. In that case the guaranteed fallback is **raw-IP access** (`https://<box-ip>/`, click through the
-cert warning) — which Part A already provides via the IP-alias site address. Decide per deployment site.
+- The mockingbuoy systemd drop-in points Caddy at the shared **`/etc/caddy/Caddyfile`**, which holds
+  only global options + `import /etc/caddy/conf.d/*.caddy` (see `Caddyfile.example`).
+- mockingbuoy's own site is just one snippet, `/etc/caddy/conf.d/mockingbuoy.caddy`. `setup.sh`
+  writes ONLY that file (and appends the `import` line to the main Caddyfile if it is missing) — it
+  never rewrites the main Caddyfile or any other snippet. Your sites are safe across redeploys.
+- Config is applied with `systemctl restart caddy` (a ~1 s blip on all sites), not a live admin-API
+  reload.
 
-Naming: this guide uses `.eemslab.internal` — `.internal` is ICANN-reserved for private use, so it can never
-collide with a future real TLD. You can use a bare `eemslab` if you prefer the shorter name (change
-`MOCKINGBUOY_SITE`, the wildcard rewrite, and each site block to match), at the cost of that collision risk.
+## Add another service
 
-## 1. Give the box a stable IP
+1. **Publish it on the loopback only** — `ports: ["127.0.0.1:<port>:<port>"]` in the service's
+   `/srv/docker/<name>/docker-compose.yml`. Docker's port publishing bypasses UFW; a `0.0.0.0`
+   publish exposes the app's plain-HTTP port to the LAN behind Caddy's back.
+2. **Add a Caddy snippet** (template: `conf.d/example-site.caddy.example`). Keep the real file beside
+   the service's compose and symlink it into conf.d so the source of truth stays with its stack:
+   ```bash
+   # author /srv/docker/<name>/<name>.caddy  ->  reverse_proxy 127.0.0.1:<port>
+   sudo ln -sfn /srv/docker/<name>/<name>.caddy /etc/caddy/conf.d/<name>.caddy
+   sudo /opt/mockingbuoy/ops/bin/caddy-validate && sudo systemctl restart caddy
+   ```
+3. **If the app enforces its own allowed-hosts / CSRF** (Django apps like NetBox, etc.), add the
+   site's name to that list or it returns HTTP 400 even though Caddy proxies fine.
 
-Set a static IP or DHCP reservation on the deployment LAN and put it in `ops/lan/.env` as `BOX_IP`. DNS answers
-and the raw-IP Caddy alias both point here; if it moves, everything breaks.
+> Always validate with `ops/bin/caddy-validate`, never a bare `caddy validate`: mockingbuoy.caddy
+> references `{$MOCKINGBUOY_BASIC_HASH}` (and friends), which only exist in caddy.service's
+> environment (from `secrets/service.env`). A plain-shell `caddy validate` sees them empty and fails
+> with a misleading `basic_auth: username and password cannot be empty` error even when the config is
+> valid. The helper injects that environment the same way the service does.
 
-## 2. Shared Caddy + one snippet per service
+## Trust Caddy's local CA (green padlock for every `tls internal` site)
 
-`setup.sh` already makes mockingbuoy coexist: it points Caddy at the shared `/etc/caddy/Caddyfile`
-(`Caddyfile.example` here), which `import`s `/etc/caddy/conf.d/*.caddy`, and writes only
-`/etc/caddy/conf.d/mockingbuoy.caddy`. Add each further service as its own snippet:
-
-```bash
-sudo cp ops/lan/conf.d/netbox.caddy.example /etc/caddy/conf.d/netbox.caddy   # then edit the upstream port
-sudo /opt/mockingbuoy/ops/bin/caddy-validate && sudo systemctl restart caddy
-```
-
-> Use `ops/bin/caddy-validate`, NOT a bare `caddy validate`. mockingbuoy.caddy references
-> `{$MOCKINGBUOY_BASIC_HASH}` etc., which only exist in caddy.service's environment (from
-> `secrets/service.env`); a plain-shell `caddy validate` sees them empty and fails with a misleading
-> `basic_auth: username and password cannot be empty` error even when the config is fine. The helper
-> injects that environment the same way the service does.
-
-**Publish every fronted container on the loopback only** (`ports: ["127.0.0.1:8080:8080"]`) — Docker's port
-rules bypass UFW, so a `0.0.0.0` publish exposes the app's plain-HTTP port straight to the LAN. Only DNS `:53`
-should face the LAN.
-
-## 3. DNS container (AdGuard Home)
-
-```bash
-cd ops/lan && cp .env.example .env    # set BOX_IP; run from ops/lan so compose picks up .env
-docker compose up -d
-```
-
-- **Port 53 conflict:** the compose binds DNS to `BOX_IP:53` (not `0.0.0.0`), which normally avoids
-  systemd-resolved's stub on `127.0.0.53:53`. If `sudo ss -lunp | grep :53` still shows a clash, set
-  `DNSStubListener=no` in `/etc/systemd/resolved.conf` and `sudo systemctl restart systemd-resolved`.
-- **Keep the box's own resolver upstream** (leave `/etc/resolv.conf` pointing at systemd-resolved / a public
-  resolver, NOT at this container) so early boot — before Docker/AdGuard is up — still resolves for apt/chrony.
-- **Wildcard rewrite:** finish the setup wizard at `http://127.0.0.1:3000` (via SSH tunnel), set an upstream
-  (e.g. `1.1.1.1`), then **Filters → DNS rewrites → Add**: domain `*.eemslab.internal`, answer `${BOX_IP}`.
-  Now every current/future `*.eemslab.internal` name resolves to the box (each still needs its own Caddy
-  snippet from step 2).
-- **Firefox DoH:** Firefox's default DNS-over-HTTPS bypasses local DNS, so `*.eemslab.internal` would
-  NXDOMAIN. AdGuard Home answers the `use-application-dns.net` canary to signal Firefox to disable DoH — verify
-  it's enabled (default), or set Firefox `network.trr.mode=5` on client devices.
-- **UFW:** if `ENABLE_UFW=true`, also allow DNS: `sudo ufw allow 53/tcp && sudo ufw allow 53/udp` (restrict to
-  the client subnet if you can). Leave the AdGuard UI (3000) closed — it's loopback-only.
-
-## 4. Point LAN clients at the box DNS
-
-However you can on that network: set the box IP as the DNS server in the LAN's DHCP (best), or per-device DNS,
-or — last resort for a machine you can't repoint — a hosts-file entry per name. Mobile devices generally can't
-use a hosts file, so for phones you need option (a) or (b).
-
-## 5. Trust Caddy's local CA (for the green padlock)
-
-Export the root once from the box and install it on each client:
+`tls internal` mints per-host certs from Caddy's own local root CA. Export the root once from the box
+and install it on each client:
 
 ```bash
 sudo cat /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt   # copy this file to the client
@@ -90,14 +58,45 @@ sudo cat /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt   # co
 
 Until the CA is trusted (or if it can't be installed), the site still works — you just get a cert warning.
 
-## 6. Verify
+## Optional: reach services by name (LAN DNS)
+
+`tls internal` gives real certs, but the **names** still have to resolve to the box. Two ways:
+
+- **Per device** — a hosts-file entry (`<box-ip> mockingbuoy.eemslab.internal netbox.eemslab.internal …`).
+  Fine for a laptop, impossible for most phones.
+- **A DNS appliance on the box** answering a `*.eemslab.internal` wildcard → box IP, with LAN clients
+  (or the LAN's DHCP) pointed at it. Run it as its own stack under `/srv/docker/adguard/` (AdGuard
+  Home) or via `dnsmasq` — **not in this repo**. Gotchas when you build it:
+    - Bind DNS to the box **LAN IP:53, not `0.0.0.0`**, to dodge systemd-resolved's stub on
+      `127.0.0.53:53` (`DNSStubListener=no` in `/etc/systemd/resolved.conf` if they still clash).
+    - Keep the box's own `/etc/resolv.conf` on an upstream resolver (not the container) so early boot
+      — before Docker is up — still resolves for apt/chrony.
+    - Firefox's default DNS-over-HTTPS bypasses local DNS — answer the `use-application-dns.net`
+      canary (AdGuard does by default) or set `network.trr.mode=5` on clients.
+    - Publish the DNS admin UI on the loopback only; front it with its own conf.d snippet if you want
+      remote access.
+
+Naming: `.internal` is ICANN-reserved for private use, so `*.eemslab.internal` can never collide with
+a real TLD. Avoid `.local` — it's mDNS/Bonjour space and some clients (macOS especially) resolve it
+by multicast, ignoring your DNS. Set `MOCKINGBUOY_SITE` and every service's snippet to the same
+`*.eemslab.internal` scheme so one wildcard rewrite covers them all.
+
+## Portability (a LAN you don't control)
+
+The box may deploy on a foreign private LAN. Name + green-padlock access needs, per client: (1) DNS
+pointed at the box and (2) the box's root CA installed & trusted — which can be **impossible** on
+locked-down or MDM-managed devices (no manual DNS, no CA install, phones with no hosts file). The
+guaranteed fallback is always **raw-IP access** (`https://<box-ip>/`, click through the cert
+warning), which mockingbuoy's site already provides via its IP-alias address. Wherever it lands, give
+the box a **static / DHCP-reserved IP** — the Caddy IP alias and any DNS answer both point at it.
+
+## Verify
 
 ```bash
-# from a client using the box as DNS:
-nslookup mockingbuoy.eemslab.internal      # -> BOX_IP
-# browser: https://mockingbuoy.eemslab.internal  (padlock after CA trust; basic-auth prompt)
-#          https://netbox.eemslab.internal
-#          https://<box-ip>/                (always works — the raw-IP fallback)
+# from a client using the box as DNS (or with a hosts entry):
+nslookup mockingbuoy.eemslab.internal      # -> box IP
+# browser: https://mockingbuoy.eemslab.internal   (padlock after CA trust; basic-auth prompt)
+#          https://<box-ip>/                       (always works — the raw-IP fallback)
 # on the box (injects caddy.service's env; a bare `caddy validate` falsely fails on the empty hash):
 sudo /opt/mockingbuoy/ops/bin/caddy-validate
 ```

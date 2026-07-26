@@ -67,7 +67,7 @@ Two native systemd services:
 - **`caddy.service`** (native package) — TLS termination + Basic auth (see security.md). **Multi-site
   coexistence:** the systemd drop-in points Caddy at the **shared `/etc/caddy/Caddyfile`**, which
   `import`s every site under `/etc/caddy/conf.d/*.caddy`. mockingbuoy owns ONLY
-  `/etc/caddy/conf.d/mockingbuoy.caddy`, so NetBox and any other reverse-proxy sites on the box survive a
+  `/etc/caddy/conf.d/mockingbuoy.caddy`, so any other reverse-proxy sites on the box survive a
   mockingbuoy redeploy (setup.sh writes only that one snippet + adds the `import` line once, never
   rewriting the shared file, and validates the combined config with rollback before restarting). The
   **admin API stays disabled** (`admin off` in the shared globals), so a config change is a **restart**,

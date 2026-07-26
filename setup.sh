@@ -413,7 +413,7 @@ CADDY_SNIPPET="${CADDY_CONFD}/mockingbuoy.caddy"
 install -d -m 0755 "${CADDY_CONFD}"
 
 # Ensure a SHARED main Caddyfile that imports every conf.d site. Create it (globals + import) ONLY
-# if absent; if it already exists (e.g. NetBox set it up), append the import line only if missing and
+# if absent; if it already exists (e.g. another service set it up), append the import line only if missing and
 # NEVER rewrite the file — that is what keeps the other reverse-proxy sites intact across a
 # mockingbuoy redeploy.
 _import_line="import ${CADDY_CONFD}/*.caddy"

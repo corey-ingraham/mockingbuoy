@@ -1,0 +1,33 @@
+# Example additional site — a template for ANY service that shares the box's Caddy.
+#
+# Copy to /etc/caddy/conf.d/<name>.caddy (drop the .example suffix), edit the name + upstream port,
+# then apply:
+#   sudo /opt/mockingbuoy/ops/bin/caddy-validate && sudo systemctl restart caddy
+#
+# Use caddy-validate, NOT a bare `caddy validate`: mockingbuoy.caddy references
+# {$MOCKINGBUOY_BASIC_HASH} (and friends), which only exist in caddy.service's environment (from
+# secrets/service.env). A plain-shell `caddy validate` sees them empty and fails with a misleading
+# "basic_auth: username and password cannot be empty" error even when the config is fine.
+#
+# This is how EVERY extra service coexists with mockingbuoy: one snippet per site, each on its own
+# name. mockingbuoy's setup writes ONLY conf.d/mockingbuoy.caddy and never touches other snippets,
+# so your sites survive a redeploy. Tip: keep the real file beside the service's compose under
+# /srv/docker/<name>/ and symlink it in — the source of truth stays with the stack it belongs to:
+#   sudo ln -sfn /srv/docker/<name>/<name>.caddy /etc/caddy/conf.d/<name>.caddy
+#
+# Publish the upstream on the LOOPBACK ONLY (127.0.0.1:<port>). Docker's port publishing bypasses
+# UFW, so a 0.0.0.0 publish would expose the app's plain-HTTP, unauthenticated port straight to the
+# LAN, defeating the TLS front door. Only a DNS appliance's :53 should ever face the LAN.
+#
+# If the app enforces its own allowed-hosts / CSRF checks (Django apps, etc.), add this site's name
+# there too, or it returns HTTP 400 even though Caddy proxies correctly.
+
+myservice.eemslab.internal:443 {
+	# Caddy's local internal CA (trust the root once per device for a green padlock). Never public
+	# ACME — this host is LAN-only.
+	tls internal
+
+	# Do NOT blindly copy mockingbuoy's strict same-origin Content-Security-Policy — it will break
+	# most apps' UIs. Add only the headers a given app actually needs.
+	reverse_proxy 127.0.0.1:8080
+}
