@@ -225,17 +225,15 @@
   // Ship-schematic horizontal (athwartships) callout arrow at row y; +v = starboard (right).
   function setLatArrow(id, v, y) {
     const g = $(id); if (!g) return;
-    if (!Number.isFinite(v) || Math.abs(v) < 0.05) { g.setAttribute("opacity", "0"); return; }
+    // show the direction tip as soon as there's any real walk (tight threshold, was 0.05)
+    if (!Number.isFinite(v) || Math.abs(v) < 0.005) { g.setAttribute("opacity", "0"); return; }
     g.setAttribute("opacity", "1");
     const dir = v >= 0 ? 1 : -1;                        // +v = starboard (right)
-    // draw the arrow just OUTSIDE the walk box (half-width 28) so the box (painted later) can't hide
-    // it; length capped so the tip stays inside the hull outline on either side
-    const len = Math.max(10, Math.min(22, Math.abs(v) * 18));
-    const x0 = 150 + dir * 30;                          // start at the box edge + small gap
-    const x1 = x0 + dir * len;                          // tip
-    const line = g.querySelector("line"), head = g.querySelector("polygon");
-    if (line) { line.setAttribute("x1", x0.toFixed(1)); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
-    if (head) head.setAttribute("points", x1.toFixed(1) + "," + y + " " + (x1 - dir * 9).toFixed(1) + "," + (y - 5) + " " + (x1 - dir * 9).toFixed(1) + "," + (y + 5));
+    // just a solid arrowhead beside the walk box (no shaft/base); magnitude is in the kt readout
+    const xBase = 150 + dir * 30;                       // box edge + small gap
+    const xTip = xBase + dir * 15;                      // points the way she walks
+    const head = g.querySelector("polygon");
+    if (head) head.setAttribute("points", xTip.toFixed(1) + "," + y + " " + xBase.toFixed(1) + "," + (y - 7) + " " + xBase.toFixed(1) + "," + (y + 7));
   }
 
   // build compass rose ticks + wind rose ticks once
@@ -1958,6 +1956,9 @@
     }
     const ovA = $("cfg-override-apply"); if (ovA) ovA.addEventListener("click", overrideApply);
     const ovC = $("cfg-override-clear"); if (ovC) ovC.addEventListener("click", overrideClear);
+    // second Apply/Clear pair on the Ship / Helm card (fuel + propeller pitch overrides live there too)
+    const ovAs = $("cfg-override-apply-ship"); if (ovAs) ovAs.addEventListener("click", overrideApply);
+    const ovCs = $("cfg-override-clear-ship"); if (ovCs) ovCs.addEventListener("click", overrideClear);
     const da = $("cfg-depth-alert"); if (da) da.addEventListener("change", onDepthAlertChange);
     const tu = $("cfg-temp-unit");
     if (tu) {

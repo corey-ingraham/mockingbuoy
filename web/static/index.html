@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=47">
+<link rel="stylesheet" href="/static/app.css?v=48">
 </head>
 <body>
 
@@ -230,9 +230,9 @@
           <line x1="150" y1="195" x2="150" y2="195" stroke="#00e07a" stroke-width="3"/>
           <polygon points="150,195 144,205 156,205" fill="#00e07a"/>
         </g>
-        <!-- athwartships (lateral) walk arrows, derived; hidden when ~0 -->
-        <g id="ship-abow" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
-        <g id="ship-astern" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
+        <!-- athwartships (lateral) walk direction: a solid tip beside the box, port/stbd by sign -->
+        <g id="ship-abow" opacity="0"><polygon fill="#f2f6fa"/></g>
+        <g id="ship-astern" opacity="0"><polygon fill="#f2f6fa"/></g>
         <!-- bow-walk readout box (centred + narrowed so a port/stbd walk arrow has room on either side) -->
         <rect x="122" y="98" width="56" height="26" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
         <text id="ship-vbow" x="150" y="116" fill="#f2f6fa" font-size="15" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
@@ -638,7 +638,11 @@
         <div class="field"><label for="cfg-fuel_rate_lph">Fuel rate (L/h)</label><input id="cfg-fuel_rate_lph" data-override="fuel_rate_lph" type="number" step="any"></div>
         <div class="field"><label for="cfg-prop_pitch_pct">Propeller pitch % (astern = negative)</label><input id="cfg-prop_pitch_pct" data-override="prop_pitch_pct" type="number" step="any" min="-100" max="100"></div>
       </div>
-      <p class="hint display-only-note">Display-only — not emitted on NMEA. Use Apply / Clear overrides in the Environment card.</p>
+      <div class="ctl-row cfg-card-actions">
+        <button id="cfg-override-apply-ship" class="small">Apply overrides</button>
+        <button id="cfg-override-clear-ship" class="small">Clear overrides</button>
+      </div>
+      <p class="hint display-only-note">Display-only — not emitted on NMEA. Apply / Clear here also covers the Environment temp/pressure readouts.</p>
     </div>
 
     <!-- Current -->
@@ -890,6 +894,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=47"></script>
+<script src="/static/app.js?v=48"></script>
 </body>
 </html>
