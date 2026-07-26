@@ -1138,6 +1138,12 @@
 
   function pushLine(p, line) {
     if (!p || p.frozen) return;
+    // Decide whether we're following the tail BEFORE mutating. Appending a line, trimming lines off
+    // the top (removeChild), and the browser's scroll anchoring all shift scrollTop — so measuring
+    // "am I at the bottom?" AFTER the mutation is unreliable and intermittently strands the view
+    // mid-list (feed "stops scrolling" while data keeps arriving until you interact). CSS sets
+    // overflow-anchor:none on .feed so the browser doesn't fight this manual re-pin.
+    const atBottom = p.feed.scrollHeight - p.feed.scrollTop - p.feed.clientHeight < 40;
     const div = el("div", "line");
     div.appendChild(document.createTextNode(line));
     const crlf = el("span", "crlf", "␍␊");
@@ -1146,8 +1152,7 @@
     p.feed.appendChild(div);
     p.count++;
     while (p.count > MAX_LINES && p.feed.firstChild) { p.feed.removeChild(p.feed.firstChild); p.count--; }
-    const nearBottom = p.feed.scrollHeight - p.feed.scrollTop - p.feed.clientHeight < 40;
-    if (nearBottom) p.feed.scrollTop = p.feed.scrollHeight;
+    if (atBottom) p.feed.scrollTop = p.feed.scrollHeight;
   }
 
   function appendLine(chId, line) {

@@ -295,6 +295,8 @@
   .feed {
     flex: 1;
     overflow-y: auto;
+    overflow-anchor: none;   /* we re-pin the tail manually in pushLine; don't let the browser's
+                                scroll anchoring fight it and strand the view mid-list */
     padding: 6px 8px;
     font-family: var(--mono);
     font-size: 12px;
