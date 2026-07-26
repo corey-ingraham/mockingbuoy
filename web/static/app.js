@@ -1976,23 +1976,59 @@
   }
 
   // --- Change-web-password card + first-login banner (wired ONCE at init, not per poll) ----------
-  function setPwStatus(t) { const s = $("sec-pw-status"); if (s) s.textContent = t; }
+  // kind: "err" (red) | "ok" (green) | "" (muted). Reuses the shared .msg/.msg.err/.msg.ok palette
+  // so a real error POPS in red instead of blending into the muted hint above it.
+  function setPwStatus(t, kind) {
+    const s = $("sec-pw-status");
+    if (s) { s.textContent = t; s.className = "msg" + (kind ? " " + kind : ""); }
+  }
+
+  // After a change, caddy bounces and drops the connection. Poll /api/security until it answers
+  // again (the browser re-auths with the new password), then replace the transient "changing"
+  // message with a clean confirmation and reconcile the first-login banner.
+  async function reconnectAfterPwChange() {
+    const deadline = Date.now() + 45000;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    while (Date.now() < deadline) {
+      await wait(2000);
+      try {
+        const resp = await fetch("/api/security", { cache: "no-store" });
+        if (!resp.ok) continue;              // caddy up but old creds cached => browser will re-prompt
+        const d = await resp.json();
+        setPwStatus("Password changed successfully.", "ok");
+        const banner = $("sec-default-banner");
+        if (banner) banner.style.display = d.password_is_default ? "" : "none";
+        return;
+      } catch (e) { /* caddy still restarting — keep polling */ }
+    }
+  }
 
   async function submitPwChange() {
-    const pw = $("sec-pw-new").value, cf = $("sec-pw-confirm").value;
-    if (pw.length < 12) { setPwStatus("Minimum 12 characters."); return; }
-    if (pw !== cf)      { setPwStatus("Passwords do not match."); return; }
-    setPwStatus("Applying…");
+    const cur = $("sec-pw-current").value, pw = $("sec-pw-new").value, cf = $("sec-pw-confirm").value;
+    if (!cur)           { setPwStatus("Enter your current password.", "err"); return; }
+    if (pw.length < 12) { setPwStatus("New password must be at least 12 characters.", "err"); return; }
+    if (pw !== cf)      { setPwStatus("New passwords do not match.", "err"); return; }
+    setPwStatus("Applying…", "");
     const CHANGING = "Password changing — you'll be asked to sign in again with the new password in a few seconds.";
+    let changing = false;
     try {
-      const r = await postJson("/api/security/rotate-password", { new_password: pw });
-      if (r.data && r.data.status === "failure") setPwStatus("Change failed: " + (r.data.detail || "unknown"));
-      else setPwStatus(CHANGING);           // ok OR pending: caddy is bouncing; browser will re-prompt
+      const r = await postJson("/api/security/rotate-password", { current_password: cur, new_password: pw });
+      if (r.status === 400 || (r.data && r.data.status === "failure")) {
+        // Wrong current password / policy / rollback — surface it in RED and keep the fields.
+        setPwStatus((r.data && r.data.detail) || "Change failed.", "err");
+        return;
+      }
+      changing = true;                       // ok OR pending: caddy is bouncing; browser will re-prompt
+      setPwStatus(CHANGING, "");
     } catch (e) {
-      setPwStatus(CHANGING);                // connection dropped by the caddy restart == success path
+      changing = true;                       // dropped connection by the caddy restart == success path
+      setPwStatus(CHANGING, "");
     } finally {
-      $("sec-pw-new").value = ""; $("sec-pw-confirm").value = "";   // never keep plaintext in the DOM
+      if (changing) {                        // only wipe plaintext once we've actually submitted a change
+        $("sec-pw-current").value = ""; $("sec-pw-new").value = ""; $("sec-pw-confirm").value = "";
+      }
     }
+    if (changing) reconnectAfterPwChange();
   }
 
   {

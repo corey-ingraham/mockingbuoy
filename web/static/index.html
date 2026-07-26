@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=39">
+<link rel="stylesheet" href="/static/app.css?v=40">
 </head>
 <body>
 
@@ -811,11 +811,12 @@
   </div>
   <div class="card" id="sec-pw-card">
     <h2>Change web password</h2>
+    <div class="field"><label for="sec-pw-current">Current password</label><input id="sec-pw-current" type="password" autocomplete="current-password" style="width:100%;"></div>
     <div class="field"><label for="sec-pw-new">New password</label><input id="sec-pw-new" type="password" autocomplete="new-password" style="width:100%;"></div>
     <div class="field"><label for="sec-pw-confirm">Confirm password</label><input id="sec-pw-confirm" type="password" autocomplete="new-password" style="width:100%;"></div>
-    <p class="hint" id="sec-pw-hint">Minimum 12 characters.</p>
+    <p class="hint" id="sec-pw-hint">Minimum 12 characters. You'll be signed out and asked to sign in with the new password.</p>
     <button id="sec-pw-submit" class="primary small">Change web password</button>
-    <p class="hint" id="sec-pw-status"></p>
+    <p class="msg" id="sec-pw-status"></p>
   </div>
   <div class="card">
     <h2>Security Posture <span class="hint">(read-only · no secrets)</span></h2>
@@ -836,6 +837,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=39"></script>
+<script src="/static/app.js?v=40"></script>
 </body>
 </html>

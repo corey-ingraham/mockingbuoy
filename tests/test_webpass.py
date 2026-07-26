@@ -11,6 +11,7 @@ never appears in any persisted file, in argv, in a response body, or in an error
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import secrets
@@ -31,6 +32,18 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 # A canned bcrypt-shaped hash: ``$2b$`` + 2-digit cost + ``$`` + 53 chars. Not a secret; a fixed
 # stand-in for whatever ``caddy hash-password`` would emit. Matches the app-side format check.
 _CANNED_HASH = "$2b$12$" + "a" * 53
+
+# The "current" web password these tests authenticate with. The handler re-verifies the submitted
+# current password against the Basic Authorization header caddy already validated, so every rotate
+# request must carry BOTH a matching header and a matching current_password. Not a real secret.
+_CURRENT_PW = "current-web-pass-xyz"
+
+
+def _auth_headers(pw: str = _CURRENT_PW) -> dict[str, str]:
+    """A Basic Authorization header for user ``admin`` with ``pw`` — stands in for the header caddy
+    forwards after its own bcrypt check."""
+    token = base64.b64encode(f"admin:{pw}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
 
 
 @pytest.fixture
@@ -54,10 +67,36 @@ def test_rotate_password_rejects_short_password(webpass_ctx: tuple[TestClient, P
     never the value; no request file is written; nothing plaintext is persisted."""
     c, data_dir = webpass_ctx
     short = "a" * 11  # 11 chars, one under the floor; a filler literal, not a secret
-    resp = c.post("/api/security/rotate-password", json={"new_password": short})
+    resp = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": _CURRENT_PW, "new_password": short},
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 400
     assert "12 characters" in resp.json()["detail"]
     assert short not in resp.text  # the value never echoes back
+    assert not (data_dir / web_app._WEBPASS_REQUEST).exists()
+
+
+def test_rotate_password_wrong_current_rejected(webpass_ctx: tuple[TestClient, Path]) -> None:
+    """Re-auth gate: a current_password that does NOT match the Basic Authorization header caddy
+    validated is refused 400 (and a missing header likewise), before any request file is written."""
+    c, data_dir = webpass_ctx
+    good_new = secrets.token_hex(8)
+    # (a) current_password mismatches the header password.
+    resp = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": "wrong-pass", "new_password": good_new},
+        headers=_auth_headers(),
+    )
+    assert resp.status_code == 400
+    assert "current password" in resp.json()["detail"]
+    # (b) no Authorization header at all => fail closed, same 400.
+    resp2 = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": _CURRENT_PW, "new_password": good_new},
+    )
+    assert resp2.status_code == 400
     assert not (data_dir / web_app._WEBPASS_REQUEST).exists()
 
 
@@ -72,7 +111,11 @@ def test_rotate_password_writes_hash_only_request(
     monkeypatch.setattr(web_app, "_WEBPASS_POLL_INTERVAL_S", 0.01)
     throwaway = secrets.token_hex(8)  # 16-char random in-memory value, never a real secret
 
-    resp = c.post("/api/security/rotate-password", json={"new_password": throwaway})
+    resp = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": _CURRENT_PW, "new_password": throwaway},
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 200
     assert resp.json() == {"status": "pending"}  # no result file => pending
 
@@ -101,7 +144,11 @@ def test_rotate_password_pending_when_no_result(
     monkeypatch.setattr(web_app, "_WEBPASS_POLL_TIMEOUT_S", 0.05)
     monkeypatch.setattr(web_app, "_WEBPASS_POLL_INTERVAL_S", 0.01)
 
-    resp = c.post("/api/security/rotate-password", json={"new_password": secrets.token_hex(8)})
+    resp = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": _CURRENT_PW, "new_password": secrets.token_hex(8)},
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 200
     assert resp.json() == {"status": "pending"}
     assert (data_dir / web_app._WEBPASS_MARKER).exists()
@@ -133,15 +180,21 @@ def test_rotate_password_ok_writes_marker(
     _simulate_root_result(monkeypatch, data_dir, "ok")
     throwaway = secrets.token_hex(8)
 
-    resp = c.post("/api/security/rotate-password", json={"new_password": throwaway})
+    resp = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": _CURRENT_PW, "new_password": throwaway},
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
     assert (data_dir / web_app._WEBPASS_MARKER).exists()
 
-    # Scrub: no file in the writable dir may contain the throwaway plaintext.
+    # Scrub: no file in the writable dir may hold the throwaway plaintext OR the current password.
     for f in data_dir.iterdir():
         if f.is_file():
-            assert throwaway not in f.read_text(encoding="utf-8", errors="ignore")
+            body = f.read_text(encoding="utf-8", errors="ignore")
+            assert throwaway not in body
+            assert _CURRENT_PW not in body
 
 
 def test_rotate_password_failure_no_marker(
@@ -152,7 +205,11 @@ def test_rotate_password_failure_no_marker(
     c, data_dir = webpass_ctx
     _simulate_root_result(monkeypatch, data_dir, "failure", detail="health")
 
-    resp = c.post("/api/security/rotate-password", json={"new_password": secrets.token_hex(8)})
+    resp = c.post(
+        "/api/security/rotate-password",
+        json={"current_password": _CURRENT_PW, "new_password": secrets.token_hex(8)},
+        headers=_auth_headers(),
+    )
     assert resp.status_code == 200
     assert resp.json() == {"status": "failure", "detail": "health"}
     assert not (data_dir / web_app._WEBPASS_MARKER).exists()

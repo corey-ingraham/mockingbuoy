@@ -21,6 +21,8 @@ Key seams:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -35,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import janus
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
@@ -514,6 +516,26 @@ def _delete_webpass_marker() -> None:
     (Path(_DIAG_DATA_DIR) / _WEBPASS_MARKER).unlink(missing_ok=True)
 
 
+def _request_basic_password(request: Request) -> str | None:
+    """The password half of the request's HTTP Basic ``Authorization`` header, or None.
+
+    Caddy has ALREADY bcrypt-verified this header against the live password before proxying, so it
+    is the authoritative "current password". We cannot re-verify bcrypt in-process (no bcrypt lib;
+    3.13 dropped ``crypt``), so requiring the user to re-type the current password and comparing it
+    (constant-time) to this value proves they know it — without any new dependency. Basic userids
+    cannot contain ':' so the password is everything after the first ':'."""
+    header = request.headers.get("authorization", "")
+    if header[:6].lower() != "basic ":
+        return None
+    try:
+        decoded = base64.b64decode(header[6:].strip(), validate=True).decode("utf-8", "replace")
+    except (binascii.Error, ValueError):
+        return None
+    if ":" not in decoded:
+        return None
+    return decoded.split(":", 1)[1]
+
+
 # --- control request model --------------------------------------------------------
 
 
@@ -792,6 +814,7 @@ class RotatePasswordRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    current_password: str
     new_password: str
 
 
@@ -1774,7 +1797,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/api/security/rotate-password")
     async def api_rotate_password(
-        body: RotatePasswordRequest, _: None = Depends(auth)
+        body: RotatePasswordRequest, request: Request, _: None = Depends(auth)
     ) -> dict[str, Any]:
         # In-app web-password change. The app is sandboxed (it cannot write ``secrets/service.env``
         # nor restart caddy); it hashes the new password IN-PROCESS via caddy (stdin, never argv),
@@ -1785,7 +1808,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # discarded. It is NEVER logged, persisted, or in argv. Only a bcrypt HASH is written.
         new_password = body.new_password
         try:
-            # 1. Length policy. The 400 detail names the POLICY, never the value.
+            # 0. Re-authenticate: the caller must re-type the CURRENT password. Caddy already
+            #    bcrypt-verified the Basic Authorization header, so comparing the submitted current
+            #    password to that header (constant-time) proves the operator knows it — blocking a
+            #    walk-up change on an unattended, already-authenticated browser. Fail closed if the
+            #    header is somehow absent. The detail never distinguishes wrong-vs-missing.
+            header_pw = _request_basic_password(request)
+            if header_pw is None or not secrets.compare_digest(header_pw, body.current_password):
+                raise HTTPException(status_code=400, detail="current password is incorrect")
+
+            # 1. Length policy on the NEW password. The 400 detail names the POLICY, not the value.
             if len(new_password) < _WEBPASS_MIN_LEN:
                 raise HTTPException(
                     status_code=400,
@@ -1809,6 +1841,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             # Defensive: model is normally mutable, so this succeeds.
             with contextlib.suppress(Exception):
                 object.__setattr__(body, "new_password", "")
+                object.__setattr__(body, "current_password", "")
 
         # 3. Hand the HASH (never plaintext) + a fresh nonce to the root unit via a 0600 request.
         nonce = secrets.token_hex(16)
