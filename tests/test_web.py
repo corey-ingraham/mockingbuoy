@@ -813,7 +813,8 @@ def test_inputs_endpoint_shape_and_no_path_leak(client: TestClient) -> None:
     slots = resp.json()
     assert {s["id"] for s in slots} == {"gps_in", "satcompass_in", "ais_in"}
     for s in slots:
-        assert set(s) == {"id", "function", "detected_class", "live", "mismatch"}
+        assert set(s) == {"id", "function", "detected_class", "live", "mismatch", "port"}
+        assert s["port"] is None  # simulate placeholders don't resolve => no port revealed (R19)
         assert s["detected_class"] is None  # simulate mode: no router, no detection
         assert s["live"] is False
         assert s["mismatch"] is False

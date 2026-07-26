@@ -329,6 +329,29 @@ def _health_to_dict(
     return out
 
 
+def _resolve_port(path: str | None) -> str | None:
+    """Resolve a configured device path to its kernel port name (e.g. ``ttyUSB0``) for display.
+
+    A ``/dev/serial/by-id/...`` symlink resolves to its ``/dev/ttyX`` target, so the operator sees
+    WHICH port a channel uses without the adapter brand/serial the by-id link itself carries (R19).
+    We reveal ONLY a real resolved device node (basename) — if the path does not resolve (a Simulate
+    placeholder, or hardware absent) we return None rather than leak the by-id tail (adapter serial)
+    or a placeholder. Only a basename is ever returned — never a full path."""
+    if not path:
+        return None
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        return None
+    # Unresolved (still under by-id, or the raw path came back unchanged) => reveal nothing.
+    if resolved == path or "by-id" in resolved:
+        return None
+    base = os.path.basename(resolved)
+    if not base or base.startswith(("usb-", "pci-")):  # never surface an adapter-serial basename
+        return None
+    return base
+
+
 def _redacted_config_dict(config: EngineConfig) -> dict[str, Any]:
     """``config.to_dict()`` with every device ``path`` dropped (R19 / M9).
 
@@ -341,8 +364,11 @@ def _redacted_config_dict(config: EngineConfig) -> dict[str, Any]:
     is left intact — it is not a device path and the UI basenames it for display."""
     data = config.to_dict()
     for channel in data.get("channels", []):
+        # Expose only the resolved kernel port name (ttyUSB0), not the by-id link (brand/serial).
+        channel["port"] = _resolve_port(channel.get("path"))
         channel.pop("path", None)
     for inp in data.get("inputs", []):
+        inp["port"] = _resolve_port(inp.get("path"))
         inp.pop("path", None)
     return data
 
@@ -1757,6 +1783,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
     async def api_inputs(_: None = Depends(auth)) -> list[dict[str, Any]]:
         # Read-only slot view. Info-leak hygiene (R19): only the slot id, declared function, and the
         # detection booleans are exposed — never the device path / by-id link / adapter serial.
+        # Resolved kernel port name per slot (ttyUSB0), never the by-id link/adapter serial (R19).
+        port_by_id = {i.id: _resolve_port(i.path) for i in manager.config.inputs}
         out: list[dict[str, Any]] = []
         for entry in manager.input_status():
             function = str(entry["function"])
@@ -1769,6 +1797,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     "detected_class": detected_class,
                     "live": bool(entry["live"]),
                     "mismatch": _input_mismatch(function, detected_class),
+                    "port": port_by_id.get(str(entry["id"])),
                 }
             )
         return out

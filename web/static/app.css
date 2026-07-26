@@ -153,6 +153,23 @@
   #view-streams .pane { min-height: 0; }
   #view-streams .feed { min-height: 0; max-height: 32vh; }   /* tune 28–34vh so INPUTS + OUTPUTS both fit 1366×768 */
 
+  /* Hide scrollbars in the Streams tab (feeds auto-scroll; grids still wheel-scroll) — no visible bars. */
+  #view-streams .feed, #view-streams .streams-section .panes-grid,
+  #view-streams .stats-compact { scrollbar-width: none; }
+  #view-streams .feed::-webkit-scrollbar, #view-streams .streams-section .panes-grid::-webkit-scrollbar,
+  #view-streams .stats-compact::-webkit-scrollbar { width: 0; height: 0; }
+
+  /* resolved kernel port name (ttyUSB0) in a pane header — "TX <port>" / "RX <port>" */
+  .com-port {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 10px;
+    color: var(--muted); background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; margin-left: 8px; letter-spacing: .3px;
+  }
+
+  /* output on/off toggle button: green when emitting, red when off (base sizing from .small) */
+  .out-toggle.out-on  { background: #186a3b; border-color: #2ea043; color: #eafff1; }
+  .out-toggle.out-off { background: #4b2224; border-color: #6e2c30; color: #ffb4b0; }
+
   /* empty-state note — shown only when the input section is flagged .no-inputs */
   .empty-state {
     display: none;

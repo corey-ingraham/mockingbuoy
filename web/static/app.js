@@ -910,6 +910,7 @@
     if (ch.talker) roleEl.appendChild(el("span", "talker", "  " + ch.talker));
     hdr.appendChild(roleEl);
     hdr.appendChild(el("span", "badge " + role, role));
+    if (ch.port) hdr.appendChild(el("span", "com-port", "TX " + ch.port));
     const srcBadge = el("span", "src src-off", "OFF");
     hdr.appendChild(srcBadge);
     pane.appendChild(hdr);
@@ -942,23 +943,31 @@
     pane.appendChild(feed);
 
     const ctl = el("div", "pane-ctl");
-    // real output toggle
-    const swWrap = el("label", "switch");
-    const sw = document.createElement("input"); sw.type = "checkbox"; sw.checked = ch.enabled !== false;
-    swWrap.appendChild(sw); swWrap.appendChild(document.createTextNode("Output"));
+    // Real output toggle — a color-coded button (green = ON/emitting, red = OFF), not a checkbox,
+    // so its state reads at a glance like Freeze/Clear.
+    const btnOut = el("button", "small out-toggle", "");
     const frozenTag = el("span", "frozen-tag", "");
     const btnFreeze = el("button", "small", "Freeze view");
     const btnClear = el("button", "small", "Clear");
-    ctl.appendChild(swWrap);
+    ctl.appendChild(btnOut);
     ctl.appendChild(btnFreeze);
     ctl.appendChild(btnClear);
     ctl.appendChild(frozenTag);
     pane.appendChild(ctl);
 
     const state = {
-      pane, feed, srcBadge, sw, frozen: false, count: 0, enabled: ch.enabled !== false,
+      pane, feed, srcBadge, btnOut, frozen: false, count: 0, enabled: ch.enabled !== false,
       sAlive, sEmitVal, sErrVal, sSinks, frozenTag, btnFreeze,
     };
+
+    function paintOut() {
+      const on = state.enabled;
+      btnOut.textContent = on ? "Output: ON" : "Output: OFF";
+      btnOut.classList.toggle("out-on", on);
+      btnOut.classList.toggle("out-off", !on);
+    }
+    state.paintOut = paintOut;
+    paintOut();
 
     btnFreeze.addEventListener("click", () => {
       state.frozen = !state.frozen;
@@ -967,9 +976,12 @@
       frozenTag.textContent = state.frozen ? "VIEW FROZEN (log paused)" : "";
     });
     btnClear.addEventListener("click", () => { feed.textContent = ""; state.count = 0; });
-    sw.addEventListener("change", async () => {
-      try { await control({ action: "channel", channel_id: ch.id, enabled: sw.checked }); }
-      catch (e) { toast("Toggle failed: " + e.message); sw.checked = !sw.checked; }
+    btnOut.addEventListener("click", async () => {
+      const next = !state.enabled;
+      btnOut.disabled = true;
+      try { await control({ action: "channel", channel_id: ch.id, enabled: next }); state.enabled = next; paintOut(); }
+      catch (e) { toast("Toggle failed: " + e.message); }
+      finally { btnOut.disabled = false; }
     });
 
     panes[ch.id] = state;
@@ -992,6 +1004,7 @@
     if (inp.function) roleEl.appendChild(el("span", "talker", "  " + inp.function));
     hdr.appendChild(roleEl);
     hdr.appendChild(el("span", "badge " + fn, fn));
+    if (inp.port) hdr.appendChild(el("span", "com-port", "RX " + inp.port));
     const dotEl = el("span", "dot " + (inp.live ? "live" : "dead"));
     hdr.appendChild(dotEl);
     pane.appendChild(hdr);
@@ -1197,8 +1210,7 @@
       const p = panes[id];
       if (!p) continue;
       const enabled = c.enabled !== false;
-      p.enabled = enabled;
-      if (p.sw.checked !== enabled) p.sw.checked = enabled;
+      if (p.enabled !== enabled) { p.enabled = enabled; if (p.paintOut) p.paintOut(); }
       p.pane.classList.toggle("ch-off", !enabled);
       // staleness alarm suppressed when disabled
       const alive = enabled ? (c.alive !== false) : true;
