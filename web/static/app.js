@@ -227,7 +227,8 @@
     if (!Number.isFinite(v) || Math.abs(v) < 0.05) { g.setAttribute("opacity", "0"); return; }
     g.setAttribute("opacity", "1");
     const dir = v >= 0 ? 1 : -1;
-    const len = Math.max(8, Math.min(60, Math.abs(v) * 18));
+    // cap so the tip stays inside the hull outline on EITHER side of the (now narrower) walk box
+    const len = Math.max(8, Math.min(48, Math.abs(v) * 18));
     const x1 = 150 + dir * len;
     const line = g.querySelector("line"), head = g.querySelector("polygon");
     if (line) { line.setAttribute("x1", "150"); line.setAttribute("y1", String(y)); line.setAttribute("x2", x1.toFixed(1)); line.setAttribute("y2", String(y)); }
@@ -419,9 +420,12 @@
     const TW = 36;
     // tracks centred at 25% / 75% of the 200-wide viewBox so each bar sits under its RPM/LOAD header;
     // wide gap between them leaves room for the LOAD axis labels (no longer clipped by the RPM bar)
+    // green / amber / red operating bands (marine tach style), value ranges in each track's own units
     const tracks = [
-      { kind: "rpm", x: 32, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM" },
-      { kind: "load", x: 132, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD" },
+      { kind: "rpm", x: 32, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM",
+        zones: [[0, 2600, "#2ea043"], [2600, 3150, "#d9a520"], [3150, 3500, "#e5484d"]] },
+      { kind: "load", x: 132, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD",
+        zones: [[0, 75, "#2ea043"], [75, 90, "#d9a520"], [90, 100, "#e5484d"]] },
     ];
     for (const t of tracks) {
       const bg = document.createElementNS(NS, "rect");
@@ -429,6 +433,16 @@
       bg.setAttribute("width", String(TW)); bg.setAttribute("height", String(ENG_H));
       bg.setAttribute("rx", "3"); bg.setAttribute("fill", "url(#faceGrad)"); bg.setAttribute("stroke", "url(#bezelGrad)"); bg.setAttribute("stroke-width", "1.5");
       svg.appendChild(bg);
+      // redline strip riding just right of the track: bottom=green, mid=amber, top=red
+      const zx = t.x + TW + 9;
+      for (const [zf, zt, zc] of t.zones) {
+        const yTop = ENG_BOT - (zt / t.max) * ENG_H, yBot = ENG_BOT - (zf / t.max) * ENG_H;
+        const z = document.createElementNS(NS, "rect");
+        z.setAttribute("x", String(zx)); z.setAttribute("y", yTop.toFixed(1));
+        z.setAttribute("width", "4"); z.setAttribute("height", (yBot - yTop).toFixed(1));
+        z.setAttribute("rx", "1"); z.setAttribute("fill", zc); z.setAttribute("opacity", "0.92");
+        svg.appendChild(z);
+      }
       for (const tv of t.ticks) {
         const y = ENG_BOT - (tv / t.max) * ENG_H;
         const ln = document.createElementNS(NS, "line");
@@ -643,8 +657,8 @@
     const vFwd = trackOk ? shipSog * Math.cos(dRad) : 0;
     const tang = rot * Math.PI / (180 * 60) * 15 * 1.9438; // yaw contribution at L/2, m/s -> kn
     const vBow = vLat + tang, vStern = vLat - tang;
-    setLatArrow("ship-abow", vBow, 112);
-    setLatArrow("ship-astern", vStern, 279);
+    setLatArrow("ship-abow", vBow, 111);
+    setLatArrow("ship-astern", vStern, 273);
     // bow/stern lateral walk shown as a always-populated kt readout in the hull boxes
     setTxt("ship-vbow", Math.abs(vBow).toFixed(2) + " kt");
     setTxt("ship-vstern", Math.abs(vStern).toFixed(2) + " kt");
@@ -1844,18 +1858,28 @@
       node.value = (ov && ov[key] != null) ? ov[key] : "";
     }
   }
+  // Mirror the server-side effective_*_sim helpers: the background sims default ON in simulate mode
+  // when their config block is ABSENT (the default-on lives in the effective helper, not config.json),
+  // so an unsaved/absent block must render as CHECKED. An explicit block uses its own enabled flag;
+  // outside simulate mode the sims are inert, so the box reads unchecked.
+  function effectiveSimEnabled(block) {
+    const simulate = String((cfg && cfg.mode) || "").toLowerCase() === "simulate";
+    if (!simulate) return false;
+    if (block == null) return true;         // absent → default-on
+    return !!block.enabled;                 // explicit → honour it
+  }
   function loadDepthSimIntoConfig() {
     const en = $("cfg-depth_sim-enabled");
-    if (en) { const ds = (cfg && cfg.depth_sim) || null; en.checked = !!(ds && ds.enabled); }
+    if (en) en.checked = effectiveSimEnabled(cfg && cfg.depth_sim);
     const da = $("cfg-depth-alert"); if (da && String(da.value).trim() === "") da.value = ALERT_DEPTH_M.toFixed(1);
     loadSteeringSimIntoConfig();
   }
   // Load the rudder-hold / heading-hold sim enable toggles from cfg.rudder_sim / cfg.heading_sim.
   function loadSteeringSimIntoConfig() {
     const re = $("cfg-rudder_sim-enabled");
-    if (re) { const rs = (cfg && cfg.rudder_sim) || null; re.checked = !!(rs && rs.enabled); }
+    if (re) re.checked = effectiveSimEnabled(cfg && cfg.rudder_sim);
     const he = $("cfg-heading_sim-enabled");
-    if (he) { const hs = (cfg && cfg.heading_sim) || null; he.checked = !!(hs && hs.enabled); }
+    if (he) he.checked = effectiveSimEnabled(cfg && cfg.heading_sim);
   }
 
   // Legacy config-level Save (mode / channels / inputs / route / replay / AIS). Not part of the A2

@@ -254,6 +254,14 @@
   #view-streams .pane-hdr .src.src-sim { background: var(--warn); color: #1c1102; border: 1px solid #cc7a00; }
   #view-streams .pane-hdr .src.src-off { background: rgba(139,148,158,.18); color: var(--muted); border: 1px solid var(--border); }
 
+  /* Config-tab source pills (channels + AIS traffic) share the Conning tab's solid .stat-pill look. */
+  #view-config .src {
+    font-family: var(--sans); font-size: 11px; font-weight: 800; padding: 1px 8px; text-transform: none;
+  }
+  #view-config .src.src-live { background: var(--ok); color: #04120a; border: 1px solid #00b866; }
+  #view-config .src.src-sim { background: var(--warn); color: #1c1102; border: 1px solid #cc7a00; }
+  #view-config .src.src-off { background: rgba(139,148,158,.18); color: var(--muted); border: 1px solid var(--border); }
+
   .stats {
     display: flex;
     flex-wrap: wrap;
@@ -559,13 +567,16 @@
   /* env panel — sea state + twin wind dials + weather readings */
   .env-sea { text-align: center; margin-bottom: 4px; }
   .env-sea .ins-val-row { justify-content: center; }
-  .env-dials { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  /* space the two wind dials apart using the spare room on either side (matches the attitude pair) */
+  .env-dials { display: flex; gap: 10px; justify-content: space-evenly; flex-wrap: wrap; }
   .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; }
   .env-dial svg { width: 100%; height: auto; max-width: 170px; max-height: 18vh; margin: 2px auto; }
   /* gauge title — prominent (Wind True / Wind Relative) */
   .env-dial-label { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text); margin-bottom: 2px; text-align: center; }
   /* per-gauge 2x2 stat block (SPEED KTS | DIRECTION over their values), JPG style */
   .wind-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; width: 100%; margin: 1px 0 4px; }
+  /* centre each SPEED/DIRECTION column under the gauge title and above the dial */
+  .wind-stat { text-align: center; }
   .wind-stat-t { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   .wind-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .env-dial .g-sub { margin-top: 2px; text-align: center; }
@@ -651,7 +662,8 @@
   .ap-cell { display: flex; flex-direction: column; gap: 1px; }
   .ap-num { font-family: var(--mono); font-size: clamp(18px, 2.4vh, 28px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .ap-ind { display: flex; flex-direction: column; gap: 2px; }
-  .ap-ind svg { width: 100%; height: auto; max-width: 100%; margin: 0; display: block; }
+  /* off-course / off-track indicators sit a touch smaller than full width (Corey: slightly reduce scale) */
+  .ap-ind svg { width: 100%; height: auto; max-width: 86%; margin: 0 auto; display: block; }
 
   /* alerts panel — derived rows + Ack/Silence */
   #alerts-silence.active { color: var(--warn); border-color: var(--warn); }

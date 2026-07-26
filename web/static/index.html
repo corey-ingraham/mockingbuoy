@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=45">
+<link rel="stylesheet" href="/static/app.css?v=46">
 </head>
 <body>
 
@@ -233,14 +233,13 @@
         <!-- athwartships (lateral) walk arrows, derived; hidden when ~0 -->
         <g id="ship-abow" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
         <g id="ship-astern" opacity="0"><line stroke="#f2f6fa" stroke-width="3.5"/><polygon fill="#f2f6fa"/></g>
-        <!-- bow-walk readout box -->
-        <rect x="106" y="96" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
-        <text id="ship-vbow" x="146" y="118" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
-        <polygon points="190,106 200,112 190,118" fill="#cfd6dd"/>
-        <!-- centre fuel table; two-row headers so each column reads cleanly -->
-        <rect x="100" y="166" width="100" height="60" rx="4" fill="#05080c" stroke="#1c2530" stroke-width="1.4"/>
-        <line x1="140" y1="166" x2="140" y2="226" stroke="#1c2530"/>
-        <line x1="170" y1="166" x2="170" y2="226" stroke="#1c2530"/>
+        <!-- bow-walk readout box (centred + narrowed so a port/stbd walk arrow has room on either side) -->
+        <rect x="122" y="98" width="56" height="26" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vbow" x="150" y="116" fill="#f2f6fa" font-size="15" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
+        <!-- centre fuel table; two-row headers so each column reads cleanly (white outline to match the walk boxes) -->
+        <rect x="100" y="166" width="100" height="60" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <line x1="140" y1="166" x2="140" y2="226" stroke="#cfd6dd" stroke-width="1"/>
+        <line x1="170" y1="166" x2="170" y2="226" stroke="#cfd6dd" stroke-width="1"/>
         <text x="120" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL</text>
         <text x="120" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/GAL</text>
         <text x="155" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL</text>
@@ -250,10 +249,9 @@
         <text id="fuel-total" x="120" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
         <text id="fuel-rate" x="155" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
         <text id="fuel-pernm" x="185" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
-        <!-- stern-walk readout box -->
-        <rect x="106" y="258" width="80" height="32" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
-        <text id="ship-vstern" x="146" y="280" fill="#f2f6fa" font-size="16" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
-        <polygon points="190,268 200,274 190,280" fill="#cfd6dd"/>
+        <!-- stern-walk readout box (centred + narrowed to match the bow box) -->
+        <rect x="122" y="260" width="56" height="26" rx="4" fill="#05080c" stroke="#cfd6dd" stroke-width="1.4"/>
+        <text id="ship-vstern" x="150" y="278" fill="#f2f6fa" font-size="15" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">0.00 kt</text>
         <!-- rudder readout inside the hull near the stern (JPG placement) -->
         <text x="150" y="336" fill="#8792a0" font-size="12" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">Rudder</text>
         <text x="150" y="359" fill="#f2f6fa" font-size="19" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle"><tspan id="ship-rud-val">--</tspan>°</text>
@@ -886,6 +884,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=45"></script>
+<script src="/static/app.js?v=46"></script>
 </body>
 </html>
