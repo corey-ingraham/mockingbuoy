@@ -28,7 +28,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Protocol, SupportsFloat, cast
 
 import pynmea2
 from geographiclib.geodesic import Geodesic
@@ -41,10 +41,16 @@ from .config import (
     ChannelSpec,
     DepthSimSpec,
     EngineConfig,
+    HeadingSimSpec,
     RouteSpec,
+    RudderSimSpec,
     TimeSourceSpec,
+    effective_depth_sim,
+    effective_heading_sim,
+    effective_rudder_sim,
 )
 from .depthsim import depth_sim
+from .depthsim import depth_sim as depth_sim_fn  # alias for use where a param shadows ``depth_sim``
 from .diagnostics import CaptureSession, PortDiagnostics
 from .gps_generator import GpsGenerator, zda_from_datetime
 from .heading_generator import HeadingGenerator
@@ -56,6 +62,7 @@ from .router import Router
 from .seastate import sea_state_motion
 from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
+from .steeringsim import heading_sim, rudder_sim
 from .tcp_tap import TcpTap
 from .timeauthority import TimeAuthority
 from .writers import LogWriter, NullWriter, PtyWriter, Writer
@@ -415,19 +422,48 @@ class _Clock(Protocol):
 
 
 class PhysicsEngine:
-    """Pure position/clock integrator — no threading, so it is deterministically testable."""
+    """Pure position/clock integrator — no threading, so it is deterministically testable.
+
+    ``_heading_setpoint`` (hook-updated by :meth:`set_heading_setpoint`) and ``_depth_offset``
+    (construction-time) are scalars held CONSTANT across any single :meth:`advance` call, so advance
+    stays pure — identical state + clock give identical output. A manual heading update between two
+    calls re-centres the wander, which is intended and not part of the purity test.
+    """
 
     def __init__(
         self,
         movement_mode: str,
         time_source: _Clock,
+        *,
         depth_sim: DepthSimSpec | None = None,
+        initial_depth_m: float = 0.0,
+        initial_utc_ts: float = 0.0,
+        rudder_sim: RudderSimSpec | None = None,
+        heading_sim: HeadingSimSpec | None = None,
+        initial_heading_deg: float = 0.0,
     ) -> None:
         self._mode = movement_mode
         self._time = time_source
-        # None (the default) keeps every existing construction byte-identical: no depth_m write, so
-        # depth_m tracks whatever the initial state / RX seam set it to, exactly as before.
+        # The ALREADY-effective depth spec (or None). None keeps every existing construction
+        # byte-identical: no depth_m write, so depth_m tracks whatever the initial state / RX seam
+        # set it to, exactly as before.
         self._depth_sim = depth_sim
+        # Construction-time depth offset so depth STARTS at the configured depth and drifts smoothly
+        # from there (subtract the sim's own t0 value so the first tick lands on initial_depth_m).
+        self._depth_offset = 0.0
+        if depth_sim is not None and depth_sim.enabled:
+            self._depth_offset = (
+                depth_sim_fn(depth_sim.base_depth_m, initial_utc_ts, depth_sim) - initial_depth_m
+            )
+        self._rudder_sim = rudder_sim
+        self._heading_sim = heading_sim
+        # Mutable single float (GIL-atomic); the heading wander is centred here, refreshed by the
+        # update_state hook when a manual edit sets heading_true_deg.
+        self._heading_setpoint = initial_heading_deg
+
+    def set_heading_setpoint(self, deg: float) -> None:
+        """Re-centre the heading wander (called from the manual-edit hook)."""
+        self._heading_setpoint = deg
 
     def advance(self, state: VesselState, dt_s: float) -> dict[str, object]:
         """Return the field changes for advancing ``state`` by ``dt_s`` seconds."""
@@ -447,9 +483,24 @@ class PhysicsEngine:
         # the same absolute clock (new_utc.timestamp()) the pitch/roll write uses, so advance stays
         # pure and deterministic. depth_m is wire-backed, so DPT/DBT and the depth chart track it.
         if self._depth_sim is not None and self._depth_sim.enabled:
-            changes["depth_m"] = depth_sim(
-                self._depth_sim.base_depth_m, new_utc.timestamp(), self._depth_sim
+            # Re-apply the floor AFTER the offset subtraction: depth_sim() floors its own sum at
+            # min_depth_m, but subtracting the construction-time offset can push the result back
+            # below the floor (deeply negative for a shallow seeded base), which would emit invalid
+            # DPT/DBT on the wire. Clamp again so depth_m can never go below min_depth_m.
+            changes["depth_m"] = max(
+                self._depth_sim.min_depth_m,
+                depth_sim(self._depth_sim.base_depth_m, new_utc.timestamp(), self._depth_sim)
+                - self._depth_offset,
             )
+        # Optional helm-hold oscillation and heading wander, off the same absolute clock so advance
+        # stays pure. Route gating is NOT here — it lives in _PhysicsThread._tick (a route owns the
+        # helm and pops these). Depth runs regardless of route.
+        if self._rudder_sim is not None and self._rudder_sim.enabled:
+            changes["rudder_angle_deg"] = rudder_sim(new_utc.timestamp(), self._rudder_sim)
+        if self._heading_sim is not None and self._heading_sim.enabled:
+            ht = heading_sim(self._heading_setpoint, new_utc.timestamp(), self._heading_sim)
+            changes["heading_true_deg"] = ht
+            changes["heading_mag_deg"] = (ht - state.mag_variation_deg) % 360.0
         return changes
 
 
@@ -595,6 +646,13 @@ class _PhysicsThread(threading.Thread):
             # Replay owns own-ship position and the clock (from the capture); physics adds
             # only cosmetic sea-state motion, so a replayed track is never double-integrated.
             for owned in ("utc", "lat", "lon"):
+                changes.pop(owned, None)
+        if self._route is not None:
+            # A route owns the helm; drop sim-authored heading/rudder so they never fight the route
+            # (same carve-out shape as replay above, keyed on the route DRIVER existing — NOT on
+            # route_changes truthiness, which stays {"sog_kn":0.0} when paused/finished). Depth is
+            # NOT popped — it runs under a route too.
+            for owned in ("heading_true_deg", "heading_mag_deg", "rudder_angle_deg"):
                 changes.pop(owned, None)
         if route_changes:
             changes = {**route_changes, **changes}
@@ -1233,8 +1291,19 @@ class Engine:
         ):
             self._route_driver = _RouteDriver(config.route)
 
+        # Resolve the effective sim specs and seed values from the initial state. The helpers return
+        # None outside simulate mode, so auto/replay get no sim writes (live RX / replayed data is
+        # never overwritten). Route driver is still built exactly as above (route section).
+        _init = self._shared.snapshot()
         self._physics_engine = PhysicsEngine(
-            config.movement.mode, clock, depth_sim=config.depth_sim
+            config.movement.mode,
+            clock,
+            depth_sim=effective_depth_sim(config, _init.depth_m),
+            initial_depth_m=_init.depth_m,
+            initial_utc_ts=_init.utc.timestamp(),
+            rudder_sim=effective_rudder_sim(config),
+            heading_sim=effective_heading_sim(config),
+            initial_heading_deg=_init.heading_true_deg,
         )
         self._physics = _PhysicsThread(
             self._shared,
@@ -1712,7 +1781,18 @@ class Engine:
         return [s.status() for s in sessions]
 
     def update_state(self, **changes: object) -> VesselState:
-        """Apply an external state edit (the web control seam)."""
+        """Apply an external state edit (the web control seam).
+
+        A manual heading edit re-centres the heading-sim wander (via the setpoint hook) instead of
+        being fought by it next tick; rudder/depth manual edits are simply overwritten by their sim
+        while it is on — the intended "driven" behaviour, surfaced to the UI by grey-out.
+        """
+        if "heading_true_deg" in changes:
+            # The manual-edit payload carries a validated number here; cast narrows the ``object``
+            # value so the float coercion type-checks (mypy) without changing runtime behaviour.
+            self._physics_engine.set_heading_setpoint(
+                float(cast("SupportsFloat", changes["heading_true_deg"]))
+            )
         return self._shared.update(**changes)
 
     def set_channel_enabled(self, channel_id: str, enabled: bool) -> bool:

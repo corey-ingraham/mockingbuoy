@@ -69,6 +69,9 @@ def simulate_display_instruments(state: VesselState) -> dict[str, float | str | 
     rot: float = state.rot_dpm
 
     # --- propulsion (propeller-law load, rot-coupled port/stbd) --------------------
+    # Controllable-pitch propeller order: display-only, default full AHEAD (+100 %). An operator
+    # override (persisted, -100..100) drives the ENGINE ORDER pill (AHEAD/STOP/ASTERN). Never NMEA.
+    prop_pitch_pct: float = 100.0
     frac: float = _clamp(sog / _HULL_MAX_SOG_KN, 0.0, 1.0)
     base_rpm: float = _IDLE_RPM + (_MAX_RPM - _IDLE_RPM) * frac
     # Turning eases the inside engine and loads the outside one (opposite rot signs).
@@ -123,4 +126,5 @@ def simulate_display_instruments(state: VesselState) -> dict[str, float | str | 
         "ap_time_to_go_s": ap_time_to_go_s,
         "ap_track_lat": ap_track_lat,
         "ap_track_lon": ap_track_lon,
+        "prop_pitch_pct": prop_pitch_pct,
     }

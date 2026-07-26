@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=43">
+<link rel="stylesheet" href="/static/app.css?v=44">
 </head>
 <body>
 
@@ -171,11 +171,11 @@
       <div class="env-readings">
         <div class="env-cell">
           <div class="ins-label">Water Temp</div>
-          <div class="ins-val-row"><span id="env-wtemp" class="env-num v-sim">--</span><span class="ins-unit">°C</span></div>
+          <div class="ins-val-row"><span id="env-wtemp" class="env-num v-sim">--</span><span id="env-wtemp-unit" class="ins-unit">°C</span></div>
         </div>
         <div class="env-cell">
           <div class="ins-label">Air Temp</div>
-          <div class="ins-val-row"><span id="env-atemp" class="env-num v-sim">--</span><span class="ins-unit">°C</span></div>
+          <div class="ins-val-row"><span id="env-atemp" class="env-num v-sim">--</span><span id="env-atemp-unit" class="ins-unit">°C</span></div>
         </div>
         <div class="env-cell">
           <div class="ins-label">Humidity</div>
@@ -204,6 +204,11 @@
         <rect x="34" y="10" width="252" height="152" fill="url(#faceGrad)" stroke="#1c2530"/>
         <g id="depth-dyn"></g>
       </svg>
+    </div>
+    <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
+    <div class="ins-panel p-alerts">
+      <div class="ins-hdr"><span>Alerts</span><span id="pill-alerts" class="stat-pill sim">SIM</span><button id="alerts-silence" class="small">Silence</button></div>
+      <div id="alerts-list" class="alerts-list"><div class="hint">No active alerts</div></div>
     </div>
     </div><!-- /conn-col-left -->
 
@@ -283,6 +288,16 @@
             <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-stbd-load" class="v-sim">--</span>%</div></div>
           </div>
           <svg id="prop-stbd" viewBox="0 0 200 210" aria-label="starboard engine"></svg>
+        </div>
+      </div>
+      <div class="prop-order-row">
+        <div class="ro-item">
+          <div class="ins-label">Engine order</div>
+          <div class="ins-val-row"><span id="prop-order" class="stat-pill sim">STOP</span></div>
+        </div>
+        <div class="ro-item ro-right">
+          <div class="ins-label">Pitch</div>
+          <div class="ins-val-row"><span id="prop-pitch" class="v-sim">--</span><span class="ins-unit">% pitch</span></div>
         </div>
       </div>
     </div>
@@ -378,10 +393,10 @@
         <svg id="ap-xtd" viewBox="0 0 220 44" aria-label="cross-track error"></svg>
       </div>
     </div>
-    <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
-    <div class="ins-panel p-alerts">
-      <div class="ins-hdr"><span>Alerts</span><span id="pill-alerts" class="stat-pill sim">SIM</span><button id="alerts-silence" class="small">Silence</button></div>
-      <div id="alerts-list" class="alerts-list"><div class="hint">No active alerts</div></div>
+    <!-- AIS: traffic-source status for the AIS channel (moved into the alerts' vacated slot) -->
+    <div class="ins-panel p-ais">
+      <div class="ins-hdr"><span>AIS</span><span id="pill-ais" class="stat-pill sim">SIM</span></div>
+      <div class="hint">Traffic source for the AIS channel.</div>
     </div>
     </div><!-- /conn-col-right -->
 
@@ -543,6 +558,12 @@
         <span id="cfg-msg-heading-motion" class="msg"></span>
       </div>
       <p class="hint drives-note">Drives NMEA: HDT, THS, HDM, HDG, RMC, VTG, ROT, VHW.</p>
+
+      <h3>Heading simulation</h3>
+      <div class="ctl-row" style="align-items:center;">
+        <label class="switch"><input type="checkbox" id="cfg-heading_sim-enabled"> Enable heading-hold sim (gentle ±1° wander)</label>
+      </div>
+      <p class="hint">Applies on next Start; simulate mode only; yields to an active route. Persists with Save as defaults.</p>
     </div>
 
     <!-- Environment (+ display-only readouts) -->
@@ -562,6 +583,7 @@
         <div class="field"><label for="cfg-air_temp_c">Air temp (°C)</label><input id="cfg-air_temp_c" data-override="air_temp_c" type="number" step="any"></div>
         <div class="field"><label for="cfg-humidity_pct">Humidity (%)</label><input id="cfg-humidity_pct" data-override="humidity_pct" type="number" step="any"></div>
         <div class="field"><label for="cfg-pressure_hpa">Pressure (hPa)</label><input id="cfg-pressure_hpa" data-override="pressure_hpa" type="number" step="any"></div>
+        <div class="field"><label for="cfg-temp-unit">Conning temp unit</label><select id="cfg-temp-unit"><option value="C">°C</option><option value="F">°F</option></select></div>
       </div>
       <div class="ctl-row cfg-card-actions">
         <button id="cfg-override-apply" class="small">Apply overrides</button>
@@ -600,10 +622,17 @@
       </div>
       <p class="hint drives-note">Drives NMEA: RSA (rudder).</p>
 
+      <h3>Rudder simulation</h3>
+      <div class="ctl-row" style="align-items:center;">
+        <label class="switch"><input type="checkbox" id="cfg-rudder_sim-enabled"> Enable rudder-hold sim (gentle helm corrections)</label>
+      </div>
+      <p class="hint">Applies on next Start; simulate mode only; yields to an active route. Persists with Save as defaults.</p>
+
       <h3>Display-only readouts</h3>
       <div class="ctl-row">
         <div class="field"><label for="cfg-fuel_total_l">Fuel total (L)</label><input id="cfg-fuel_total_l" data-override="fuel_total_l" type="number" step="any"></div>
         <div class="field"><label for="cfg-fuel_rate_lph">Fuel rate (L/h)</label><input id="cfg-fuel_rate_lph" data-override="fuel_rate_lph" type="number" step="any"></div>
+        <div class="field"><label for="cfg-prop_pitch_pct">Propeller pitch % (astern = negative)</label><input id="cfg-prop_pitch_pct" data-override="prop_pitch_pct" type="number" step="any" min="-100" max="100"></div>
       </div>
       <p class="hint display-only-note">Display-only — not emitted on NMEA. Use Apply / Clear overrides in the Environment card.</p>
     </div>
@@ -857,6 +886,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=43"></script>
+<script src="/static/app.js?v=44"></script>
 </body>
 </html>

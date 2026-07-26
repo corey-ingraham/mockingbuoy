@@ -42,7 +42,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
-from nmea_sim.config import EngineConfig, InputSpec
+from nmea_sim.config import (
+    EngineConfig,
+    InputSpec,
+    effective_depth_sim,
+    effective_heading_sim,
+    effective_rudder_sim,
+)
 from nmea_sim.diagnostics import decode_line, score_baud
 from nmea_sim.engine import Engine, HealthReport, port_is_operational, targetable_slots
 from nmea_sim.serialport import SerialPort
@@ -213,8 +219,18 @@ _DISPLAY_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "pressure_hpa",
         "fuel_total_l",
         "fuel_rate_lph",
+        "prop_pitch_pct",
     }
 )
+
+#: Inclusive ``(lo, hi)`` range for the display-override keys that are NOT free-floating. Most
+#: cosmetic keys are finiteness-only (any finite float rides through), but ``prop_pitch_pct`` is a
+#: controllable-pitch propeller order that must stay in ``[-100, 100]`` %. Enforced at BOTH the live
+#: ``display_override`` handler and the persist-merge, so neither a live set nor a saved default can
+#: park an out-of-range pitch. A key absent from this map is finiteness-only, as before.
+_DISPLAY_OVERRIDE_BOUNDS: dict[str, tuple[float, float]] = {
+    "prop_pitch_pct": (-100.0, 100.0),
+}
 
 
 # --- (de)serialization helpers ----------------------------------------------------
@@ -271,17 +287,39 @@ def _driven_fields(manager: EngineManager) -> list[str]:
     applies them (no hard refuse). Computed from the CONFIG (not the live tick) so it is stable and
     cheap. Frozen rules (tests + UI depend on exactly this):
 
-    * ``depth_m`` — present iff a ``depth_sim`` block exists and is enabled (A6 owns depth then).
+    * ``depth_m`` — present iff the EFFECTIVE depth-sim is enabled (default-ON in simulate mode via
+      ``effective_depth_sim``; an explicit ``{enabled:false}`` block or a non-simulate mode disables
+      it). Depth runs regardless of an active route.
+    * ``rudder_angle_deg`` — present iff the EFFECTIVE rudder-sim is enabled AND no route driver
+      exists (a route owns the helm; the sim yields to it).
+    * ``heading_true_deg``/``heading_mag_deg`` — present iff the EFFECTIVE heading-sim is enabled
+      AND no route driver exists (same yield-to-route rule as rudder).
     * ``cog_deg``/``sog_kn`` — present iff a route driver exists (``route_status()`` is not None; it
       returns None with no driver), i.e. simulate route mode.
     * In ``auto`` mode, every ``rx_accept`` field of each channel whose ``rx_feeds_state`` is set
       (that channel's parsed RX feed owns those fields).
+
+    The route gate is the SINGLE predicate ``route_status() is not None`` — the same one the
+    engine's physics tick uses to drop sim-authored heading/rudder — so grey-out and engine writes
+    agree through the paused/finished window (``route_status()`` stays non-None until the driver is
+    gone).
     """
     driven: set[str] = set()
     cfg = manager.config
-    depth_sim = getattr(cfg, "depth_sim", None)
-    if depth_sim is not None and depth_sim.enabled:
+    # ``effective_*`` resolve the default-ON mechanism (absent block => enabled in simulate mode)
+    # and return None outside simulate, so auto RX / replay report no sim-driven fields. The depth
+    # seed only affects a DEFAULT block's base, never the enabled flag, so a cheap fallback is fine.
+    initial_depth = float(cfg.initial_state_raw.get("depth_m", 10.0))
+    route_active = manager.route_status() is not None
+    dep = effective_depth_sim(cfg, initial_depth)
+    if dep is not None and dep.enabled:
         driven.add("depth_m")
+    rud = effective_rudder_sim(cfg)
+    if rud is not None and rud.enabled and not route_active:
+        driven.add("rudder_angle_deg")
+    hdg = effective_heading_sim(cfg)
+    if hdg is not None and hdg.enabled and not route_active:
+        driven.update(("heading_true_deg", "heading_mag_deg"))
     if manager.route_status() is not None:
         driven.update(("cog_deg", "sog_kn"))
     if cfg.mode == "auto":
@@ -723,6 +761,29 @@ class DepthSimDefault(BaseModel):
     enabled: bool
 
 
+class RudderSimDefault(BaseModel):
+    """The rudder-hold-sim toggle in a persist request (mirrors :class:`DepthSimDefault`). Exposes
+    ONLY ``enabled`` — the tuned oscillation params (amp_deg, period_s) are deliberately NOT
+    reachable from the web, so a UI save flips the block on/off without ever clobbering a hand-tuned
+    helm. Extras forbidden. Deep-validated (``_validate_rudder_sim`` via ``validate_or_raise``)
+    before save. Default-ON in simulate mode lives in ``effective_rudder_sim``, not this seam."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class HeadingSimDefault(BaseModel):
+    """The heading-hold-sim toggle in a persist request (mirrors :class:`DepthSimDefault`). Exposes
+    ONLY ``enabled`` — the tuned wander params (amp_deg, period_s) are NOT reachable from the web.
+    Extras forbidden. Deep-validated (``_validate_heading_sim`` via ``validate_or_raise``) before
+    save. Default-ON in simulate mode lives in ``effective_heading_sim``, not this persist seam."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
 class InitialStateRequest(BaseModel):
     """Body of ``POST /api/config/initial-state`` — the Save-as-defaults persist allow-list (R15).
 
@@ -772,12 +833,16 @@ class InitialStateRequest(BaseModel):
     time_source_mode: str | None = None
     time_source_epoch: str | None = None
     time_source_rate: float | None = None
-    # A4: persist a subset of the 6 cosmetic display-override keys as defaults. Keys are validated
+    # A4: persist a subset of the 7 cosmetic display-override keys as defaults. Keys are validated
     # against ``_DISPLAY_OVERRIDE_KEYS`` in the handler; skip-on-None so a partial save is safe.
     display_overrides: dict[str, float | None] | None = None
     # A6: toggle the wire-backed depth-sim block. Only ``enabled`` is reachable; server defaults
     # fill the sinusoid params, and any prior tuned params are preserved on re-save (skip-on-None).
     depth_sim: DepthSimDefault | None = None
+    # Steering-sim toggles (mirror ``depth_sim``): only ``enabled`` is reachable; server defaults
+    # fill the oscillation params and prior tuned params are preserved on re-save (skip-on-None).
+    rudder_sim: RudderSimDefault | None = None
+    heading_sim: HeadingSimDefault | None = None
     channels: list[ChannelDefault] | None = None
     inputs: list[InputDefault] | None = None
     route: RouteDefault | None = None
@@ -1047,7 +1112,7 @@ class EngineManager:
 
     # -- A4 display overrides (cosmetic SSE-only, applied at the state-broadcast assembly site) --
     def get_display_overrides(self) -> dict[str, float]:
-        """A copy of the current display-override values (subset of the 6 cosmetic keys)."""
+        """A copy of the current display-override values (subset of the 7 cosmetic keys)."""
         return dict(self._display_overrides)
 
     def set_display_overrides(self, ov: dict[str, float]) -> None:
@@ -1056,7 +1121,7 @@ class EngineManager:
         self._display_overrides.update(ov)
 
     def clear_display_overrides(self) -> None:
-        """Drop every display override so all 6 cosmetic keys revert to their auto (simulated)
+        """Drop every display override so all 7 cosmetic keys revert to their auto (simulated)
         values on the next SSE frame."""
         self._display_overrides.clear()
 
@@ -1520,6 +1585,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
                             status_code=400,
                             detail=f"display_override {key} must be finite, got {value}",
                         )
+                    lo_hi = _DISPLAY_OVERRIDE_BOUNDS.get(key)
+                    if lo_hi is not None and not (lo_hi[0] <= value <= lo_hi[1]):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"display_override {key}={value} out of range "
+                                f"[{lo_hi[0]}, {lo_hi[1]}]"
+                            ),
+                        )
                 manager.set_display_overrides(body.overrides)
             if body.clear:
                 manager.clear_display_overrides()
@@ -1631,6 +1705,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     if value is None:
                         do.pop(key, None)
                     else:
+                        lo_hi = _DISPLAY_OVERRIDE_BOUNDS.get(key)
+                        if lo_hi is not None and not (lo_hi[0] <= value <= lo_hi[1]):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"display_override {key}={value} out of range "
+                                    f"[{lo_hi[0]}, {lo_hi[1]}]"
+                                ),
+                            )
                         do[key] = value
                 if do:
                     merged["display_overrides"] = do
@@ -1644,6 +1727,18 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 ds = dict(merged.get("depth_sim", {}))
                 ds["enabled"] = body.depth_sim.enabled
                 merged["depth_sim"] = ds
+
+            # Steering-sim toggle merges (mirror depth_sim, skip-on-None). Only ``enabled`` is
+            # flipped; any tuned amp/period is preserved so a UI on/off save never clobbers a
+            # hand-tuned helm/wander. Deep-validated (_validate_rudder_sim/_validate_heading_sim).
+            if body.rudder_sim is not None:
+                rs = dict(merged.get("rudder_sim", {}))
+                rs["enabled"] = body.rudder_sim.enabled
+                merged["rudder_sim"] = rs
+            if body.heading_sim is not None:
+                hs = dict(merged.get("heading_sim", {}))
+                hs["enabled"] = body.heading_sim.enabled
+                merged["heading_sim"] = hs
 
             if body.channels is not None:
                 by_id = {c["id"]: c for c in merged["channels"]}
@@ -2096,8 +2191,8 @@ async def _state_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
                     # SSE-only, never on the wire; rendered amber so it is not mistaken for
                     # NMEA-backed truth. Grafted here, not in ``_state_to_dict``.
                     # A4: keep ``simulate_display_instruments`` PURE and apply operator overrides
-                    # here. The manager dict only ever holds keys already in ``sim`` (the 6 cosmetic
-                    # keys), so ``.update`` overwrites values and adds NO new key — the 19-key
+                    # here. The manager dict only ever holds keys already in ``sim`` (the 7 cosmetic
+                    # keys), so ``.update`` overwrites values and adds NO new key — the 20-key
                     # set is preserved. Overrides ride SSE only; ``/api/state`` is not changed.
                     sim = simulate_display_instruments(snapshot)
                     sim.update(manager.get_display_overrides())

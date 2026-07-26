@@ -47,6 +47,8 @@ _ENGINE_CONFIG_KEYS = frozenset(
         "aggregate_tap",
         "display_overrides",
         "depth_sim",
+        "rudder_sim",
+        "heading_sim",
     }
 )
 
@@ -383,7 +385,7 @@ class VoltageSenseSpec:
 
 @dataclass(frozen=True)
 class DisplayOverridesSpec:
-    """Operator overrides for the six display-only cosmetic instruments.
+    """Operator overrides for the seven display-only cosmetic instruments.
 
     These keys are NOT wire-backed — they ride the SSE ``sim`` frame only (no NMEA sentence).
     Each field is optional: an absent (``None``) key means "auto" for that instrument (the pure
@@ -397,6 +399,7 @@ class DisplayOverridesSpec:
     pressure_hpa: float | None = None
     fuel_total_l: float | None = None
     fuel_rate_lph: float | None = None
+    prop_pitch_pct: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DisplayOverridesSpec:
@@ -411,6 +414,7 @@ class DisplayOverridesSpec:
             pressure_hpa=_opt("pressure_hpa"),
             fuel_total_l=_opt("fuel_total_l"),
             fuel_rate_lph=_opt("fuel_rate_lph"),
+            prop_pitch_pct=_opt("prop_pitch_pct"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -470,6 +474,108 @@ class DepthSimSpec:
             "ripple_period_s": self.ripple_period_s,
             "min_depth_m": self.min_depth_m,
         }
+
+
+@dataclass(frozen=True)
+class RudderSimSpec:
+    """Deterministic helm oscillation (see :mod:`nmea_sim.steeringsim`).
+
+    ``enabled`` default is ``False`` so a directly-constructed spec is inert and the config layer
+    round-trips byte-identically; default-ON in simulate mode is resolved by
+    :func:`effective_rudder_sim`, NOT by this dataclass. When effective+enabled the physics tick
+    writes a small ``rudder_angle_deg`` oscillation about 0 deg. Cross-checked in
+    :mod:`nmea_sim.validate`.
+    """
+
+    enabled: bool = False
+    amp_deg: float = 1.5
+    period_s: float = 10.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RudderSimSpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            amp_deg=float(data.get("amp_deg", 1.5)),
+            period_s=float(data.get("period_s", 10.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "amp_deg": self.amp_deg,
+            "period_s": self.period_s,
+        }
+
+
+@dataclass(frozen=True)
+class HeadingSimSpec:
+    """Deterministic heading wander about a setpoint (see :mod:`nmea_sim.steeringsim`).
+
+    ``enabled`` default is ``False`` so a directly-constructed spec is inert and the config layer
+    round-trips byte-identically; default-ON in simulate mode is resolved by
+    :func:`effective_heading_sim`, NOT by this dataclass. When effective+enabled the physics tick
+    writes ``heading_true_deg``/``heading_mag_deg`` as the setpoint plus a gentle ~1 deg wander.
+    Cross-checked in :mod:`nmea_sim.validate`.
+    """
+
+    enabled: bool = False
+    amp_deg: float = 1.0
+    period_s: float = 45.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HeadingSimSpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            amp_deg=float(data.get("amp_deg", 1.0)),
+            period_s=float(data.get("period_s", 45.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "amp_deg": self.amp_deg,
+            "period_s": self.period_s,
+        }
+
+
+def effective_depth_sim(cfg: EngineConfig, initial_depth_m: float) -> DepthSimSpec | None:
+    """Simulate-only resolved depth-sim spec (default-ON mechanism; NOT a config-layer change).
+
+    None outside simulate mode (protects auto RX / replay). In simulate: an explicit block is used
+    as-is (tuned ``base_depth_m`` preserved); an ABSENT block becomes an enabled default whose
+    ``base_depth_m`` is SEEDED from the initial depth so depth oscillates around where she started.
+    """
+    if cfg.mode != "simulate":
+        return None
+    if cfg.depth_sim is not None:
+        return cfg.depth_sim
+    return DepthSimSpec(enabled=True, base_depth_m=initial_depth_m)
+
+
+def effective_rudder_sim(cfg: EngineConfig) -> RudderSimSpec | None:
+    """Simulate-only resolved rudder-sim spec (default-ON; NOT a config-layer change).
+
+    None outside simulate mode (protects auto RX / replay). In simulate: an explicit block is used
+    as-is; an ABSENT block becomes an enabled default.
+    """
+    if cfg.mode != "simulate":
+        return None
+    if cfg.rudder_sim is not None:
+        return cfg.rudder_sim
+    return RudderSimSpec(enabled=True)
+
+
+def effective_heading_sim(cfg: EngineConfig) -> HeadingSimSpec | None:
+    """Simulate-only resolved heading-sim spec (default-ON; NOT a config-layer change).
+
+    None outside simulate mode (protects auto RX / replay). In simulate: an explicit block is used
+    as-is; an ABSENT block becomes an enabled default.
+    """
+    if cfg.mode != "simulate":
+        return None
+    if cfg.heading_sim is not None:
+        return cfg.heading_sim
+    return HeadingSimSpec(enabled=True)
 
 
 @dataclass(frozen=True)
@@ -667,6 +773,12 @@ class EngineConfig:
     # byte-identical to a config that never mentioned it. When enabled the physics tick drives the
     # wire-backed ``depth_m`` (DPT/DBT/chart track it). Cross-field rules live in ``validate``.
     depth_sim: DepthSimSpec | None = None
+    # Optional deterministic helm-hold / heading-hold simulations. None (the default) means "no
+    # sim block", byte-identical to a config that never mentioned it — default-ON in simulate mode
+    # is resolved by effective_rudder_sim/effective_heading_sim, never by these fields. When
+    # effective+enabled the physics tick drives rudder_angle_deg / heading_true_deg (+ mag).
+    rudder_sim: RudderSimSpec | None = None
+    heading_sim: HeadingSimSpec | None = None
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
@@ -714,6 +826,14 @@ class EngineConfig:
             ),
             depth_sim=(
                 DepthSimSpec.from_dict(ds) if (ds := data.get("depth_sim")) is not None else None
+            ),
+            rudder_sim=(
+                RudderSimSpec.from_dict(rs) if (rs := data.get("rudder_sim")) is not None else None
+            ),
+            heading_sim=(
+                HeadingSimSpec.from_dict(hs)
+                if (hs := data.get("heading_sim")) is not None
+                else None
             ),
         )
 
@@ -795,6 +915,13 @@ class EngineConfig:
             out["display_overrides"] = self.display_overrides.to_dict()
         if self.depth_sim is not None:
             out["depth_sim"] = self.depth_sim.to_dict()
+        # Likewise the steering seams: emit only when present so an untouched config round-trips
+        # byte-identically (the simulate-mode default-ON lives in the effective_* helpers, not
+        # here).
+        if self.rudder_sim is not None:
+            out["rudder_sim"] = self.rudder_sim.to_dict()
+        if self.heading_sim is not None:
+            out["heading_sim"] = self.heading_sim.to_dict()
         return out
 
     def save(self, path: str | Path) -> None:

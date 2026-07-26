@@ -20,8 +20,10 @@ from nmea_sim.config import (
     ChannelSpec,
     EmitSpec,
     EngineConfig,
+    HeadingSimSpec,
     MovementSpec,
     RouteSpec,
+    RudderSimSpec,
     TimeSourceSpec,
 )
 from nmea_sim.engine import (
@@ -34,6 +36,7 @@ from nmea_sim.engine import (
     ZdaCarveout,
     _ChannelWorker,
     _InstrumentSource,
+    _PhysicsThread,
     _ReplayLine,
     _ReplayThread,
     _RouteDriver,
@@ -193,6 +196,60 @@ def test_physics_pitch_roll_vary_over_time_and_stay_pure() -> None:
         rolls.add(ch["roll_deg"])
     assert len(pitches) > 1
     assert len(rolls) > 1
+
+
+def test_advance_writes_sim_heading_and_rudder_when_enabled() -> None:
+    """With the steering sims enabled, ``advance`` emits ``heading_true_deg``/``heading_mag_deg``
+    and ``rudder_angle_deg`` every tick (the writes the route pop later strips). Key presence is
+    deterministic regardless of the sinusoid phase."""
+    ts = TimeSource(TimeSourceSpec(mode="hold"), None)
+    physics = PhysicsEngine(
+        "static",
+        ts,
+        rudder_sim=RudderSimSpec(enabled=True),
+        heading_sim=HeadingSimSpec(enabled=True),
+        initial_heading_deg=92.0,
+    )
+    state = VesselState(**_INITIAL, utc=ts.initial())
+    changes = physics.advance(state, dt_s=0.1)
+    assert "heading_true_deg" in changes
+    assert "heading_mag_deg" in changes
+    assert "rudder_angle_deg" in changes
+
+
+def test_route_driver_suppresses_sim_heading_and_rudder_writes() -> None:
+    """When a route driver EXISTS the physics tick drops the sim-authored heading/rudder so they
+    never fight the route (gated on the driver existing, not on ``route_changes`` truthiness). The
+    route still owns cog/sog; depth is intentionally NOT popped."""
+    ts = TimeSource(TimeSourceSpec(mode="hold"), None)
+    physics = PhysicsEngine(
+        "static",
+        ts,
+        rudder_sim=RudderSimSpec(enabled=True),
+        heading_sim=HeadingSimSpec(enabled=True),
+        initial_heading_deg=92.0,  # matches _INITIAL["heading_true_deg"]
+    )
+    shared = SharedState(VesselState(**_INITIAL, utc=ts.initial()))
+    before = shared.snapshot()
+    # A route far to the north so the driver returns a live steer (cog/sog) this tick.
+    route = _RouteDriver(
+        RouteSpec(
+            enabled=True,
+            waypoints=[(11.0, -30.5), (12.0, -30.5)],
+            speed_kn=6.0,
+            loop=False,
+        )
+    )
+    thread = _PhysicsThread(shared, physics, hz=10.0, stop=threading.Event(), route=route)
+    thread._tick(0.1)
+    after = shared.snapshot()
+
+    # Sim-authored helm/heading were popped -> unchanged from the pre-tick state.
+    assert after.heading_true_deg == pytest.approx(before.heading_true_deg)
+    assert after.heading_mag_deg == pytest.approx(before.heading_mag_deg)
+    assert after.rudder_angle_deg == pytest.approx(before.rudder_angle_deg)
+    # The route driver did run and own the course (proving the pop was meaningful, not a no-op).
+    assert after.sog_kn == pytest.approx(6.0)
 
 
 def test_advance_next_fire_accumulates_period_with_no_drift() -> None:

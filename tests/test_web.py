@@ -513,37 +513,47 @@ def test_clean_shutdown_leaves_no_engine_threads() -> None:
 # --- Phase C: new manual state fields (update + serialization) ---------------------
 
 
-def test_manual_fields_update_and_reflect_in_state(client: TestClient) -> None:
+def test_manual_fields_update_and_reflect_in_state(tmp_path: Path) -> None:
     """The newly-added MANUAL instrument/nav fields apply via ``update`` and reflect on read.
 
     ``sea_state`` is posted as a float and applied as-is (the engine clamps/rounds it to the WMO
-    integer scale); the rest round-trip verbatim in ``static`` movement mode (no drift)."""
-    edits = {
-        "action": "update",
-        "stw_kn": 7.5,
-        "depth_m": 42.0,
-        "rot_dpm": 30.0,
-        "wind_speed_kn": 15.0,
-        "wind_dir_deg": 210.0,
-        "sea_state": 4.0,
-        "rudder_angle_deg": -12.5,
-        "set_deg": 175.0,
-        "drift_kn": 1.25,
-    }
-    resp = client.post("/api/control", json=edits)
-    assert resp.status_code == 200
-    assert resp.json()["running"] is True
+    integer scale); the rest round-trip verbatim. The background depth/rudder/heading sims are
+    explicitly disabled here so the 10 Hz tick does not overwrite the held ``depth_m``/
+    ``rudder_angle_deg`` before the read-back (default-ON only when the block is absent)."""
+    raw = json.loads(CONFIG_PATH.read_text())
+    raw["depth_sim"] = {"enabled": False}
+    raw["rudder_sim"] = {"enabled": False}
+    raw["heading_sim"] = {"enabled": False}
+    dest = tmp_path / "config.json"
+    dest.write_text(json.dumps(raw))
 
-    body = client.get("/api/state").json()
-    assert body["stw_kn"] == pytest.approx(7.5)
-    assert body["depth_m"] == pytest.approx(42.0)
-    assert body["rot_dpm"] == pytest.approx(30.0)
-    assert body["wind_speed_kn"] == pytest.approx(15.0)
-    assert body["wind_dir_deg"] == pytest.approx(210.0)
-    assert body["sea_state"] == pytest.approx(4)  # int/float agnostic
-    assert body["rudder_angle_deg"] == pytest.approx(-12.5)
-    assert body["set_deg"] == pytest.approx(175.0)
-    assert body["drift_kn"] == pytest.approx(1.25)
+    with TestClient(create_app(str(dest))) as client:
+        edits = {
+            "action": "update",
+            "stw_kn": 7.5,
+            "depth_m": 42.0,
+            "rot_dpm": 30.0,
+            "wind_speed_kn": 15.0,
+            "wind_dir_deg": 210.0,
+            "sea_state": 4.0,
+            "rudder_angle_deg": -12.5,
+            "set_deg": 175.0,
+            "drift_kn": 1.25,
+        }
+        resp = client.post("/api/control", json=edits)
+        assert resp.status_code == 200
+        assert resp.json()["running"] is True
+
+        body = client.get("/api/state").json()
+        assert body["stw_kn"] == pytest.approx(7.5)
+        assert body["depth_m"] == pytest.approx(42.0)
+        assert body["rot_dpm"] == pytest.approx(30.0)
+        assert body["wind_speed_kn"] == pytest.approx(15.0)
+        assert body["wind_dir_deg"] == pytest.approx(210.0)
+        assert body["sea_state"] == pytest.approx(4)  # int/float agnostic
+        assert body["rudder_angle_deg"] == pytest.approx(-12.5)
+        assert body["set_deg"] == pytest.approx(175.0)
+        assert body["drift_kn"] == pytest.approx(1.25)
 
 
 @pytest.mark.parametrize(
@@ -627,6 +637,7 @@ def test_display_sim_returns_full_sim_key_set(sample_state: Any) -> None:
         "ap_time_to_go_s",
         "ap_track_lat",
         "ap_track_lon",
+        "prop_pitch_pct",
     }
 
 
@@ -1707,11 +1718,30 @@ class _FakeManager:
         return self._route
 
 
-def test_driven_fields_empty_for_plain_simulate_config() -> None:
+def test_driven_fields_default_on_sims_for_plain_simulate_config() -> None:
+    """A plain simulate config (no sim blocks) now reports the default-ON background sims: depth
+    (always) plus rudder + heading (no route driver present), via the ``effective_*`` helpers."""
     from nmea_sim.config import EngineConfig
 
     cfg = EngineConfig.from_dict(json.loads(CONFIG_PATH.read_text()))
-    assert _driven_fields(_FakeManager(cfg)) == []
+    assert set(_driven_fields(_FakeManager(cfg))) == {
+        "depth_m",
+        "rudder_angle_deg",
+        "heading_true_deg",
+        "heading_mag_deg",
+    }
+
+
+def test_driven_fields_empty_outside_simulate_mode() -> None:
+    """Outside simulate mode the background sims are inert (``effective_*`` return None), so a
+    plain auto config with no RX-fed channels reports nothing driven."""
+    from nmea_sim.config import EngineConfig
+
+    raw = json.loads(CONFIG_PATH.read_text())
+    raw["mode"] = "auto"
+    for ch in raw.get("channels", []):
+        ch["rx_feeds_state"] = False
+    assert _driven_fields(_FakeManager(EngineConfig.from_dict(raw))) == []
 
 
 def test_driven_fields_depth_sim_owns_depth_m_only_when_enabled() -> None:
@@ -1748,10 +1778,15 @@ def test_driven_fields_auto_mode_rx_feeds_state() -> None:
 
 
 def test_state_endpoint_carries_driven_fields(client: TestClient) -> None:
-    """``GET /api/state`` always attaches ``driven_fields`` as a list (empty for a plain simulate
-    config)."""
+    """``GET /api/state`` always attaches ``driven_fields`` as a list. For a plain simulate config
+    it is the default-ON background-sim set (depth + rudder + heading)."""
     body = client.get("/api/state").json()
-    assert body["driven_fields"] == []
+    assert set(body["driven_fields"]) == {
+        "depth_m",
+        "rudder_angle_deg",
+        "heading_true_deg",
+        "heading_mag_deg",
+    }
 
 
 def test_state_endpoint_driven_fields_reflects_depth_sim(tmp_path: Path) -> None:
@@ -1880,10 +1915,11 @@ def test_display_override_non_finite_is_rejected(client: TestClient) -> None:
     assert r.status_code in (400, 422)
 
 
-def test_display_override_keys_are_the_six_cosmetics_and_subset_of_sim(sample_state: Any) -> None:
-    """The override allow-list equals the six cosmetic keys, and every one already exists in the
-    pure ``sim`` dict -- so ``sim.update(overrides)`` can only overwrite, never add a key (the
-    pinned 19-key set is preserved)."""
+def test_display_override_keys_are_the_seven_cosmetics_and_subset_of_sim(sample_state: Any) -> None:
+    """The override allow-list equals the seven cosmetic keys (the six temps/fuel plus the
+    controllable-pitch ``prop_pitch_pct``), and every one already exists in the pure ``sim`` dict
+    -- so ``sim.update(overrides)`` can only overwrite, never add a key (the pinned 20-key set is
+    preserved)."""
     from web.display_sim import simulate_display_instruments
 
     assert (
@@ -1895,6 +1931,7 @@ def test_display_override_keys_are_the_six_cosmetics_and_subset_of_sim(sample_st
                 "pressure_hpa",
                 "fuel_total_l",
                 "fuel_rate_lph",
+                "prop_pitch_pct",
             }
         )
         == _DISPLAY_OVERRIDE_KEYS

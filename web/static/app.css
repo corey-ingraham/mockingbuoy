@@ -430,6 +430,7 @@
   .conn-col-left { grid-area: leftcol; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
   .conn-col-left .p-coords, .conn-col-left .p-time, .conn-col-left .p-env { flex: 0 0 auto; }
   .conn-col-left .p-depth { flex: 1 1 auto; }
+  .conn-col-left .p-alerts { flex: 1 1 auto; min-height: 120px; }
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
   /* value centred in the column (rows line up); label right-justified immediately to its left */
@@ -444,7 +445,7 @@
   /* propulsion natural (no trailing dead space); attitude grows up into the freed space */
   .conn-col-right .p-propulsion { flex: 0 0 auto; }
   .conn-col-right .p-helm { flex: 1 1 auto; min-height: 0; }
-  .conn-col-right .p-autopilot, .conn-col-right .p-alerts { flex: 0 0 auto; }
+  .conn-col-right .p-autopilot, .conn-col-right .p-ais { flex: 0 0 auto; }
   /* tight top/bottom on Attitude so propulsion above + autopilot below sit closer */
   .conn-col-right .p-helm { padding-top: 0; padding-bottom: 4px; }
   .conn-col-right .p-helm .incl-dials { margin: 0; }
@@ -536,6 +537,8 @@
   .stat-pill { margin-left: 12px; font-family: var(--sans); font-size: 11px; font-weight: 800; letter-spacing: 0.5px; padding: 1px 8px; border-radius: 4px; }
   .stat-pill.live { background: var(--ok); color: #04120a; border: 1px solid #00b866; }
   .stat-pill.sim { background: var(--warn); color: #1c1102; border: 1px solid #cc7a00; }
+  .stat-pill.off { background: transparent; color: var(--muted); border: 1px dotted var(--muted); }
+  .stat-pill.astern { background: var(--down); color: #1a0503; border: 1px solid #c22; }
   /* header buttons (e.g. Alerts "Silence") stay pinned to the right edge */
   .ins-hdr > button { margin-left: auto; }
   /* Live/Sim encoding legend — folded into the status strip (no overlap) */
@@ -576,6 +579,10 @@
   .depth-vals .ins-bignum { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); }
   .depth-vals .ro-right { align-items: flex-end; text-align: right; }
   .depth-vals .ro-right .ins-val-row { justify-content: flex-end; }
+  /* propulsion Engine order / Pitch row — same left/right two-column layout as the depth value row */
+  .prop-order-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+  .prop-order-row .ro-right { align-items: flex-end; text-align: right; }
+  .prop-order-row .ro-right .ins-val-row { justify-content: flex-end; }
   #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 26vh; margin: 4px 0 0; }
 
   /* primary panel — COG tape arc (wide, short); fill the primary cell prominently */
@@ -646,7 +653,7 @@
 
   /* alerts panel — derived rows + Ack/Silence */
   #alerts-silence.active { color: var(--warn); border-color: var(--warn); }
-  .alerts-list { display: flex; flex-direction: column; gap: 4px; }
+  .alerts-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
   .alert-row {
     display: flex;
     align-items: center;

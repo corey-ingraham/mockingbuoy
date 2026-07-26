@@ -5,6 +5,9 @@
   const DEPTH_CAP = 180;    // 1 Hz depth samples => 3-minute history window
   let ALERT_DEPTH_M = 50;  // display-only shallow-water alert threshold (amber); A6: overridable via cfg-depth-alert (localStorage)
   try { const _ad = Number((window.localStorage && localStorage.getItem("mb.alertDepthM"))); if (Number.isFinite(_ad) && _ad > 0) ALERT_DEPTH_M = _ad; } catch (e) {}
+  // Client-side conning temperature unit (display-only; temps never touch NMEA). Persisted to localStorage.
+  let TEMP_UNIT = "C";
+  try { const u = (window.localStorage && localStorage.getItem("mb.tempUnit")); if (u === "F" || u === "C") TEMP_UNIT = u; } catch (e) {}
 
   // Manual-field range table mirroring the server's _UPDATE_RANGES (client-side pre-check only).
   const RANGES = {
@@ -670,9 +673,11 @@
     setTxt("wtd-spd", num(s.wind_speed_kn, 1));
     setTxt("wtd-dir", num(s.wind_dir_deg, 0));
 
-    // environment (amber = display-only, from s.sim)
-    setTxt("env-wtemp", num(sim.water_temp_c, 1));
-    setTxt("env-atemp", num(sim.air_temp_c, 1));
+    // environment (amber = display-only, from s.sim). Temps convert C->F for display only; the
+    // unit-span text is flipped by onTempUnitChange. NMEA is unaffected (temps never on the wire).
+    const cvt = (c) => (TEMP_UNIT === "F" && c != null && Number.isFinite(Number(c))) ? Number(c) * 9 / 5 + 32 : c;
+    setTxt("env-wtemp", num(cvt(sim.water_temp_c), 1));
+    setTxt("env-atemp", num(cvt(sim.air_temp_c), 1));
     setTxt("env-hum", num(sim.humidity_pct, 0));
     setTxt("env-press", num(sim.pressure_hpa, 0));
 
@@ -685,6 +690,17 @@
     setTxt("prop-port-load", num(sim.load_port_pct, 0));
     { const r = Number(sim.rpm_stbd); setTxt("prop-stbd-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
     setTxt("prop-stbd-load", num(sim.load_stbd_pct, 0));
+    // ENGINE ORDER + controllable-pitch propeller (display-only, from sim.prop_pitch_pct): sign drives
+    // AHEAD (green)/STOP (amber)/ASTERN (red), with a +/-1 % dead-band reading STOP.
+    { const pp = Number(sim.prop_pitch_pct);
+      let order = "STOP", cls = "sim";
+      if (Number.isFinite(pp)) {
+        if (pp > 1) { order = "AHEAD"; cls = "live"; }        // green via .stat-pill.live
+        else if (pp < -1) { order = "ASTERN"; cls = "astern"; } // red via .stat-pill.astern
+        else { order = "STOP"; cls = "sim"; }                  // amber via .stat-pill.sim
+      }
+      const po = $("prop-order"); if (po) { po.textContent = order; po.className = "stat-pill " + cls; }
+      setTxt("prop-pitch", Number.isFinite(pp) ? (pp > 0 ? "+" : "") + pp.toFixed(0) : "--"); }
 
     // autopilot — mode pill + synthetic track point + metrics + linear deviation (amber = display-only)
     setTxt("ap-mode", sim.ap_mode == null ? "---" : String(sim.ap_mode));
@@ -880,6 +896,15 @@
     p.textContent = live ? "LIVE" : "SIM";
     p.className = "stat-pill " + (live ? "live" : "sim");
   }
+  // AIS panel pill: 3-state (LIVE/SIM/OFF) off the AIS channel source. setPill only writes LIVE/SIM,
+  // so the AIS pill needs its own setter to surface the OFF (no-AIS-channel) state.
+  function setAisPill() {
+    const p = $("pill-ais"); if (!p) return;
+    const tag = parseSource(channelSourceByRole("ais")).tag;   // LIVE | SIM | OFF
+    if (tag === "LIVE") { p.textContent = "LIVE"; p.className = "stat-pill live"; }
+    else if (tag === "OFF") { p.textContent = "OFF"; p.className = "stat-pill off"; }
+    else { p.textContent = "SIM"; p.className = "stat-pill sim"; }
+  }
   function updateStatusPills() {
     const roleLive = (role) => parseSource(channelSourceByRole(role)).tag === "LIVE";
     setPill("pill-coords", roleLive("gps"));
@@ -895,6 +920,7 @@
     // time is LIVE only when disciplined by a live NMEA source (not the SYSTEM clock / sim)
     const ts = String((lastHealth && lastHealth.time_source) || "").toUpperCase();
     setPill("pill-time", ts !== "" && ts !== "SYSTEM" && ts.indexOf("SIM") < 0 && ts !== "OFF");
+    setAisPill();
   }
 
   /* =====================================================================
@@ -1708,6 +1734,16 @@
       const en = $("cfg-depth_sim-enabled");
       if (en) { body.depth_sim = { enabled: !!en.checked }; any = true; }
     }
+    // Rudder-hold sim toggle rides the Ship/Helm card -> {enabled} block; server defaults fill the rest.
+    if (slug === "ship-helm") {
+      const en = $("cfg-rudder_sim-enabled");
+      if (en) { body.rudder_sim = { enabled: !!en.checked }; any = true; }
+    }
+    // Heading-hold sim toggle rides the Heading & Motion card -> {enabled} block; server defaults fill the rest.
+    if (slug === "heading-motion") {
+      const en = $("cfg-heading_sim-enabled");
+      if (en) { body.heading_sim = { enabled: !!en.checked }; any = true; }
+    }
     if (!any) { setCardMsg(slug, "Nothing to save in this section.", "err"); return; }
     const r = await postJson("/api/config/initial-state", body);
     if (r.ok) setCardMsg(slug, "Saved as defaults (applies on next Start).", "ok");
@@ -1759,7 +1795,7 @@
       const on = driven.has(node.dataset.field);
       node.disabled = on;
       node.classList.toggle("driven", on);
-      if (on) node.title = "Driven by route / auto input / depth sim — manual edits won't stick";
+      if (on) node.title = "Driven by route / auto input / depth-heading-rudder sim — manual edits won't stick";
       else node.removeAttribute("title");
     }
   }
@@ -1775,6 +1811,18 @@
     try { localStorage.setItem("mb.alertDepthM", String(n)); } catch (e) {}
     const lbl = $("depth-alert"); if (lbl) lbl.textContent = ALERT_DEPTH_M.toFixed(1);
     renderDepthGraph(); renderAlerts();
+  }
+
+  // Conning temp unit toggle (client-side, display-only, persisted). Flips the unit-span text and
+  // reflows the last frame's numbers immediately. Modeled on onDepthAlertChange.
+  function onTempUnitChange() {
+    const sel = $("cfg-temp-unit"); if (!sel) return;
+    TEMP_UNIT = (sel.value === "F") ? "F" : "C";
+    try { localStorage.setItem("mb.tempUnit", TEMP_UNIT); } catch (e) {}
+    const u = TEMP_UNIT === "F" ? "°F" : "°C";
+    const wu = $("env-wtemp-unit"); if (wu) wu.textContent = u;
+    const au = $("env-atemp-unit"); if (au) au.textContent = u;
+    if (lastState) requestConningPaint();   // reflow numbers from the last frame
   }
 
   // Load persisted A4/A5/A6 values into their (index.html-owned) inputs.
@@ -1795,6 +1843,14 @@
     const en = $("cfg-depth_sim-enabled");
     if (en) { const ds = (cfg && cfg.depth_sim) || null; en.checked = !!(ds && ds.enabled); }
     const da = $("cfg-depth-alert"); if (da && String(da.value).trim() === "") da.value = ALERT_DEPTH_M.toFixed(1);
+    loadSteeringSimIntoConfig();
+  }
+  // Load the rudder-hold / heading-hold sim enable toggles from cfg.rudder_sim / cfg.heading_sim.
+  function loadSteeringSimIntoConfig() {
+    const re = $("cfg-rudder_sim-enabled");
+    if (re) { const rs = (cfg && cfg.rudder_sim) || null; re.checked = !!(rs && rs.enabled); }
+    const he = $("cfg-heading_sim-enabled");
+    if (he) { const hs = (cfg && cfg.heading_sim) || null; he.checked = !!(hs && hs.enabled); }
   }
 
   // Legacy config-level Save (mode / channels / inputs / route / replay / AIS). Not part of the A2
@@ -1865,6 +1921,14 @@
     const ovA = $("cfg-override-apply"); if (ovA) ovA.addEventListener("click", overrideApply);
     const ovC = $("cfg-override-clear"); if (ovC) ovC.addEventListener("click", overrideClear);
     const da = $("cfg-depth-alert"); if (da) da.addEventListener("change", onDepthAlertChange);
+    const tu = $("cfg-temp-unit");
+    if (tu) {
+      tu.value = TEMP_UNIT;
+      const u = TEMP_UNIT === "F" ? "°F" : "°C";
+      const wu = $("env-wtemp-unit"); if (wu) wu.textContent = u;
+      const au = $("env-atemp-unit"); if (au) au.textContent = u;
+      tu.addEventListener("change", onTempUnitChange);
+    }
     const cl = $("cfg-load"); if (cl) cl.addEventListener("click", loadConfigCurrent);
     const cs = $("cfg-save"); if (cs) cs.addEventListener("click", saveConfigLevel);
   }

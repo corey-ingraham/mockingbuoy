@@ -36,6 +36,7 @@ _SIM_KEYS = {
     "ap_time_to_go_s",
     "ap_track_lat",
     "ap_track_lon",
+    "prop_pitch_pct",
 }
 
 
@@ -110,6 +111,14 @@ def test_fuel_per_nm_is_float_when_underway() -> None:
 
 def test_ap_mode_is_str() -> None:
     assert simulate_display_instruments(_state())["ap_mode"] == "NAV"
+
+
+def test_prop_pitch_pct_default_is_full_ahead() -> None:
+    """The controllable-pitch propeller defaults to +100 % (full ahead); it is a display-only
+    float (keeps the one-None / one-str purity of the sim dict intact)."""
+    sim = simulate_display_instruments(_state())
+    assert sim["prop_pitch_pct"] == pytest.approx(100.0)
+    assert isinstance(sim["prop_pitch_pct"], float)
 
 
 def test_rpm_rises_with_sog() -> None:

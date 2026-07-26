@@ -14,11 +14,16 @@ from nmea_sim.config import (
     DisplayOverridesSpec,
     EmitSpec,
     EngineConfig,
+    HeadingSimSpec,
     InputSpec,
     MovementSpec,
     ReplaySpec,
     RouteSpec,
+    RudderSimSpec,
     TimeSourceSpec,
+    effective_depth_sim,
+    effective_heading_sim,
+    effective_rudder_sim,
 )
 from nmea_sim.validate import validate
 
@@ -587,3 +592,81 @@ def test_depth_sim_spec_defaults_match_contract() -> None:
     assert spec.enabled is False
     assert spec.base_depth_m == pytest.approx(50.0)
     assert spec.min_depth_m == pytest.approx(0.0)
+
+
+# --- Phase E: steering-sim specs + default-ON effective helpers -------------------
+
+
+def test_rudder_sim_spec_defaults_match_contract() -> None:
+    """The dataclass default stays inert (``enabled False``) — default-ON is the helper's job, not
+    the config layer's — with the contract's tuned amp/period."""
+    spec = RudderSimSpec()
+    assert spec.enabled is False
+    assert spec.amp_deg == pytest.approx(1.5)
+    assert spec.period_s == pytest.approx(10.0)
+
+
+def test_heading_sim_spec_defaults_match_contract() -> None:
+    spec = HeadingSimSpec()
+    assert spec.enabled is False
+    assert spec.amp_deg == pytest.approx(1.0)
+    assert spec.period_s == pytest.approx(45.0)
+
+
+def test_steering_sim_specs_round_trip_only_when_present() -> None:
+    """A config that never mentions the steering-sim blocks emits neither key and round-trips
+    byte-identically; an explicit block round-trips with all three fields (mirrors depth_sim)."""
+    plain = EngineConfig.from_dict(_baseline_raw()).to_dict()
+    assert "rudder_sim" not in plain
+    assert "heading_sim" not in plain
+
+    raw = _baseline_raw()
+    raw["rudder_sim"] = {"enabled": True, "amp_deg": 2.0, "period_s": 8.0}
+    raw["heading_sim"] = {"enabled": True}
+    cfg = EngineConfig.from_dict(raw)
+    as_dict = cfg.to_dict()
+    assert as_dict["rudder_sim"] == {"enabled": True, "amp_deg": 2.0, "period_s": 8.0}
+    assert set(as_dict["heading_sim"]) == {"enabled", "amp_deg", "period_s"}
+    assert EngineConfig.from_dict(as_dict).to_dict() == as_dict
+
+
+def test_effective_sims_default_on_in_simulate() -> None:
+    """In simulate mode an ABSENT block resolves to an enabled default; depth seeds its base from
+    the passed initial depth, rudder/heading take their spec defaults."""
+    cfg = EngineConfig.from_dict(_baseline_raw())
+    assert cfg.mode == "simulate"
+
+    dep = effective_depth_sim(cfg, 123.0)
+    assert dep is not None and dep.enabled is True
+    assert dep.base_depth_m == pytest.approx(123.0)  # seeded from initial depth
+
+    rud = effective_rudder_sim(cfg)
+    assert rud is not None and rud.enabled is True
+
+    hdg = effective_heading_sim(cfg)
+    assert hdg is not None and hdg.enabled is True
+
+
+def test_effective_sims_are_inert_outside_simulate() -> None:
+    """Outside simulate mode every effective helper returns None, so auto RX / replay data is never
+    overwritten by a background sim write."""
+    for mode in ("auto", "replay"):
+        raw = _baseline_raw()
+        raw["mode"] = mode
+        cfg = EngineConfig.from_dict(raw)
+        assert effective_depth_sim(cfg, 10.0) is None
+        assert effective_rudder_sim(cfg) is None
+        assert effective_heading_sim(cfg) is None
+
+
+def test_effective_sims_respect_explicit_disabled_block_in_simulate() -> None:
+    """An explicit ``{enabled:false}`` block in simulate mode yields that disabled spec (inert), not
+    the enabled default — the opt-out path."""
+    raw = _baseline_raw()
+    raw["rudder_sim"] = {"enabled": False}
+    raw["heading_sim"] = {"enabled": False}
+    raw["depth_sim"] = {"enabled": False}
+    cfg = EngineConfig.from_dict(raw)
+    assert effective_depth_sim(cfg, 10.0).enabled is False  # type: ignore[union-attr]
+    assert effective_rudder_sim(cfg).enabled is False  # type: ignore[union-attr]
+    assert effective_heading_sim(cfg).enabled is False  # type: ignore[union-attr]

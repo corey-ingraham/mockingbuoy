@@ -623,6 +623,40 @@ def _validate_depth_sim(config: EngineConfig, errors: list[str]) -> None:
             errors.append(f"depth_sim.{name} must be a finite number >= 0, got {value!r}")
 
 
+def _validate_rudder_sim(config: EngineConfig, errors: list[str]) -> None:
+    """Cross-field checks for the deterministic rudder-sim seam.
+
+    Validated whenever the block is present (not only when ``enabled``) so a bad saved block fails
+    loud at validate/start rather than the first time it is toggled on. The period must be finite
+    and strictly positive (a zero period divides by zero in ``rudder_sim``); the amplitude must be
+    finite and non-negative.
+    """
+    r = config.rudder_sim
+    if r is None:
+        return
+    if not math.isfinite(r.period_s) or r.period_s <= 0:
+        errors.append(f"rudder_sim.period_s must be a finite number > 0, got {r.period_s!r}")
+    if not math.isfinite(r.amp_deg) or r.amp_deg < 0:
+        errors.append(f"rudder_sim.amp_deg must be a finite number >= 0, got {r.amp_deg!r}")
+
+
+def _validate_heading_sim(config: EngineConfig, errors: list[str]) -> None:
+    """Cross-field checks for the deterministic heading-sim seam.
+
+    Validated whenever the block is present (not only when ``enabled``) so a bad saved block fails
+    loud at validate/start rather than the first time it is toggled on. The period must be finite
+    and strictly positive (a zero period divides by zero in ``heading_sim``); the amplitude must be
+    finite and non-negative.
+    """
+    h = config.heading_sim
+    if h is None:
+        return
+    if not math.isfinite(h.period_s) or h.period_s <= 0:
+        errors.append(f"heading_sim.period_s must be a finite number > 0, got {h.period_s!r}")
+    if not math.isfinite(h.amp_deg) or h.amp_deg < 0:
+        errors.append(f"heading_sim.amp_deg must be a finite number >= 0, got {h.amp_deg!r}")
+
+
 def _validate_display_overrides(config: EngineConfig, errors: list[str]) -> None:
     """Light finiteness check for the display-override seam (A4).
 
@@ -747,6 +781,8 @@ def validate(config: EngineConfig) -> list[str]:
     _validate_sources(config, errors)
     _validate_route_replay(config, errors)
     _validate_depth_sim(config, errors)
+    _validate_rudder_sim(config, errors)
+    _validate_heading_sim(config, errors)
     _validate_display_overrides(config, errors)
     return errors
 

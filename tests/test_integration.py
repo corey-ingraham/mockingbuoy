@@ -223,11 +223,16 @@ def test_headless_engine_smoke_emits_valid_gps_heading_ais() -> None:
     vtg = by_type["VTG"]
     assert float(vtg.true_track) == pytest.approx(_COG_DEG)
 
-    # Heading: HDT carries heading (bow), not COG.
+    # Heading: HDT carries heading (bow), not COG. In simulate mode the default-ON heading-sim
+    # adds a gentle wander about the setpoint (seeded from the initial heading), so the value sits
+    # within amp*(1+harmonic) of _HEADING_DEG rather than dead on it — still nowhere near COG.
     hdt = pynmea2.parse(monitor.lines_for("heading")[0])
     assert hdt.talker == "HE"
     assert hdt.sentence_type == "HDT"
-    assert float(hdt.heading) == pytest.approx(_HEADING_DEG)
+    from nmea_sim.steeringsim import _HARMONIC_WEIGHT
+
+    _heading_wander = 1.0 * (1.0 + _HARMONIC_WEIGHT)  # default heading-sim amp_deg=1.0
+    assert float(hdt.heading) == pytest.approx(_HEADING_DEG, abs=_heading_wander + 1e-6)
     assert float(hdt.heading) != pytest.approx(_COG_DEG)
 
     # AIS: own-ship position decodes via pyais and is a !AIVDO with the configured MMSI.
@@ -701,8 +706,10 @@ def test_profile_traffic_emits_ownship_and_in_region_targets(tmp_path: Path) -> 
     engine.start()
     try:
         got = _wait_until(
-            lambda: any(x.startswith("!AIVDO") for x in monitor.lines_for("ais"))
-            and any(x.startswith("!AIVDM") for x in monitor.lines_for("ais"))
+            lambda: (
+                any(x.startswith("!AIVDO") for x in monitor.lines_for("ais"))
+                and any(x.startswith("!AIVDM") for x in monitor.lines_for("ais"))
+            )
         )
         assert got, "expected both own-ship VDO and target VDMs within the poll window"
     finally:
