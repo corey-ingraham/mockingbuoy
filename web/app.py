@@ -48,6 +48,7 @@ from nmea_sim.config import (
     effective_depth_sim,
     effective_heading_sim,
     effective_rudder_sim,
+    effective_wind_sim,
 )
 from nmea_sim.diagnostics import decode_line, score_baud
 from nmea_sim.engine import Engine, HealthReport, port_is_operational, targetable_slots
@@ -294,6 +295,9 @@ def _driven_fields(manager: EngineManager) -> list[str]:
       exists (a route owns the helm; the sim yields to it).
     * ``heading_true_deg``/``heading_mag_deg`` — present iff the EFFECTIVE heading-sim is enabled
       AND no route driver exists (same yield-to-route rule as rudder).
+    * ``wind_speed_kn``/``wind_dir_deg`` — present iff the EFFECTIVE wind-sim is enabled (default-ON
+      in simulate mode via ``effective_wind_sim``). Wind is not helm, so it runs regardless of a
+      route.
     * ``cog_deg``/``sog_kn`` — present iff a route driver exists (``route_status()`` is not None; it
       returns None with no driver), i.e. simulate route mode.
     * In ``auto`` mode, every ``rx_accept`` field of each channel whose ``rx_feeds_state`` is set
@@ -320,6 +324,11 @@ def _driven_fields(manager: EngineManager) -> list[str]:
     hdg = effective_heading_sim(cfg)
     if hdg is not None and hdg.enabled and not route_active:
         driven.update(("heading_true_deg", "heading_mag_deg"))
+    initial_ws = float(cfg.initial_state_raw.get("wind_speed_kn", 0.0))
+    initial_wd = float(cfg.initial_state_raw.get("wind_dir_deg", 0.0))
+    wnd = effective_wind_sim(cfg, initial_ws, initial_wd)
+    if wnd is not None and wnd.enabled:
+        driven.update(("wind_speed_kn", "wind_dir_deg"))
     if manager.route_status() is not None:
         driven.update(("cog_deg", "sog_kn"))
     if cfg.mode == "auto":
@@ -784,6 +793,18 @@ class HeadingSimDefault(BaseModel):
     enabled: bool
 
 
+class WindSimDefault(BaseModel):
+    """The wind-sim toggle in a persist request (mirrors :class:`DepthSimDefault`). Exposes ONLY
+    ``enabled`` — the tuned gust/veer params and base wind are NOT reachable from the web (the base
+    is seeded from the initial wind state). Extras forbidden. Deep-validated (``_validate_wind_sim``
+    via ``validate_or_raise``) before save. Default-ON in simulate mode lives in
+    ``effective_wind_sim``, not this persist seam."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
 class InitialStateRequest(BaseModel):
     """Body of ``POST /api/config/initial-state`` — the Save-as-defaults persist allow-list (R15).
 
@@ -843,6 +864,7 @@ class InitialStateRequest(BaseModel):
     # fill the oscillation params and prior tuned params are preserved on re-save (skip-on-None).
     rudder_sim: RudderSimDefault | None = None
     heading_sim: HeadingSimDefault | None = None
+    wind_sim: WindSimDefault | None = None
     channels: list[ChannelDefault] | None = None
     inputs: list[InputDefault] | None = None
     route: RouteDefault | None = None
@@ -1739,6 +1761,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 hs = dict(merged.get("heading_sim", {}))
                 hs["enabled"] = body.heading_sim.enabled
                 merged["heading_sim"] = hs
+            if body.wind_sim is not None:
+                wnd = dict(merged.get("wind_sim", {}))
+                wnd["enabled"] = body.wind_sim.enabled
+                merged["wind_sim"] = wnd
 
             if body.channels is not None:
                 by_id = {c["id"]: c for c in merged["channels"]}

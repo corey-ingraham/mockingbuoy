@@ -1720,7 +1720,8 @@ class _FakeManager:
 
 def test_driven_fields_default_on_sims_for_plain_simulate_config() -> None:
     """A plain simulate config (no sim blocks) now reports the default-ON background sims: depth
-    (always) plus rudder + heading (no route driver present), via the ``effective_*`` helpers."""
+    (always) plus rudder + heading (no route driver present) plus wind, via the ``effective_*``
+    helpers."""
     from nmea_sim.config import EngineConfig
 
     cfg = EngineConfig.from_dict(json.loads(CONFIG_PATH.read_text()))
@@ -1729,6 +1730,8 @@ def test_driven_fields_default_on_sims_for_plain_simulate_config() -> None:
         "rudder_angle_deg",
         "heading_true_deg",
         "heading_mag_deg",
+        "wind_speed_kn",
+        "wind_dir_deg",
     }
 
 
@@ -1779,13 +1782,15 @@ def test_driven_fields_auto_mode_rx_feeds_state() -> None:
 
 def test_state_endpoint_carries_driven_fields(client: TestClient) -> None:
     """``GET /api/state`` always attaches ``driven_fields`` as a list. For a plain simulate config
-    it is the default-ON background-sim set (depth + rudder + heading)."""
+    it is the default-ON background-sim set (depth + rudder + heading + wind)."""
     body = client.get("/api/state").json()
     assert set(body["driven_fields"]) == {
         "depth_m",
         "rudder_angle_deg",
         "heading_true_deg",
         "heading_mag_deg",
+        "wind_speed_kn",
+        "wind_dir_deg",
     }
 
 

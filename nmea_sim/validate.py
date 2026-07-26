@@ -657,6 +657,31 @@ def _validate_heading_sim(config: EngineConfig, errors: list[str]) -> None:
         errors.append(f"heading_sim.amp_deg must be a finite number >= 0, got {h.amp_deg!r}")
 
 
+def _validate_wind_sim(config: EngineConfig, errors: list[str]) -> None:
+    """Cross-field checks for the deterministic wind-sim seam.
+
+    Validated whenever the block is present (not only when ``enabled``) so a bad saved block fails
+    loud at validate/start rather than the first time it is toggled on. Both periods must be finite
+    and strictly positive (a zero period divides by zero in ``wind_sim``); both amplitudes must be
+    finite and non-negative.
+    """
+    w = config.wind_sim
+    if w is None:
+        return
+    if not math.isfinite(w.gust_period_s) or w.gust_period_s <= 0:
+        errors.append(
+            f"wind_sim.gust_period_s must be a finite number > 0, got {w.gust_period_s!r}"
+        )
+    if not math.isfinite(w.veer_period_s) or w.veer_period_s <= 0:
+        errors.append(
+            f"wind_sim.veer_period_s must be a finite number > 0, got {w.veer_period_s!r}"
+        )
+    if not math.isfinite(w.gust_amp_kn) or w.gust_amp_kn < 0:
+        errors.append(f"wind_sim.gust_amp_kn must be a finite number >= 0, got {w.gust_amp_kn!r}")
+    if not math.isfinite(w.veer_amp_deg) or w.veer_amp_deg < 0:
+        errors.append(f"wind_sim.veer_amp_deg must be a finite number >= 0, got {w.veer_amp_deg!r}")
+
+
 def _validate_display_overrides(config: EngineConfig, errors: list[str]) -> None:
     """Light finiteness check for the display-override seam (A4).
 
@@ -783,6 +808,7 @@ def validate(config: EngineConfig) -> list[str]:
     _validate_depth_sim(config, errors)
     _validate_rudder_sim(config, errors)
     _validate_heading_sim(config, errors)
+    _validate_wind_sim(config, errors)
     _validate_display_overrides(config, errors)
     return errors
 

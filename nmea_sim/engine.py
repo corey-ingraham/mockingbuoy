@@ -45,9 +45,11 @@ from .config import (
     RouteSpec,
     RudderSimSpec,
     TimeSourceSpec,
+    WindSimSpec,
     effective_depth_sim,
     effective_heading_sim,
     effective_rudder_sim,
+    effective_wind_sim,
 )
 from .depthsim import depth_sim
 from .depthsim import depth_sim as depth_sim_fn  # alias for use where a param shadows ``depth_sim``
@@ -65,6 +67,7 @@ from .state import AisTarget, SharedState, VesselState
 from .steeringsim import heading_sim, rudder_sim
 from .tcp_tap import TcpTap
 from .timeauthority import TimeAuthority
+from .windsim import wind_sim
 from .writers import LogWriter, NullWriter, PtyWriter, Writer
 
 # Internal AIS emission kinds (config models AIS as one emit entry; the engine expands it
@@ -441,6 +444,7 @@ class PhysicsEngine:
         rudder_sim: RudderSimSpec | None = None,
         heading_sim: HeadingSimSpec | None = None,
         initial_heading_deg: float = 0.0,
+        wind_sim: WindSimSpec | None = None,
     ) -> None:
         self._mode = movement_mode
         self._time = time_source
@@ -460,6 +464,9 @@ class PhysicsEngine:
         # Mutable single float (GIL-atomic); the heading wander is centred here, refreshed by the
         # update_state hook when a manual edit sets heading_true_deg.
         self._heading_setpoint = initial_heading_deg
+        # ALREADY-effective wind spec (or None). None keeps wind_speed_kn/wind_dir_deg untouched
+        # exactly as before (initial state / RX seam owns them).
+        self._wind_sim = wind_sim
 
     def set_heading_setpoint(self, deg: float) -> None:
         """Re-centre the heading wander (called from the manual-edit hook)."""
@@ -501,6 +508,12 @@ class PhysicsEngine:
             ht = heading_sim(self._heading_setpoint, new_utc.timestamp(), self._heading_sim)
             changes["heading_true_deg"] = ht
             changes["heading_mag_deg"] = (ht - state.mag_variation_deg) % 360.0
+        # Optional true-wind drift off the same absolute clock (advance stays pure). Wind is not
+        # helm, so it is NOT route-gated; the apparent wind / MWV / MWD recompute from these.
+        if self._wind_sim is not None and self._wind_sim.enabled:
+            ws, wd = wind_sim(new_utc.timestamp(), self._wind_sim)
+            changes["wind_speed_kn"] = ws
+            changes["wind_dir_deg"] = wd
         return changes
 
 
@@ -1322,6 +1335,7 @@ class Engine:
             rudder_sim=effective_rudder_sim(config),
             heading_sim=effective_heading_sim(config),
             initial_heading_deg=_init.heading_true_deg,
+            wind_sim=effective_wind_sim(config, _init.wind_speed_kn, _init.wind_dir_deg),
         )
         self._physics = _PhysicsThread(
             self._shared,

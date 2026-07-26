@@ -1770,6 +1770,11 @@
       const en = $("cfg-heading_sim-enabled");
       if (en) { body.heading_sim = { enabled: !!en.checked }; any = true; }
     }
+    // Wind sim toggle rides the Environment card -> {enabled} block; server defaults fill the rest.
+    if (slug === "environment") {
+      const en = $("cfg-wind_sim-enabled");
+      if (en) { body.wind_sim = { enabled: !!en.checked }; any = true; }
+    }
     if (!any) { setCardMsg(slug, "Nothing to save in this section.", "err"); return; }
     const r = await postJson("/api/config/initial-state", body);
     if (r.ok) setCardMsg(slug, "Saved as defaults (applies on next Start).", "ok");
@@ -1887,6 +1892,8 @@
     if (re) re.checked = effectiveSimEnabled(cfg && cfg.rudder_sim);
     const he = $("cfg-heading_sim-enabled");
     if (he) he.checked = effectiveSimEnabled(cfg && cfg.heading_sim);
+    const we = $("cfg-wind_sim-enabled");
+    if (we) we.checked = effectiveSimEnabled(cfg && cfg.wind_sim);
   }
 
   // Legacy config-level Save (mode / channels / inputs / route / replay / AIS). Not part of the A2

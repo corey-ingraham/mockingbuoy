@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=48">
+<link rel="stylesheet" href="/static/app.css?v=49">
 </head>
 <body>
 
@@ -581,6 +581,12 @@
       </div>
       <p class="hint drives-note">Drives NMEA: MWV, MWD (wind); sea state drives motion.</p>
 
+      <h3>Wind simulation</h3>
+      <div class="ctl-row" style="align-items:center;">
+        <label class="switch"><input type="checkbox" id="cfg-wind_sim-enabled"> Enable wind sim (gusts &amp; veer)</label>
+      </div>
+      <p class="hint">Applies on next Start; simulate mode only. True wind gusts and veers around the set values; apparent (relative) wind follows. Persists with Save as defaults.</p>
+
       <h3>Display-only readouts</h3>
       <div class="ctl-row">
         <div class="field"><label for="cfg-water_temp_c">Water temp (°C)</label><input id="cfg-water_temp_c" data-override="water_temp_c" type="number" step="any"></div>
@@ -894,6 +900,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=48"></script>
+<script src="/static/app.js?v=49"></script>
 </body>
 </html>

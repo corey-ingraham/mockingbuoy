@@ -49,6 +49,7 @@ _ENGINE_CONFIG_KEYS = frozenset(
         "depth_sim",
         "rudder_sim",
         "heading_sim",
+        "wind_sim",
     }
 )
 
@@ -538,6 +539,50 @@ class HeadingSimSpec:
         }
 
 
+@dataclass(frozen=True)
+class WindSimSpec:
+    """Deterministic true-wind drift (see :mod:`nmea_sim.windsim`).
+
+    ``enabled`` default is ``False`` so a directly-constructed spec is inert and the config layer
+    round-trips byte-identically; default-ON in simulate mode is resolved by
+    :func:`effective_wind_sim`, NOT by this dataclass. ``base_speed_kn``/``base_dir_deg`` seed the
+    drift and are supplied from the initial wind state by ``effective_wind_sim`` when the block is
+    absent. When effective+enabled the physics tick drives ``wind_speed_kn``/``wind_dir_deg`` (the
+    apparent wind, MWV and MWD all follow). Cross-checked in :mod:`nmea_sim.validate`.
+    """
+
+    enabled: bool = False
+    base_speed_kn: float = 0.0
+    base_dir_deg: float = 0.0
+    gust_amp_kn: float = 2.0
+    gust_period_s: float = 30.0
+    veer_amp_deg: float = 8.0
+    veer_period_s: float = 60.0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WindSimSpec:
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            base_speed_kn=float(data.get("base_speed_kn", 0.0)),
+            base_dir_deg=float(data.get("base_dir_deg", 0.0)),
+            gust_amp_kn=float(data.get("gust_amp_kn", 2.0)),
+            gust_period_s=float(data.get("gust_period_s", 30.0)),
+            veer_amp_deg=float(data.get("veer_amp_deg", 8.0)),
+            veer_period_s=float(data.get("veer_period_s", 60.0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "base_speed_kn": self.base_speed_kn,
+            "base_dir_deg": self.base_dir_deg,
+            "gust_amp_kn": self.gust_amp_kn,
+            "gust_period_s": self.gust_period_s,
+            "veer_amp_deg": self.veer_amp_deg,
+            "veer_period_s": self.veer_period_s,
+        }
+
+
 def effective_depth_sim(cfg: EngineConfig, initial_depth_m: float) -> DepthSimSpec | None:
     """Simulate-only resolved depth-sim spec (default-ON mechanism; NOT a config-layer change).
 
@@ -576,6 +621,22 @@ def effective_heading_sim(cfg: EngineConfig) -> HeadingSimSpec | None:
     if cfg.heading_sim is not None:
         return cfg.heading_sim
     return HeadingSimSpec(enabled=True)
+
+
+def effective_wind_sim(
+    cfg: EngineConfig, initial_speed_kn: float, initial_dir_deg: float
+) -> WindSimSpec | None:
+    """Simulate-only resolved wind-sim spec (default-ON; NOT a config-layer change).
+
+    None outside simulate mode (protects auto RX / replay live wind). In simulate: an explicit
+    block is used as-is; an ABSENT block becomes an enabled default whose base speed/direction are
+    SEEDED from the initial wind so the drift centres on where she started.
+    """
+    if cfg.mode != "simulate":
+        return None
+    if cfg.wind_sim is not None:
+        return cfg.wind_sim
+    return WindSimSpec(enabled=True, base_speed_kn=initial_speed_kn, base_dir_deg=initial_dir_deg)
 
 
 @dataclass(frozen=True)
@@ -779,6 +840,11 @@ class EngineConfig:
     # effective+enabled the physics tick drives rudder_angle_deg / heading_true_deg (+ mag).
     rudder_sim: RudderSimSpec | None = None
     heading_sim: HeadingSimSpec | None = None
+    # Optional deterministic true-wind drift. None (the default) means "no wind sim", byte-identical
+    # to a config that never mentioned it — default-ON in simulate mode is resolved by
+    # effective_wind_sim, never by this field. When effective+enabled the physics tick drives
+    # wind_speed_kn / wind_dir_deg (apparent wind, MWV and MWD all follow).
+    wind_sim: WindSimSpec | None = None
 
     # Numeric own-ship fields expected in ``initial_state`` (utc is supplied by the engine).
     _STATE_INT_FIELDS = ("fix_quality", "satellites")
@@ -834,6 +900,9 @@ class EngineConfig:
                 HeadingSimSpec.from_dict(hs)
                 if (hs := data.get("heading_sim")) is not None
                 else None
+            ),
+            wind_sim=(
+                WindSimSpec.from_dict(ws) if (ws := data.get("wind_sim")) is not None else None
             ),
         )
 
@@ -922,6 +991,8 @@ class EngineConfig:
             out["rudder_sim"] = self.rudder_sim.to_dict()
         if self.heading_sim is not None:
             out["heading_sim"] = self.heading_sim.to_dict()
+        if self.wind_sim is not None:
+            out["wind_sim"] = self.wind_sim.to_dict()
         return out
 
     def save(self, path: str | Path) -> None:
