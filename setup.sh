@@ -417,11 +417,27 @@ install -d -m 0755 "${CADDY_CONFD}"
 # NEVER rewrite the file — that is what keeps the other reverse-proxy sites intact across a
 # mockingbuoy redeploy.
 _import_line="import ${CADDY_CONFD}/*.caddy"
-if [ ! -f "${CADDY_MAIN}" ]; then
+_write_clean_main() {
+    # Clean shared main file: globals (admin off => config applies by restart, not a loopback
+    # admin API) + the conf.d import, and nothing else. Every real site lives in its own snippet.
     printf '{\n\tadmin off\n}\n\n%s\n' "${_import_line}" > "${CADDY_MAIN}"
     chmod 0644 "${CADDY_MAIN}"
+}
+if [ ! -f "${CADDY_MAIN}" ]; then
+    _write_clean_main
     log "created shared ${CADDY_MAIN} (admin off + conf.d import)"
+elif grep -q 'root \* /usr/share/caddy' "${CADDY_MAIN}"; then
+    # The Caddy apt package ALWAYS drops a stock welcome-page Caddyfile (a :80 file_server on
+    # /usr/share/caddy) before this installer runs, so the "create if absent" branch above never
+    # fires on a fresh host — the admin API would stay on and the :80 welcome page would face the
+    # LAN. Detect that untouched vendor default by its unique welcome marker and replace it wholesale
+    # with our clean globals + conf.d import, dropping the :80 page and closing the admin API. The
+    # marker matches ONLY the pristine vendor file; a main Caddyfile a human has actually customized
+    # won't carry it and is handled by the append-only branch below (never rewritten).
+    _write_clean_main
+    log "normalized stock vendor ${CADDY_MAIN} -> admin off + conf.d import (dropped :80 welcome page)"
 elif ! grep -qxF "${_import_line}" "${CADDY_MAIN}"; then
+    # Customized main file: NEVER rewrite it — just ensure the conf.d import is present.
     # guarantee a trailing newline so the appended line can't glue onto the last existing line
     [ -n "$(tail -c1 "${CADDY_MAIN}" 2>/dev/null)" ] && printf '\n' >> "${CADDY_MAIN}"
     printf '%s\n' "${_import_line}" >> "${CADDY_MAIN}"
