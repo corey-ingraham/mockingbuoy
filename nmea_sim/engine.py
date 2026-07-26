@@ -510,6 +510,10 @@ class PhysicsEngine:
             changes["heading_mag_deg"] = (ht - state.mag_variation_deg) % 360.0
         # Optional true-wind drift off the same absolute clock (advance stays pure). Wind is not
         # helm, so it is NOT route-gated; the apparent wind / MWV / MWD recompute from these.
+        # Deliberately NO construction-time offset (unlike depth): wind has no canonical instant
+        # value, so the gust/veer stay symmetric around the configured mean instead of being shifted
+        # to land on it at t0 (which would skew the window to one side). The one-frame transient at
+        # Start is bounded by the (modest) amplitudes.
         if self._wind_sim is not None and self._wind_sim.enabled:
             ws, wd = wind_sim(new_utc.timestamp(), self._wind_sim)
             changes["wind_speed_kn"] = ws

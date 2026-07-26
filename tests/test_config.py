@@ -24,6 +24,7 @@ from nmea_sim.config import (
     effective_depth_sim,
     effective_heading_sim,
     effective_rudder_sim,
+    effective_wind_sim,
 )
 from nmea_sim.validate import validate
 
@@ -646,6 +647,11 @@ def test_effective_sims_default_on_in_simulate() -> None:
     hdg = effective_heading_sim(cfg)
     assert hdg is not None and hdg.enabled is True
 
+    wnd = effective_wind_sim(cfg, 15.0, 220.0)
+    assert wnd is not None and wnd.enabled is True
+    assert wnd.base_speed_kn == pytest.approx(15.0)  # seeded from initial wind
+    assert wnd.base_dir_deg == pytest.approx(220.0)
+
 
 def test_effective_sims_are_inert_outside_simulate() -> None:
     """Outside simulate mode every effective helper returns None, so auto RX / replay data is never
@@ -657,6 +663,7 @@ def test_effective_sims_are_inert_outside_simulate() -> None:
         assert effective_depth_sim(cfg, 10.0) is None
         assert effective_rudder_sim(cfg) is None
         assert effective_heading_sim(cfg) is None
+        assert effective_wind_sim(cfg, 8.0, 45.0) is None
 
 
 def test_effective_sims_respect_explicit_disabled_block_in_simulate() -> None:
@@ -666,7 +673,47 @@ def test_effective_sims_respect_explicit_disabled_block_in_simulate() -> None:
     raw["rudder_sim"] = {"enabled": False}
     raw["heading_sim"] = {"enabled": False}
     raw["depth_sim"] = {"enabled": False}
+    raw["wind_sim"] = {"enabled": False}
     cfg = EngineConfig.from_dict(raw)
     assert effective_depth_sim(cfg, 10.0).enabled is False  # type: ignore[union-attr]
     assert effective_rudder_sim(cfg).enabled is False  # type: ignore[union-attr]
     assert effective_heading_sim(cfg).enabled is False  # type: ignore[union-attr]
+    assert effective_wind_sim(cfg, 8.0, 45.0).enabled is False  # type: ignore[union-attr]
+
+
+def test_effective_wind_sim_reseeds_base_from_initial_wind_on_explicit_block() -> None:
+    """REGRESSION: a persisted ``{enabled: true}`` block carries no base (the web seam saves only
+    ``enabled``), so its base_speed/dir default to 0/0. ``effective_wind_sim`` must reseed the base
+    from the CONFIGURED initial wind, or the sim would collapse to ~calm boxing north. Any garbage
+    base in a hand-edited block is likewise overridden and made inert."""
+    for block in ({"enabled": True}, {"enabled": True, "base_speed_kn": 0.0, "base_dir_deg": 0.0}):
+        raw = _baseline_raw()
+        raw["wind_sim"] = block
+        cfg = EngineConfig.from_dict(raw)
+        wnd = effective_wind_sim(cfg, 15.0, 220.0)
+        assert wnd is not None and wnd.enabled is True
+        assert wnd.base_speed_kn == pytest.approx(15.0)
+        assert wnd.base_dir_deg == pytest.approx(220.0)
+    # Tuned gust/veer params on the block survive; only the base is reseeded.
+    raw = _baseline_raw()
+    raw["wind_sim"] = {"enabled": True, "gust_amp_kn": 5.0, "veer_period_s": 90.0}
+    cfg = EngineConfig.from_dict(raw)
+    wnd = effective_wind_sim(cfg, 12.0, 100.0)
+    assert wnd is not None
+    assert wnd.gust_amp_kn == pytest.approx(5.0)
+    assert wnd.veer_period_s == pytest.approx(90.0)
+    assert wnd.base_speed_kn == pytest.approx(12.0)
+
+
+def test_validate_flags_nonfinite_wind_sim_base() -> None:
+    """A hand-edited wind_sim with a non-finite base fails validation loudly (mirrors depth's base
+    check), so garbage can never reach the wire even though effective_wind_sim would override it."""
+    raw = _baseline_raw()
+    raw["wind_sim"] = {"enabled": True, "base_speed_kn": float("nan")}
+    assert any("wind_sim.base_speed_kn" in p for p in validate(EngineConfig.from_dict(raw)))
+
+    raw["wind_sim"] = {"enabled": True, "base_dir_deg": float("inf")}
+    assert any("wind_sim.base_dir_deg" in p for p in validate(EngineConfig.from_dict(raw)))
+
+    raw["wind_sim"] = {"enabled": True, "gust_period_s": 0.0}
+    assert any("wind_sim.gust_period_s" in p for p in validate(EngineConfig.from_dict(raw)))

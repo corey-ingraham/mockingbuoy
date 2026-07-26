@@ -668,6 +668,12 @@ def _validate_wind_sim(config: EngineConfig, errors: list[str]) -> None:
     w = config.wind_sim
     if w is None:
         return
+    if not math.isfinite(w.base_speed_kn) or w.base_speed_kn < 0:
+        errors.append(
+            f"wind_sim.base_speed_kn must be a finite number >= 0, got {w.base_speed_kn!r}"
+        )
+    if not math.isfinite(w.base_dir_deg):
+        errors.append(f"wind_sim.base_dir_deg must be a finite number, got {w.base_dir_deg!r}")
     if not math.isfinite(w.gust_period_s) or w.gust_period_s <= 0:
         errors.append(
             f"wind_sim.gust_period_s must be a finite number > 0, got {w.gust_period_s!r}"

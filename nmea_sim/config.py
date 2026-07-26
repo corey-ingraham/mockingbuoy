@@ -16,7 +16,7 @@ import contextlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -628,14 +628,16 @@ def effective_wind_sim(
 ) -> WindSimSpec | None:
     """Simulate-only resolved wind-sim spec (default-ON; NOT a config-layer change).
 
-    None outside simulate mode (protects auto RX / replay live wind). In simulate: an explicit
-    block is used as-is; an ABSENT block becomes an enabled default whose base speed/direction are
-    SEEDED from the initial wind so the drift centres on where she started.
+    None outside simulate mode (protects auto RX / replay live wind). In simulate the base speed/
+    direction ALWAYS track the configured initial wind: the persist seam carries only ``enabled``,
+    so a saved ``{enabled: ...}`` block has no meaningful base of its own — reseeding it here keeps
+    the drift centred on the wind actually set (and makes any garbage base in a hand-edited block
+    inert). Any tuned gust/veer params on an explicit block are preserved.
     """
     if cfg.mode != "simulate":
         return None
     if cfg.wind_sim is not None:
-        return cfg.wind_sim
+        return replace(cfg.wind_sim, base_speed_kn=initial_speed_kn, base_dir_deg=initial_dir_deg)
     return WindSimSpec(enabled=True, base_speed_kn=initial_speed_kn, base_dir_deg=initial_dir_deg)
 
 
