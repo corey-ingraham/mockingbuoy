@@ -386,12 +386,13 @@ class VoltageSenseSpec:
 
 @dataclass(frozen=True)
 class DisplayOverridesSpec:
-    """Operator overrides for the seven display-only cosmetic instruments.
+    """Operator overrides for the seven display-only instruments.
 
     These keys are NOT wire-backed — they ride the SSE ``sim`` frame only (no NMEA sentence).
     Each field is optional: an absent (``None``) key means "auto" for that instrument (the pure
-    :func:`web.display_sim.simulate_display_instruments` value is used unchanged). ``to_dict``
-    emits ONLY the set keys, so a block that overrode nothing round-trips as ``{}``.
+    :func:`web.display_sim.simulate_display_instruments` value is used unchanged). Six are cosmetic;
+    ``engine_order_pct`` is the ENGINE ORDER telegraph that drives the display-only rpm/load model.
+    ``to_dict`` emits ONLY the set keys, so a block that overrode nothing round-trips as ``{}``.
     """
 
     water_temp_c: float | None = None
@@ -400,13 +401,20 @@ class DisplayOverridesSpec:
     pressure_hpa: float | None = None
     fuel_total_l: float | None = None
     fuel_rate_lph: float | None = None
-    prop_pitch_pct: float | None = None
+    engine_order_pct: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DisplayOverridesSpec:
         def _opt(key: str) -> float | None:
             v = data.get(key)
             return float(v) if v is not None else None
+
+        # Migration: a config saved before the FPP re-model carries the old CPP name
+        # ``prop_pitch_pct``. Map it to ``engine_order_pct`` when the new key is absent, so a
+        # persisted astern order survives instead of silently reverting to the default (full ahead).
+        engine_order = _opt("engine_order_pct")
+        if engine_order is None:
+            engine_order = _opt("prop_pitch_pct")
 
         return cls(
             water_temp_c=_opt("water_temp_c"),
@@ -415,7 +423,7 @@ class DisplayOverridesSpec:
             pressure_hpa=_opt("pressure_hpa"),
             fuel_total_l=_opt("fuel_total_l"),
             fuel_rate_lph=_opt("fuel_rate_lph"),
-            prop_pitch_pct=_opt("prop_pitch_pct"),
+            engine_order_pct=engine_order,
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -206,12 +206,14 @@ _FAULT_BOUNDS: dict[str, tuple[float, float]] = {
     "drop_sats": (0.0, 64.0),
 }
 
-#: The ONLY display-only cosmetic keys an override may touch (A4). These MUST equal the cosmetic
-#: keys ``simulate_display_instruments`` produces under the SSE ``sim`` block — every one of them is
-#: already present in ``sim``, so applying an override via ``sim.update(...)`` overwrites and
-#: never adds a key, keeping that dict's pinned key set intact. None of these are wire-backed (they
-#: emit no NMEA) and none live in ``_UPDATE_RANGES``, so a display override can never leak into a
-#: vessel-state ``update``.
+#: The ONLY display-only keys an override may touch (A4). These MUST equal keys
+#: ``simulate_display_instruments`` produces under the SSE ``sim`` block — every one is already
+#: present in ``sim``, so applying an override via ``sim.update(...)`` overwrites and never adds a
+#: key, keeping that dict's key set intact. None are wire-backed (they emit no NMEA) and none
+#: live in ``_UPDATE_RANGES``, so a display override can never leak into a vessel-state
+#: ``update``. Six are purely cosmetic; ``engine_order_pct`` is the ENGINE ORDER telegraph,
+#: which now DRIVES the rpm/load model inside ``simulate_display_instruments`` (still
+#: display-only — never on the wire).
 _DISPLAY_OVERRIDE_KEYS: frozenset[str] = frozenset(
     {
         "water_temp_c",
@@ -220,17 +222,17 @@ _DISPLAY_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "pressure_hpa",
         "fuel_total_l",
         "fuel_rate_lph",
-        "prop_pitch_pct",
+        "engine_order_pct",
     }
 )
 
-#: Inclusive ``(lo, hi)`` range for the display-override keys that are NOT free-floating. Most
-#: cosmetic keys are finiteness-only (any finite float rides through), but ``prop_pitch_pct`` is a
-#: controllable-pitch propeller order that must stay in ``[-100, 100]`` %. Enforced at BOTH the live
+#: Inclusive ``(lo, hi)`` range for the display-override keys that are NOT free-floating. Most keys
+#: are finiteness-only (any finite float rides through), but ``engine_order_pct`` is the telegraph
+#: order that must stay in ``[-100, 100]`` % (negative = astern). Enforced at BOTH the live
 #: ``display_override`` handler and the persist-merge, so neither a live set nor a saved default can
-#: park an out-of-range pitch. A key absent from this map is finiteness-only, as before.
+#: park an out-of-range order. A key absent from this map is finiteness-only, as before.
 _DISPLAY_OVERRIDE_BOUNDS: dict[str, tuple[float, float]] = {
-    "prop_pitch_pct": (-100.0, 100.0),
+    "engine_order_pct": (-100.0, 100.0),
 }
 
 
@@ -2216,12 +2218,15 @@ async def _state_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
                     # Display-only instrument sim (propulsion/fuel/environment/autopilot):
                     # SSE-only, never on the wire; rendered amber so it is not mistaken for
                     # NMEA-backed truth. Grafted here, not in ``_state_to_dict``.
-                    # A4: keep ``simulate_display_instruments`` PURE and apply operator overrides
-                    # here. The manager dict only ever holds keys already in ``sim`` (the 7 cosmetic
-                    # keys), so ``.update`` overwrites values and adds NO new key — the 20-key
-                    # set is preserved. Overrides ride SSE only; ``/api/state`` is not changed.
-                    sim = simulate_display_instruments(snapshot)
-                    sim.update(manager.get_display_overrides())
+                    # A4: ``simulate_display_instruments`` stays pure. The engine-order telegraph
+                    # (``engine_order_pct``) is threaded IN so it drives the rpm/load model; the
+                    # post-hoc ``.update`` then applies every override (idempotent echo for
+                    # engine_order, plus the six cosmetic keys). The manager dict only holds keys
+                    # already in ``sim`` (the 7 override keys), so ``.update`` overwrites values and
+                    # adds NO new key — the 19-key set is preserved. Overrides ride SSE only.
+                    overrides = manager.get_display_overrides()
+                    sim = simulate_display_instruments(snapshot, overrides)
+                    sim.update(overrides)
                     frame["sim"] = sim
                     broker.publish_state(frame)
         except Exception:

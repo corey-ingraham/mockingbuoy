@@ -592,10 +592,8 @@
   .depth-vals .ins-bignum { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); }
   .depth-vals .ro-right { align-items: flex-end; text-align: right; }
   .depth-vals .ro-right .ins-val-row { justify-content: flex-end; }
-  /* propulsion Engine order / Pitch row — same left/right two-column layout as the depth value row */
+  /* propulsion Engine order row — single-column layout under the main-engine gauge */
   .prop-order-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
-  .prop-order-row .ro-right { align-items: flex-end; text-align: right; }
-  .prop-order-row .ro-right .ins-val-row { justify-content: flex-end; }
   #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 26vh; margin: 4px 0 0; }
 
   /* primary panel — COG tape arc (wide, short); fill the primary cell prominently */

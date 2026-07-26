@@ -410,8 +410,8 @@
     });
   })();
 
-  // Twin-engine vertical bar gauge: an RPM track (0-3500) + a LOAD track (0-100) drawn once into
-  // the 110x230 svg; each carries a bottom-anchored amber fill rect (y=BOT-h; height=h) whose id is
+  // Single main-engine vertical bar gauge: an RPM track (0-120) + a LOAD track (0-110) drawn once into
+  // the 200x210 svg; each carries a bottom-anchored amber fill rect (y=BOT-h; height=h) whose id is
   // "<id>-rpm-bar" / "<id>-load-bar", updated by setEngineBar in the hot repaint. Amber = display-only.
   const ENG_TOP = 10, ENG_BOT = 200, ENG_H = ENG_BOT - ENG_TOP; // track (viewBox 200x210, no bottom labels)
   function buildEngineGauge(id) {
@@ -423,10 +423,10 @@
     // wide gap between them leaves room for the LOAD axis labels (no longer clipped by the RPM bar)
     // green / amber / red operating bands (marine tach style), value ranges in each track's own units
     const tracks = [
-      { kind: "rpm", x: 32, max: 3500, ticks: [0, 1000, 2000, 3000], label: "RPM",
-        zones: [[0, 2600, "#2ea043"], [2600, 3150, "#d9a520"], [3150, 3500, "#e5484d"]] },
-      { kind: "load", x: 132, max: 100, ticks: [0, 25, 50, 75, 100], label: "LOAD",
-        zones: [[0, 75, "#2ea043"], [75, 90, "#d9a520"], [90, 100, "#e5484d"]] },
+      { kind: "rpm", x: 32, max: 120, ticks: [0, 30, 60, 90, 120], label: "RPM",
+        zones: [[0, 100, "#2ea043"], [100, 110, "#d9a520"], [110, 120, "#e5484d"]] },
+      { kind: "load", x: 132, max: 110, ticks: [0, 25, 50, 75, 100], label: "LOAD",
+        zones: [[0, 85, "#2ea043"], [85, 100, "#d9a520"], [100, 110, "#e5484d"]] },
     ];
     for (const t of tracks) {
       const bg = document.createElementNS(NS, "rect");
@@ -545,10 +545,9 @@
     const fill = $(id.replace(/-mark$/, "-fill"));
     if (fill) { fill.setAttribute("x", Math.min(cx, x).toFixed(1)); fill.setAttribute("width", Math.abs(x - cx).toFixed(1)); }
   }
-  // build the twin engine bars + the two autopilot linear indicators once (each guards a missing target)
+  // build the single main-engine bars + the two autopilot linear indicators once (each guards a missing target)
   (function buildPropulsionGauges() {
-    buildEngineGauge("prop-port");
-    buildEngineGauge("prop-stbd");
+    buildEngineGauge("prop-main");
   })();
   (function buildApIndicators() {
     buildLinearIndicator("ap-offcourse", 5, "°");
@@ -649,9 +648,9 @@
     const setDeg = Number(s.set_deg), driftKn = Number(s.drift_kn) || 0;
     const trackOk = Number.isFinite(shipCog) && Number.isFinite(shipHdg);
     const curOk = Number.isFinite(setDeg) && Number.isFinite(shipHdg);
-    // engine order (display-only prop pitch): AHEAD → green forward vectors above the fuel box;
-    // ASTERN (pitch < -1%) → suppress the forward vectors and raise the red stern arrow below it.
-    const ppEng = Number(sim.prop_pitch_pct);
+    // engine-order telegraph (display-only, sim.engine_order_pct): AHEAD → green forward vectors above
+    // the fuel box; ASTERN (order < -1%) → suppress the forward vectors and raise the red stern arrow.
+    const ppEng = Number(sim.engine_order_pct);
     const asternEng = Number.isFinite(ppEng) && ppEng < -1;
     setShipVec("ship-vec-cog", trackOk ? shipCog - shipHdg : 0, (!asternEng && trackOk) ? Math.min(90, shipSog * 9) : 0);
     setShipVec("ship-vec-cur", curOk ? setDeg - shipHdg : 0, (!asternEng && curOk) ? Math.min(70, driftKn * 18) : 0);
@@ -702,26 +701,23 @@
     setTxt("env-hum", num(sim.humidity_pct, 0));
     setTxt("env-press", num(sim.pressure_hpa, 0));
 
-    // propulsion — twin engine bars (amber = display-only, from s.sim)
-    setEngineBar("prop-port-rpm-bar", sim.rpm_port, 3500);
-    setEngineBar("prop-port-load-bar", sim.load_port_pct, 100);
-    setEngineBar("prop-stbd-rpm-bar", sim.rpm_stbd, 3500);
-    setEngineBar("prop-stbd-load-bar", sim.load_stbd_pct, 100);
-    { const r = Number(sim.rpm_port); setTxt("prop-port-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
-    setTxt("prop-port-load", num(sim.load_port_pct, 0));
-    { const r = Number(sim.rpm_stbd); setTxt("prop-stbd-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
-    setTxt("prop-stbd-load", num(sim.load_stbd_pct, 0));
-    // ENGINE ORDER + controllable-pitch propeller (display-only, from sim.prop_pitch_pct): sign drives
-    // AHEAD (green)/STOP (amber)/ASTERN (red), with a +/-1 % dead-band reading STOP.
-    { const pp = Number(sim.prop_pitch_pct);
+    // propulsion — single main-engine bars (amber = display-only, from s.sim)
+    setEngineBar("prop-main-rpm-bar", sim.rpm, 120);
+    setEngineBar("prop-main-load-bar", sim.load_pct, 110);
+    { const r = Number(sim.rpm); setTxt("prop-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
+    setTxt("prop-load", num(sim.load_pct, 0));
+    setTxt("prop-power", num(sim.shaft_power_mw, 1));
+    // ENGINE ORDER telegraph (display-only, from sim.engine_order_pct): |o|<1 → STOP (amber); else band
+    // by magnitude (≥80 FULL, 55-80 HALF, 30-55 SLOW, else DEAD SLOW) with AHEAD (green)/ASTERN (red) suffix.
+    { const o = Number(sim.engine_order_pct);
       let order = "STOP", cls = "sim";
-      if (Number.isFinite(pp)) {
-        if (pp > 1) { order = "AHEAD"; cls = "live"; }        // green via .stat-pill.live
-        else if (pp < -1) { order = "ASTERN"; cls = "astern"; } // red via .stat-pill.astern
-        else { order = "STOP"; cls = "sim"; }                  // amber via .stat-pill.sim
+      if (Number.isFinite(o) && Math.abs(o) >= 1) {
+        const m = Math.abs(o);
+        const band = m >= 80 ? "FULL" : m >= 55 ? "HALF" : m >= 30 ? "SLOW" : "DEAD SLOW";
+        if (o > 0) { order = band + " AHEAD"; cls = "live"; }   // green via .stat-pill.live
+        else { order = band + " ASTERN"; cls = "astern"; }      // red via .stat-pill.astern
       }
-      const po = $("prop-order"); if (po) { po.textContent = order; po.className = "stat-pill " + cls; }
-      setTxt("prop-pitch", Number.isFinite(pp) ? (pp > 0 ? "+" : "") + pp.toFixed(0) : "--"); }
+      const po = $("prop-order"); if (po) { po.textContent = order; po.className = "stat-pill " + cls; } }
 
     // autopilot — mode pill + synthetic track point + metrics + linear deviation (amber = display-only)
     setTxt("ap-mode", sim.ap_mode == null ? "---" : String(sim.ap_mode));
@@ -1963,7 +1959,7 @@
     }
     const ovA = $("cfg-override-apply"); if (ovA) ovA.addEventListener("click", overrideApply);
     const ovC = $("cfg-override-clear"); if (ovC) ovC.addEventListener("click", overrideClear);
-    // second Apply/Clear pair on the Ship / Helm card (fuel + propeller pitch overrides live there too)
+    // second Apply/Clear pair on the Ship / Helm card (fuel + engine-order overrides live there too)
     const ovAs = $("cfg-override-apply-ship"); if (ovAs) ovAs.addEventListener("click", overrideApply);
     const ovCs = $("cfg-override-clear-ship"); if (ovCs) ovCs.addEventListener("click", overrideClear);
     const da = $("cfg-depth-alert"); if (da) da.addEventListener("change", onDepthAlertChange);

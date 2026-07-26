@@ -1,40 +1,52 @@
 """Display-only instrument simulation for the conning tab.
 
-The conning display wants panels — twin-engine propulsion, fuel, cabin/sea environment,
-autopilot — that the NMEA wire never carries. Rather than invent new sentences (a hard
-rule: nothing new on the wire / config / role-emit / TCP tap), those panels are driven by
+The conning display wants panels — the main-engine propulsion readout, fuel, cabin/sea
+environment, autopilot — that the NMEA wire never carries. Rather than invent new sentences (a
+hard rule: nothing new on the wire / config / role-emit / TCP tap), those panels are driven by
 this pure, deterministic function. Its output rides ONLY on the SSE ``state`` frame, under a
 ``sim`` key, and is rendered in amber ("display-only") so an operator never mistakes it for
 NMEA-backed truth.
 
-:func:`simulate_display_instruments` is a pure function of the vessel snapshot: every value
-drifts smoothly from the snapshot's tz-aware ``utc`` timestamp — there is no randomness, no
-hidden state, and no I/O — so the same snapshot always yields the same dict (a property the
-tests pin). Each quantity is computed in a typed ``float`` local; the ``float | str | None``
-union dict is assembled as a single literal at the end so the arithmetic stays mypy-clean.
+The vessel is modelled as a large merchant ship: a single low-speed 2-stroke main engine,
+direct-coupled to a single fixed-pitch propeller (engine rpm = shaft rpm = propeller rpm). RPM and
+load are driven by the ENGINE ORDER telegraph (the ``engine_order_pct`` display-override, negative =
+astern via engine reversal), following the propeller cube law, with governor hunt and heavy-weather
+added resistance.
+
+:func:`simulate_display_instruments` is a pure function of the vessel snapshot plus the operator
+overrides: every value drifts smoothly from the snapshot's tz-aware ``utc`` timestamp — there is no
+randomness, no hidden state, and no I/O — so the same ``(snapshot, overrides)`` always yields the
+same dict (a property the tests pin). It never mutates the passed ``overrides`` mapping. Each
+quantity is computed in a typed ``float`` local; the ``float | str | None`` union dict is assembled
+as a single literal at the end so the arithmetic stays mypy-clean.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from math import cos, pi, radians, sin
 
 from nmea_sim.state import VesselState
 
 # --- tuning constants (display-only; no config surface) ----------------------------
 
-#: Idle / redline engine speed (rpm) and the hull speed (kn) mapped to redline. The
-#: propeller law then derives load from rpm, so cruise (~6 kn) sits near a third of MAX.
-_IDLE_RPM = 650.0
-_MAX_RPM = 3400.0
-_HULL_MAX_SOG_KN = 12.0
+#: Single low-speed 2-stroke main engine, direct-coupled to a fixed-pitch propeller. MCR ~100 rpm /
+#: ~20 MW is a large-bore (Panamax+) main engine; engine rpm == shaft rpm == propeller rpm.
+_MCR_RPM = 100.0
+_MCR_MW = 20.0
+_DEFAULT_ORDER_PCT = 90.0  # telegraph at "Navigation Full" / service speed by default
+_ASTERN_RPM_FRAC = 0.70  # direct-reversing engines are limited astern (~70 % MCR rpm)
+_HUNT_AMP = 0.01  # governor hunt, ±1 % of setpoint — MULTIPLICATIVE so STOP (order 0) stays 0
+_HUNT_PERIOD_S = 8.0  # seconds-scale so the hunt reads as governor jitter, not a slow drift
+_WEATHER_PER_SS = 0.03  # added-resistance load rise per sea-state step above calm baseline (SS1)
+_SAG_PER_SS = 0.005  # heavy-running rpm sag per sea-state step above the calm baseline
 
-#: Fuel model. ``TANK_L`` is nominal capacity; burn rates in litres/hour; the cosmetic
-#: ``REFILL_WINDOW_S`` (72 h) makes ``fuel_total_l`` a slow bounded sawtooth (4000 -> 1264 L)
-#: that visibly refills, so a long-running display never flatlines at empty.
-_TANK_L = 4000.0
-_MAX_BURN_LPH = 90.0
-_IDLE_BURN_LPH = 4.0
-_NOMINAL_BURN_LPH = 38.0
+#: Fuel model in MERCHANT units (TONNES). Rate = brake power × SFOC. The sim keys keep their
+#: historical ``_l``/``_lph`` suffixes (renaming them would churn the override/persist surface) but
+#: now carry tonnes / tonnes-per-hour / tonnes-per-nm; the UI labels them ``t``.
+_SFOC_G_PER_KWH = 170.0  # specific fuel-oil consumption of a modern slow-speed 2-stroke
+_BUNKERS_T = 1500.0  # nominal bunker capacity (tonnes)
+_NOMINAL_BURN_TH = 2.7  # tonnes/hour; drives the slow cosmetic refill sawtooth
 _REFILL_WINDOW_S = 259200.0  # 72 h
 
 #: Autopilot leg length (nm); the along-leg distance counts down as a sawtooth.
@@ -50,14 +62,19 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return value
 
 
-def simulate_display_instruments(state: VesselState) -> dict[str, float | str | None]:
+def simulate_display_instruments(
+    state: VesselState, overrides: Mapping[str, float] | None = None
+) -> dict[str, float | str | None]:
     """Derive display-only instrument values from a vessel snapshot, deterministically.
 
-    Pure and side-effect free: all drift comes from ``state.utc`` (tz-aware), so repeated
-    calls on the same snapshot return equal dicts. Exactly one value is ``None``
-    (``fuel_per_nm_l`` when the vessel is effectively stopped, rendered ``---``) and exactly
-    one is ``str`` (``ap_mode``); every other value is a ``float``.
+    Pure and side-effect free: all drift comes from ``state.utc`` (tz-aware) and the operator
+    ``overrides`` (the engine-order telegraph), so repeated calls on the same inputs return equal
+    dicts and the passed ``overrides`` mapping is never mutated. Exactly one value is ``None``
+    (``fuel_per_nm_l`` when the vessel is effectively stopped, rendered ``---``) and exactly one is
+    ``str`` (``ap_mode``); every other value is a ``float``.
     """
+    ov = overrides or {}
+
     # --- time drift (all smooth, deterministic oscillators) ------------------------
     t: float = state.utc.timestamp()
     sod: float = t % 86400.0  # seconds-of-day, for diurnal (weather-like) shaping
@@ -66,25 +83,26 @@ def simulate_display_instruments(state: VesselState) -> dict[str, float | str | 
     d3: float = sin(2.0 * pi * t / 240.0)
 
     sog: float = state.sog_kn
-    rot: float = state.rot_dpm
 
-    # --- propulsion (propeller-law load, rot-coupled port/stbd) --------------------
-    # Controllable-pitch propeller order: display-only, default full AHEAD (+100 %). An operator
-    # override (persisted, -100..100) drives the ENGINE ORDER pill (AHEAD/STOP/ASTERN). Never NMEA.
-    prop_pitch_pct: float = 100.0
-    frac: float = _clamp(sog / _HULL_MAX_SOG_KN, 0.0, 1.0)
-    base_rpm: float = _IDLE_RPM + (_MAX_RPM - _IDLE_RPM) * frac
-    # Turning eases the inside engine and loads the outside one (opposite rot signs).
-    rpm_port: float = _clamp(base_rpm - 18.0 + 12.0 * d1 + 0.8 * rot, _IDLE_RPM, _MAX_RPM)
-    rpm_stbd: float = _clamp(base_rpm + 18.0 + 12.0 * d2 - 0.8 * rot, _IDLE_RPM, _MAX_RPM)
-    load_port_pct: float = _clamp(160.0 * (rpm_port / _MAX_RPM) ** 3, 3.0, 100.0)
-    load_stbd_pct: float = _clamp(160.0 * (rpm_stbd / _MAX_RPM) ** 3, 3.0, 100.0)
+    # --- propulsion: single slow-speed main engine, telegraph-driven ---------------
+    # ENGINE ORDER (%) is the telegraph: +ahead / -astern, default "Navigation Full". RPM follows
+    # the order along the propeller law; a direct-reversing engine is limited astern. Governor hunt
+    # is multiplicative (STOP -> rpm 0). Heavy weather sags rpm and raises load (torque-rich).
+    order: float = _clamp(float(ov.get("engine_order_pct", _DEFAULT_ORDER_PCT)), -100.0, 100.0)
+    mag: float = abs(order) / 100.0
+    demand: float = min(mag, _ASTERN_RPM_FRAC) if order < 0.0 else mag
+    ss: float = float(max(state.sea_state - 1, 0))  # sea_state defaults to 1 == calm baseline
+    sag: float = 1.0 - _SAG_PER_SS * ss
+    hunt: float = 1.0 + _HUNT_AMP * sin(2.0 * pi * t / _HUNT_PERIOD_S)
+    rpm: float = _MCR_RPM * demand * sag * hunt  # UNSIGNED; astern is carried by the order sign
+    weather: float = 1.0 + _WEATHER_PER_SS * ss
+    load_pct: float = _clamp((rpm / _MCR_RPM) ** 3 * 100.0 * weather, 0.0, 110.0)
+    shaft_power_mw: float = load_pct / 100.0 * _MCR_MW
 
-    # --- fuel (burn from mean load; bounded cosmetic 72 h refill sawtooth) ---------
-    mean_load: float = (load_port_pct + load_stbd_pct) / 2.0
-    fuel_rate_lph: float = _IDLE_BURN_LPH + _MAX_BURN_LPH * mean_load / 100.0
-    fuel_per_nm_l: float | None = fuel_rate_lph / sog if sog > 0.1 else None
-    fuel_total_l: float = _TANK_L - (_NOMINAL_BURN_LPH / 3600.0) * (t % _REFILL_WINDOW_S)
+    # --- fuel (tonnes; rate = brake power x SFOC; slow cosmetic 72 h refill sawtooth) ----
+    fuel_rate_th: float = shaft_power_mw * _SFOC_G_PER_KWH / 1000.0
+    fuel_per_nm_t: float | None = fuel_rate_th / sog if sog > 0.1 else None
+    fuel_total_t: float = _BUNKERS_T - (_NOMINAL_BURN_TH / 3600.0) * (t % _REFILL_WINDOW_S)
 
     # --- environment (diurnal shaping -> reads like real weather) ------------------
     water_temp_c: float = 12.0 + 1.5 * sin(2.0 * pi * (sod - 46800.0) / 86400.0) + 0.2 * d2
@@ -107,13 +125,13 @@ def simulate_display_instruments(state: VesselState) -> dict[str, float | str | 
     )
 
     return {
-        "rpm_port": rpm_port,
-        "rpm_stbd": rpm_stbd,
-        "load_port_pct": load_port_pct,
-        "load_stbd_pct": load_stbd_pct,
-        "fuel_rate_lph": fuel_rate_lph,
-        "fuel_per_nm_l": fuel_per_nm_l,
-        "fuel_total_l": fuel_total_l,
+        "rpm": rpm,
+        "load_pct": load_pct,
+        "shaft_power_mw": shaft_power_mw,
+        "engine_order_pct": order,
+        "fuel_rate_lph": fuel_rate_th,
+        "fuel_per_nm_l": fuel_per_nm_t,
+        "fuel_total_l": fuel_total_t,
         "water_temp_c": water_temp_c,
         "air_temp_c": air_temp_c,
         "humidity_pct": humidity_pct,
@@ -126,5 +144,4 @@ def simulate_display_instruments(state: VesselState) -> dict[str, float | str | 
         "ap_time_to_go_s": ap_time_to_go_s,
         "ap_track_lat": ap_track_lat,
         "ap_track_lon": ap_track_lon,
-        "prop_pitch_pct": prop_pitch_pct,
     }

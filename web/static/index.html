@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=49">
+<link rel="stylesheet" href="/static/app.css?v=50">
 </head>
 <body>
 
@@ -241,15 +241,15 @@
         <line x1="140" y1="166" x2="140" y2="226" stroke="#cfd6dd" stroke-width="1"/>
         <line x1="170" y1="166" x2="170" y2="226" stroke="#cfd6dd" stroke-width="1"/>
         <text x="120" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">TOTAL FUEL</text>
-        <text x="120" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/GAL</text>
+        <text x="120" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">t</text>
         <text x="155" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL</text>
-        <text x="155" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/HR</text>
+        <text x="155" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">t/HR</text>
         <text x="185" y="179" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">FUEL</text>
-        <text x="185" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">/NM</text>
+        <text x="185" y="188" fill="#8792a0" font-size="6.5" font-family="Segoe UI, system-ui, sans-serif" font-weight="700" text-anchor="middle">t/NM</text>
         <text id="fuel-total" x="120" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">----</text>
         <text id="fuel-rate" x="155" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">--</text>
         <text id="fuel-pernm" x="185" y="213" fill="#f2f6fa" font-size="13" font-weight="700" font-family="Segoe UI, system-ui, sans-serif" text-anchor="middle">---</text>
-        <!-- engine-order ASTERN telegraph: red arrow below the fuel box, shown only when prop pitch < -1% -->
+        <!-- engine-order ASTERN telegraph: red arrow below the fuel box, shown only when engine order < -1% -->
         <g id="ship-astern-arrow" opacity="0">
           <line x1="150" y1="230" x2="150" y2="248" stroke="#e5484d" stroke-width="4"/>
           <polygon points="150,258 142,246 158,246" fill="#e5484d"/>
@@ -273,35 +273,24 @@
 
     <!-- RIGHT COLUMN: propulsion, autopilot, alerts stacked -->
     <div class="conn-col conn-col-right">
-    <!-- PROPULSION: twin vertical engine bars (RPM + LOAD), amber = display-only (s.sim) -->
+    <!-- PROPULSION: single slow-speed main engine (RPM + LOAD bars + shaft power), amber = display-only (s.sim) -->
     <div class="ins-panel p-propulsion">
       <div class="ins-hdr"><span>Propulsion</span><span id="pill-prop" class="stat-pill sim">SIM</span></div>
       <div class="prop-gauges">
         <div class="prop-col">
-          <div class="prop-title">Port Engine</div>
+          <div class="prop-title">Main Engine</div>
           <div class="prop-stats">
-            <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-port-rpm" class="v-sim">----</span></div></div>
-            <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-port-load" class="v-sim">--</span>%</div></div>
+            <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-rpm" class="v-sim">----</span></div></div>
+            <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-load" class="v-sim">--</span>%</div></div>
+            <div class="prop-stat"><div class="prop-stat-t">Shaft Power</div><div class="prop-stat-v"><span id="prop-power" class="v-sim">--</span> MW</div></div>
           </div>
-          <svg id="prop-port" viewBox="0 0 200 210" aria-label="port engine"></svg>
-        </div>
-        <div class="prop-col">
-          <div class="prop-title">Stbd Engine</div>
-          <div class="prop-stats">
-            <div class="prop-stat"><div class="prop-stat-t">RPM</div><div class="prop-stat-v"><span id="prop-stbd-rpm" class="v-sim">----</span></div></div>
-            <div class="prop-stat"><div class="prop-stat-t">Load</div><div class="prop-stat-v"><span id="prop-stbd-load" class="v-sim">--</span>%</div></div>
-          </div>
-          <svg id="prop-stbd" viewBox="0 0 200 210" aria-label="starboard engine"></svg>
+          <svg id="prop-main" viewBox="0 0 200 210" aria-label="main engine"></svg>
         </div>
       </div>
       <div class="prop-order-row">
         <div class="ro-item">
           <div class="ins-label">Engine order</div>
           <div class="ins-val-row"><span id="prop-order" class="stat-pill sim">STOP</span></div>
-        </div>
-        <div class="ro-item ro-right">
-          <div class="ins-label">Pitch</div>
-          <div class="ins-val-row"><span id="prop-pitch" class="v-sim">--</span><span class="ins-unit">% pitch</span></div>
         </div>
       </div>
     </div>
@@ -642,7 +631,7 @@
       <div class="ctl-row">
         <div class="field"><label for="cfg-fuel_total_l">Fuel total (L)</label><input id="cfg-fuel_total_l" data-override="fuel_total_l" type="number" step="any"></div>
         <div class="field"><label for="cfg-fuel_rate_lph">Fuel rate (L/h)</label><input id="cfg-fuel_rate_lph" data-override="fuel_rate_lph" type="number" step="any"></div>
-        <div class="field"><label for="cfg-prop_pitch_pct">Propeller pitch % (astern = negative)</label><input id="cfg-prop_pitch_pct" data-override="prop_pitch_pct" type="number" step="any" min="-100" max="100"></div>
+        <div class="field"><label for="cfg-engine_order_pct">Engine order (% ahead, astern = neg)</label><input id="cfg-engine_order_pct" data-override="engine_order_pct" type="number" step="any" min="-100" max="100"></div>
       </div>
       <div class="ctl-row cfg-card-actions">
         <button id="cfg-override-apply-ship" class="small">Apply overrides</button>
@@ -900,6 +889,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=49"></script>
+<script src="/static/app.js?v=50"></script>
 </body>
 </html>
