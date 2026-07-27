@@ -98,11 +98,21 @@ def simulate_display_instruments(
     weather: float = 1.0 + _WEATHER_PER_SS * ss
     load_pct: float = _clamp((rpm / _MCR_RPM) ** 3 * 100.0 * weather, 0.0, 110.0)
     shaft_power_mw: float = load_pct / 100.0 * _MCR_MW
+    # Telegraph-ORDERED shaft rpm (signed: +ahead / -astern): the demand the bridge is calling for,
+    # WITHOUT the governor hunt or heavy-weather sag that ride the ACTUAL rpm above. The conning tach
+    # draws this as a separate "order" marker so order-vs-actual divergence is visible (weather/manoeuvre).
+    rpm_ordered: float = _MCR_RPM * demand * (-1.0 if order < 0.0 else 1.0)
 
     # --- fuel (tonnes; rate = brake power x SFOC; slow cosmetic 72 h refill sawtooth) ----
     fuel_rate_th: float = shaft_power_mw * _SFOC_G_PER_KWH / 1000.0
     fuel_per_nm_t: float | None = fuel_rate_th / sog if sog > 0.1 else None
     fuel_total_t: float = _BUNKERS_T - (_NOMINAL_BURN_TH / 3600.0) * (t % _REFILL_WINDOW_S)
+    # Derived bunker figures for the Ship-panel gauge (all computed here so the JS stays a dumb
+    # formatter): % of capacity remaining, endurance (time to empty at current burn; None at STOP),
+    # and range (distance at current economy; None below steerage speed where t/NM is undefined).
+    fuel_pct: float = _clamp(fuel_total_t / _BUNKERS_T * 100.0, 0.0, 100.0)
+    fuel_endurance_days: float | None = fuel_total_t / fuel_rate_th / 24.0 if fuel_rate_th > 1e-6 else None
+    fuel_range_nm: float | None = fuel_total_t / fuel_per_nm_t if fuel_per_nm_t else None
 
     # --- environment (diurnal shaping -> reads like real weather) ------------------
     water_temp_c: float = 12.0 + 1.5 * sin(2.0 * pi * (sod - 46800.0) / 86400.0) + 0.2 * d2
@@ -126,12 +136,16 @@ def simulate_display_instruments(
 
     return {
         "rpm": rpm,
+        "rpm_ordered": rpm_ordered,
         "load_pct": load_pct,
         "shaft_power_mw": shaft_power_mw,
         "engine_order_pct": order,
         "fuel_rate_lph": fuel_rate_th,
         "fuel_per_nm_l": fuel_per_nm_t,
         "fuel_total_l": fuel_total_t,
+        "fuel_pct": fuel_pct,
+        "fuel_endurance_days": fuel_endurance_days,
+        "fuel_range_nm": fuel_range_nm,
         "water_temp_c": water_temp_c,
         "air_temp_c": air_temp_c,
         "humidity_pct": humidity_pct,

@@ -410,78 +410,144 @@
     });
   })();
 
-  // Single main-engine vertical bar gauge: an RPM track (0-120) + a LOAD track (0-110) drawn once into
-  // the 200x210 svg; each carries a bottom-anchored amber fill rect (y=BOT-h; height=h) whose id is
-  // "<id>-rpm-bar" / "<id>-load-bar", updated by setEngineBar in the hot repaint. Amber = display-only.
-  const ENG_TOP = 10, ENG_BOT = 200, ENG_H = ENG_BOT - ENG_TOP; // track (viewBox 200x210, no bottom labels)
-  function buildEngineGauge(id) {
+  // Single main-engine AHEAD/ASTERN tachometer (order vs actual) drawn once into a 220x130 top
+  // semicircle: glossy face + metallic bezel + glass highlight + green/amber/red ahead bands + red
+  // astern band + ticks, then a shadowed needle (ACTUAL rpm, "<id>-needle") and an amber telegraph
+  // marker on the outer rim (ORDERED rpm, "<id>-order"). STOP at 12 o'clock; ahead sweeps right
+  // (uniform 0.75 deg/rpm, 0..120 -> 0..+90 deg), astern sweeps left (0..-80 -> 0..-60 deg). Amber =
+  // display-only. Angle from vertical-up, +clockwise: pt = (cx+R*sin, cy-R*cos).
+  const TACH_CX = 110, TACH_CY = 118, TACH_DPR = 0.75; // deg per rpm
+  const TACH_A_AHEAD = 90, TACH_A_ASTERN = -60;         // needle sweep limits (deg)
+  const _NS = "http://www.w3.org/2000/svg";
+  const _rad = (a) => (a * Math.PI) / 180;
+  const _tachPt = (r, a) => [TACH_CX + r * Math.sin(_rad(a)), TACH_CY - r * Math.cos(_rad(a))];
+  // stroked arc path between two angles (deg) at radius r; sweep follows the angle direction
+  function _tachArc(r, a1, a2, stroke, width, cap) {
+    const [x1, y1] = _tachPt(r, a1), [x2, y2] = _tachPt(r, a2);
+    const large = Math.abs(a2 - a1) > 180 ? 1 : 0, sweep = a2 > a1 ? 1 : 0;
+    const p = document.createElementNS(_NS, "path");
+    p.setAttribute("d", `M${x1.toFixed(1)} ${y1.toFixed(1)} A${r} ${r} 0 ${large} ${sweep} ${x2.toFixed(1)} ${y2.toFixed(1)}`);
+    p.setAttribute("fill", "none"); p.setAttribute("stroke", stroke); p.setAttribute("stroke-width", String(width));
+    if (cap) p.setAttribute("stroke-linecap", cap);
+    return p;
+  }
+  // rpm -> needle/marker angle; non-finite (missing/partial payload) -> 0 (STOP), matching every
+  // other rotate() transform in this file (avoids writing an invalid "rotate(NaN ...)").
+  const _tachAngle = (rpm) => { const r = Number(rpm); return Number.isFinite(r) ? Math.max(TACH_A_ASTERN, Math.min(TACH_A_AHEAD, r * TACH_DPR)) : 0; };
+  function buildEngineTach(id) {
     const svg = $(id);
     if (!svg) return;
-    const NS = "http://www.w3.org/2000/svg";
-    const TW = 36;
-    // tracks centred at 25% / 75% of the 200-wide viewBox so each bar sits under its RPM/LOAD header;
-    // wide gap between them leaves room for the LOAD axis labels (no longer clipped by the RPM bar)
-    // green / amber / red operating bands (marine tach style), value ranges in each track's own units
-    const tracks = [
-      { kind: "rpm", x: 32, max: 120, ticks: [0, 30, 60, 90, 120], label: "RPM",
-        zones: [[0, 100, "#2ea043"], [100, 110, "#d9a520"], [110, 120, "#e5484d"]] },
-      { kind: "load", x: 132, max: 110, ticks: [0, 25, 50, 75, 100], label: "LOAD",
-        zones: [[0, 85, "#2ea043"], [85, 100, "#d9a520"], [100, 110, "#e5484d"]] },
-    ];
-    for (const t of tracks) {
-      const bg = document.createElementNS(NS, "rect");
-      bg.setAttribute("x", String(t.x)); bg.setAttribute("y", String(ENG_TOP));
-      bg.setAttribute("width", String(TW)); bg.setAttribute("height", String(ENG_H));
-      bg.setAttribute("rx", "3"); bg.setAttribute("fill", "url(#faceGrad)"); bg.setAttribute("stroke", "url(#bezelGrad)"); bg.setAttribute("stroke-width", "1.5");
-      svg.appendChild(bg);
-      // redline strip riding just right of the track: bottom=green, mid=amber, top=red
-      const zx = t.x + TW + 9;
-      for (const [zf, zt, zc] of t.zones) {
-        const yTop = ENG_BOT - (zt / t.max) * ENG_H, yBot = ENG_BOT - (zf / t.max) * ENG_H;
-        const z = document.createElementNS(NS, "rect");
-        z.setAttribute("x", String(zx)); z.setAttribute("y", yTop.toFixed(1));
-        z.setAttribute("width", "4"); z.setAttribute("height", (yBot - yTop).toFixed(1));
-        z.setAttribute("rx", "1"); z.setAttribute("fill", zc); z.setAttribute("opacity", "0.92");
-        svg.appendChild(z);
-      }
-      for (const tv of t.ticks) {
-        const y = ENG_BOT - (tv / t.max) * ENG_H;
-        const ln = document.createElementNS(NS, "line");
-        ln.setAttribute("x1", String(t.x - 5)); ln.setAttribute("y1", y.toFixed(1));
-        ln.setAttribute("x2", String(t.x)); ln.setAttribute("y2", y.toFixed(1));
-        ln.setAttribute("stroke", "#aab4bf"); ln.setAttribute("stroke-width", "1.4");
-        svg.appendChild(ln);
-        const tx = document.createElementNS(NS, "text");
-        tx.setAttribute("x", String(t.x - 7)); tx.setAttribute("y", (y + 3).toFixed(1));
-        tx.setAttribute("fill", "#aab4bf"); tx.setAttribute("font-size", "9"); tx.setAttribute("font-weight", "700");
-        tx.setAttribute("font-family", "monospace"); tx.setAttribute("text-anchor", "end");
-        tx.textContent = tv.toLocaleString("en-US");
-        svg.appendChild(tx);
-      }
-      const bar = document.createElementNS(NS, "rect");
-      bar.setAttribute("id", id + "-" + t.kind + "-bar");
-      bar.setAttribute("x", String(t.x + 1)); bar.setAttribute("y", String(ENG_BOT));
-      bar.setAttribute("width", String(TW - 2)); bar.setAttribute("height", "0");
-      bar.setAttribute("fill", "url(#engFill)");
-      svg.appendChild(bar);
-      // white pointer marker riding the bar top (JPG style)
-      const mark = document.createElementNS(NS, "polygon");
-      mark.setAttribute("id", id + "-" + t.kind + "-mark");
-      const mx = t.x + TW + 2;
-      mark.setAttribute("points", mx + "," + ENG_BOT + " " + (mx + 6) + "," + (ENG_BOT - 4) + " " + (mx + 6) + "," + (ENG_BOT + 4));
-      mark.setAttribute("fill", "#dfe6ec");
-      svg.appendChild(mark);
+    const R_FACE = 92, R_BEZEL = 94, R_GUTTER = 97, R_ZONE = 82, R_TICK = 76, R_LAB = 62, R_ORDER = 90;
+    // glossy face — closed top semicircle (flat bottom at cy), same faceGrad as every other dial
+    const [flx, fly] = _tachPt(R_FACE, -90), [frx, fry] = _tachPt(R_FACE, 90);
+    const face = document.createElementNS(_NS, "path");
+    face.setAttribute("d", `M${flx.toFixed(1)} ${fly.toFixed(1)} A${R_FACE} ${R_FACE} 0 0 1 ${frx.toFixed(1)} ${fry.toFixed(1)} Z`);
+    face.setAttribute("fill", "url(#faceGrad)");
+    svg.appendChild(face);
+    // glass reflection highlight (bare ellipse near the top, sized to stay within the face) — WTD-dial style
+    const glass = document.createElementNS(_NS, "ellipse");
+    glass.setAttribute("cx", String(TACH_CX)); glass.setAttribute("cy", String(TACH_CY - 60));
+    glass.setAttribute("rx", "60"); glass.setAttribute("ry", "34"); glass.setAttribute("fill", "url(#glassGrad)");
+    svg.appendChild(glass);
+    // metallic bezel + dark gutter rings (arc only, over the face rim)
+    svg.appendChild(_tachArc(R_GUTTER, -90, 90, "#05080c", 4));
+    svg.appendChild(_tachArc(R_BEZEL, -90, 90, "url(#bezelGrad)", 3));
+    // operating bands — ahead green/amber/red (rpm), astern muted red
+    for (const [rf, rt, col] of [[0, 100, "#2ea043"], [100, 110, "#d9a520"], [110, 120, "#e5484d"]]) {
+      svg.appendChild(_tachArc(R_ZONE, rf * TACH_DPR, rt * TACH_DPR, col, 5, "round"));
     }
+    { const astern = _tachArc(R_ZONE, 0, TACH_A_ASTERN, "#e5484d", 5, "round"); astern.setAttribute("opacity", "0.55"); svg.appendChild(astern); }
+    // ticks + monospace labels: ahead 0/30/60/90/120, astern 40/80 (magnitude)
+    const ticks = [
+      [0, "STOP"], [30, "30"], [60, "60"], [90, "90"], [120, "120"], [-40, "40"], [-80, "80"],
+    ];
+    for (const [rpm, txt] of ticks) {
+      const a = rpm * TACH_DPR, [ox, oy] = _tachPt(R_TICK, a), [ix, iy] = _tachPt(R_TICK - 8, a);
+      const ln = document.createElementNS(_NS, "line");
+      ln.setAttribute("x1", ox.toFixed(1)); ln.setAttribute("y1", oy.toFixed(1));
+      ln.setAttribute("x2", ix.toFixed(1)); ln.setAttribute("y2", iy.toFixed(1));
+      ln.setAttribute("stroke", "#aab4bf"); ln.setAttribute("stroke-width", "1.5");
+      svg.appendChild(ln);
+      const [lx, ly] = _tachPt(R_LAB, a);
+      // near-horizontal extreme labels (e.g. 120 at +90deg) would straddle the flat baseline; lift them
+      const lift = Math.abs(a) >= 85 ? 8 : 0;
+      const t = document.createElementNS(_NS, "text");
+      t.setAttribute("x", lx.toFixed(1)); t.setAttribute("y", (ly + 3 - lift).toFixed(1));
+      t.setAttribute("fill", txt === "STOP" ? "#c6ced6" : "#aab4bf");
+      t.setAttribute("font-size", txt === "STOP" ? "8.5" : "9.5"); t.setAttribute("font-weight", "700");
+      t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", "middle");
+      t.textContent = txt;
+      svg.appendChild(t);
+    }
+    // telegraph ORDER marker — amber chevron on the outer rim, larger radius than the needle tip so it
+    // stays visible even when order and actual coincide; rotated about the hub by setEngineTach
+    const order = document.createElementNS(_NS, "polygon");
+    order.setAttribute("id", id + "-order");
+    order.setAttribute("points", `${TACH_CX - 5},${TACH_CY - R_ORDER - 7} ${TACH_CX + 5},${TACH_CY - R_ORDER - 7} ${TACH_CX},${TACH_CY - R_ORDER + 3}`);
+    order.setAttribute("fill", "#ff9500"); order.setAttribute("stroke", "#1a1204"); order.setAttribute("stroke-width", "0.8");
+    order.setAttribute("filter", "url(#needleShadow)");
+    svg.appendChild(order);
+    // ACTUAL-rpm needle — tapered 3D pointer + counterweight tail, shared drop shadow (JPG dial style)
+    const needle = document.createElementNS(_NS, "g");
+    needle.setAttribute("id", id + "-needle"); needle.setAttribute("filter", "url(#needleShadow)");
+    const blade = document.createElementNS(_NS, "polygon");
+    blade.setAttribute("points", `${TACH_CX},${TACH_CY - 78} ${TACH_CX - 3.4},${TACH_CY} ${TACH_CX + 3.4},${TACH_CY}`);
+    blade.setAttribute("fill", "#eef3f7");
+    needle.appendChild(blade);
+    const tail = document.createElementNS(_NS, "polygon");
+    tail.setAttribute("points", `${TACH_CX - 3},${TACH_CY} ${TACH_CX + 3},${TACH_CY} ${TACH_CX},${TACH_CY + 12}`);
+    tail.setAttribute("fill", "#9aa4b0");
+    needle.appendChild(tail);
+    svg.appendChild(needle);
+    // chrome hub + specular dot — matches the wind-rose hub
+    const hub = document.createElementNS(_NS, "circle");
+    hub.setAttribute("cx", String(TACH_CX)); hub.setAttribute("cy", String(TACH_CY)); hub.setAttribute("r", "8"); hub.setAttribute("fill", "url(#hubGrad)");
+    svg.appendChild(hub);
+    const spec = document.createElementNS(_NS, "circle");
+    spec.setAttribute("cx", String(TACH_CX - 2.5)); spec.setAttribute("cy", String(TACH_CY - 2.5)); spec.setAttribute("r", "1.8"); spec.setAttribute("fill", "#ffffff"); spec.setAttribute("fill-opacity", "0.9");
+    svg.appendChild(spec);
   }
-  function setEngineBar(id, v, max) {
-    const bar = $(id);
-    if (!bar) return;
-    const frac = Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v) / max)) : 0;
-    const h = frac * ENG_H;
-    bar.setAttribute("y", (ENG_BOT - h).toFixed(1));
-    bar.setAttribute("height", h.toFixed(1));
-    const mk = $(id.replace(/-bar$/, "-mark"));
-    if (mk) mk.setAttribute("transform", "translate(0 " + (-h).toFixed(1) + ")");
+  // Rotate the needle to ACTUAL signed rpm and the order marker to ORDERED signed rpm (deg cw about the hub).
+  function setEngineTach(id, rpmSigned, rpmOrdered) {
+    const nd = $(id + "-needle"), or = $(id + "-order");
+    if (nd) nd.setAttribute("transform", `rotate(${_tachAngle(rpmSigned).toFixed(1)} ${TACH_CX} ${TACH_CY})`);
+    if (or) or.setAttribute("transform", `rotate(${_tachAngle(rpmOrdered).toFixed(1)} ${TACH_CX} ${TACH_CY})`);
+  }
+  // Slim horizontal LOAD bar (0..110 %) with zoned underlay + amber fill + white pointer. viewBox
+  // 220x16 stretched (preserveAspectRatio none); "<id>-fill" width + "<id>-mark" x set by setLoadBar.
+  const LOAD_X0 = 3, LOAD_W = 214, LOAD_MAX = 110;
+  function buildLoadBar(id) {
+    const svg = $(id);
+    if (!svg) return;
+    // recessed glass-black track (same faceGrad/bezelGrad as the other recessed indicators)
+    const track = document.createElementNS(_NS, "rect");
+    track.setAttribute("x", "1"); track.setAttribute("y", "1"); track.setAttribute("width", "218"); track.setAttribute("height", "14");
+    track.setAttribute("rx", "3"); track.setAttribute("fill", "url(#faceGrad)"); track.setAttribute("stroke", "url(#bezelGrad)"); track.setAttribute("stroke-width", "1");
+    svg.appendChild(track);
+    // faint zone underlay so the amber/red bands read even below the current fill
+    for (const [zf, zt, zc] of [[0, 85, "#2ea043"], [85, 100, "#d9a520"], [100, 110, "#e5484d"]]) {
+      const z = document.createElementNS(_NS, "rect");
+      z.setAttribute("x", (LOAD_X0 + (zf / LOAD_MAX) * LOAD_W).toFixed(1)); z.setAttribute("y", "12");
+      z.setAttribute("width", (((zt - zf) / LOAD_MAX) * LOAD_W).toFixed(1)); z.setAttribute("height", "3");
+      z.setAttribute("fill", zc); z.setAttribute("opacity", "0.6");
+      svg.appendChild(z);
+    }
+    const fill = document.createElementNS(_NS, "rect");
+    fill.setAttribute("id", id + "-fill");
+    fill.setAttribute("x", String(LOAD_X0)); fill.setAttribute("y", "2.5"); fill.setAttribute("width", "0"); fill.setAttribute("height", "9");
+    fill.setAttribute("rx", "1.5"); fill.setAttribute("fill", "url(#engFill)");
+    svg.appendChild(fill);
+    const mark = document.createElementNS(_NS, "rect");
+    mark.setAttribute("id", id + "-mark");
+    mark.setAttribute("x", String(LOAD_X0)); mark.setAttribute("y", "1"); mark.setAttribute("width", "2"); mark.setAttribute("height", "14");
+    mark.setAttribute("fill", "#dfe6ec");
+    svg.appendChild(mark);
+  }
+  function setLoadBar(id, pct) {
+    const frac = Number.isFinite(Number(pct)) ? Math.max(0, Math.min(1, Number(pct) / LOAD_MAX)) : 0;
+    const w = frac * LOAD_W;
+    const fill = $(id + "-fill"); if (fill) fill.setAttribute("width", w.toFixed(1));
+    const mark = $(id + "-mark"); if (mark) mark.setAttribute("x", (LOAD_X0 + w - 1).toFixed(1));
   }
   // Autopilot linear deviation indicator: 220x44 with a centre-zero baseline, ±half labels and a
   // diamond marker "<id>-mark" placed at x=110+clamp(v/half,-1,1)*100 by setLinearMarker. Amber.
@@ -547,7 +613,8 @@
   }
   // build the single main-engine bars + the two autopilot linear indicators once (each guards a missing target)
   (function buildPropulsionGauges() {
-    buildEngineGauge("prop-main");
+    buildEngineTach("prop-main");
+    buildLoadBar("prop-load-bar");
   })();
   (function buildApIndicators() {
     buildLinearIndicator("ap-offcourse", 5, "°");
@@ -652,8 +719,10 @@
     // the fuel box; ASTERN (order < -1%) → suppress the forward vectors and raise the red stern arrow.
     const ppEng = Number(sim.engine_order_pct);
     const asternEng = Number.isFinite(ppEng) && ppEng < -1;
-    setShipVec("ship-vec-cog", trackOk ? shipCog - shipHdg : 0, (!asternEng && trackOk) ? Math.min(90, shipSog * 9) : 0);
-    setShipVec("ship-vec-cur", curOk ? setDeg - shipHdg : 0, (!asternEng && curOk) ? Math.min(70, driftKn * 18) : 0);
+    // length capped so the arrowhead stays in the gap above the BUNKERS box and never reaches the
+    // bow-walk box (pivot y=195, bunkers box top y=164, bow box bottom y=124 -> keep tip >= ~132)
+    setShipVec("ship-vec-cog", trackOk ? shipCog - shipHdg : 0, (!asternEng && trackOk) ? Math.min(63, shipSog * 9) : 0);
+    setShipVec("ship-vec-cur", curOk ? setDeg - shipHdg : 0, (!asternEng && curOk) ? Math.min(58, driftKn * 18) : 0);
     const asternG = $("ship-astern-arrow");
     if (asternG) asternG.setAttribute("opacity", asternEng ? "1" : "0");
     // athwartships (docking) lateral speeds recovered from ground track + yaw; L=30 m, midships pivot
@@ -674,10 +743,25 @@
     if (shipRudBlade && Number.isFinite(rud)) shipRudBlade.setAttribute("transform", "rotate(" + (-rud).toFixed(1) + " 150 372)");
     setTxt("ship-rud-val", num(s.rudder_angle_deg, 1));
 
-    // fuel (amber = display-only, from s.sim)
+    // fuel — BUNKER gauge (amber = display-only, from s.sim): total tonnes + capacity fill bar,
+    // plus the voyage row (economy / endurance / range). t/HR now lives in the Propulsion panel.
     { const ft = Number(sim.fuel_total_l); setTxt("fuel-total", Number.isFinite(ft) ? Math.round(ft).toLocaleString("en-US") : "----"); }
-    setTxt("fuel-rate", num(sim.fuel_rate_lph, 1));
+    { const pct = Number(sim.fuel_pct);
+      const frac = Number.isFinite(pct) ? Math.max(0, Math.min(1, pct / 100)) : 0;
+      const bar = $("fuel-bar"); if (bar) bar.setAttribute("width", (frac * 68).toFixed(1));
+      setTxt("fuel-pct", Number.isFinite(pct) ? Math.round(pct) + "%" : "--%"); }
     setTxt("fuel-pernm", sim.fuel_per_nm_l == null ? "---" : num(sim.fuel_per_nm_l, 2));
+    // endurance/range: order and sog are decoupled inputs, so a low telegraph at speed makes these
+    // huge — cap the DISPLAY so the narrow voyage cells never overflow (999+ d; k / M for range).
+    setTxt("fuel-endur", sim.fuel_endurance_days == null ? "---" : (sim.fuel_endurance_days >= 999 ? "999+" : num(sim.fuel_endurance_days, 1)));
+    { const rn = Number(sim.fuel_range_nm);
+      let s = "----";
+      if (sim.fuel_range_nm != null && Number.isFinite(rn)) {
+        s = rn >= 1e6 ? Math.round(rn / 1e6) + "M"
+          : rn >= 1e4 ? Math.round(rn / 1e3) + "k"
+          : Math.round(rn).toLocaleString("en-US");
+      }
+      setTxt("fuel-range", s); }
 
     // wind — relative (apparent) dial: solid vector rotates about the 200x200 rose centre
     const appAng = Number(s.app_wind_angle_deg);
@@ -701,12 +785,15 @@
     setTxt("env-hum", num(sim.humidity_pct, 0));
     setTxt("env-press", num(sim.pressure_hpa, 0));
 
-    // propulsion — single main-engine bars (amber = display-only, from s.sim)
-    setEngineBar("prop-main-rpm-bar", sim.rpm, 120);
-    setEngineBar("prop-main-load-bar", sim.load_pct, 110);
+    // propulsion — single main-engine ahead/astern tach (amber = display-only, from s.sim)
+    { const ordered = Number(sim.rpm_ordered);
+      const rpmSigned = (Number(sim.engine_order_pct) < 0 ? -Number(sim.rpm) : Number(sim.rpm));
+      setEngineTach("prop-main", rpmSigned, Number.isFinite(ordered) ? ordered : 0); }
+    setLoadBar("prop-load-bar", sim.load_pct);
     { const r = Number(sim.rpm); setTxt("prop-rpm", Number.isFinite(r) ? Math.round(r).toLocaleString("en-US") : "----"); }
     setTxt("prop-load", num(sim.load_pct, 0));
     setTxt("prop-power", num(sim.shaft_power_mw, 1));
+    setTxt("prop-fuel", num(sim.fuel_rate_lph, 1));
     // ENGINE ORDER telegraph (display-only, from sim.engine_order_pct): |o|<1 → STOP (amber); else band
     // by magnitude (≥80 FULL, 55-80 HALF, 30-55 SLOW, else DEAD SLOW) with AHEAD (green)/ASTERN (red) suffix.
     { const o = Number(sim.engine_order_pct);

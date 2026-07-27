@@ -619,12 +619,16 @@ def test_display_sim_returns_full_sim_key_set(sample_state: Any) -> None:
     sim = simulate_display_instruments(sample_state)
     assert set(sim) == {
         "rpm",
+        "rpm_ordered",
         "load_pct",
         "shaft_power_mw",
         "engine_order_pct",
         "fuel_rate_lph",
         "fuel_per_nm_l",
         "fuel_total_l",
+        "fuel_pct",
+        "fuel_endurance_days",
+        "fuel_range_nm",
         "water_temp_c",
         "air_temp_c",
         "humidity_pct",
@@ -1922,7 +1926,7 @@ def test_display_override_non_finite_is_rejected(client: TestClient) -> None:
 def test_display_override_keys_are_the_seven_cosmetics_and_subset_of_sim(sample_state: Any) -> None:
     """The override allow-list equals the seven cosmetic keys (the six temps/fuel plus the
     engine-order telegraph ``engine_order_pct``), and every one already exists in the pure ``sim``
-    dict -- so ``sim.update(overrides)`` can only overwrite, never add a key (the pinned 19-key set
+    dict -- so ``sim.update(overrides)`` can only overwrite, never add a key (the pinned 23-key set
     is preserved)."""
     from web.display_sim import simulate_display_instruments
 

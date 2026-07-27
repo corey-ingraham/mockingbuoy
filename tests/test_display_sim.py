@@ -18,11 +18,15 @@ from web.display_sim import simulate_display_instruments
 # The exact key set the conning-tab JS reads off ``s.sim`` (the frontend contract).
 _SIM_KEYS = {
     "rpm",
+    "rpm_ordered",
     "load_pct",
     "shaft_power_mw",
     "engine_order_pct",
     "fuel_rate_lph",
     "fuel_per_nm_l",
+    "fuel_pct",
+    "fuel_endurance_days",
+    "fuel_range_nm",
     "fuel_total_l",
     "water_temp_c",
     "air_temp_c",
@@ -151,6 +155,42 @@ def test_full_astern_rpm_is_limited() -> None:
     (±governor hunt)."""
     sim = simulate_display_instruments(_state(), overrides={"engine_order_pct": -100.0})
     assert float(sim["rpm"]) == pytest.approx(70.0, abs=1.0)  # type: ignore[arg-type]
+
+
+def test_rpm_ordered_is_signed_by_telegraph_direction() -> None:
+    """``rpm_ordered`` is the telegraph demand carried with a sign: positive ahead, negative astern,
+    and (unlike actual ``rpm``) free of governor hunt / weather sag. Astern is capped at ~70 rpm.
+
+    Uses a clock where hunt != 0 (t % 8 != 0) AND rough weather (sea_state > 1) so the assertions
+    actually pin the hunt/sag independence: rpm_ordered stays the clean demand while ACTUAL rpm is
+    pulled off it by hunt+sag -- the divergence the tach's order-vs-actual marker depends on."""
+    rough = _state(sea_state=6, when=datetime(2024, 1, 1, 8, 30, 3, tzinfo=UTC))  # t % 8 == 3 -> hunt != 0
+    ahead = simulate_display_instruments(rough, overrides={"engine_order_pct": 90.0})
+    astern = simulate_display_instruments(rough, overrides={"engine_order_pct": -100.0})
+    stop = simulate_display_instruments(rough, overrides={"engine_order_pct": 0.0})
+    assert float(ahead["rpm_ordered"]) == pytest.approx(90.0)  # type: ignore[arg-type]
+    assert float(astern["rpm_ordered"]) == pytest.approx(-70.0)  # type: ignore[arg-type]
+    assert float(stop["rpm_ordered"]) == 0.0  # type: ignore[arg-type]
+    # actual rpm carries hunt+sag, so it must NOT equal the clean ordered demand
+    assert float(ahead["rpm"]) != pytest.approx(90.0)  # type: ignore[arg-type]
+
+
+def test_fuel_bunker_gauge_fields() -> None:
+    """Ship-panel bunker gauge: fuel_pct in [0,100]; endurance = total/rate/24 (None at STOP);
+    range = total/(t per nm) (None below steerage speed)."""
+    run = simulate_display_instruments(_state(sog_kn=6.0), overrides={"engine_order_pct": 90.0})
+    total = float(run["fuel_total_l"])  # type: ignore[arg-type]
+    rate = float(run["fuel_rate_lph"])  # type: ignore[arg-type]
+    pernm = float(run["fuel_per_nm_l"])  # type: ignore[arg-type]
+    assert 0.0 <= float(run["fuel_pct"]) <= 100.0  # type: ignore[arg-type]
+    assert float(run["fuel_endurance_days"]) == pytest.approx(total / rate / 24.0)  # type: ignore[arg-type]
+    assert float(run["fuel_range_nm"]) == pytest.approx(total / pernm)  # type: ignore[arg-type]
+    # STOP -> zero burn -> endurance undefined (None)
+    stopped = simulate_display_instruments(_state(sog_kn=6.0), overrides={"engine_order_pct": 0.0})
+    assert stopped["fuel_endurance_days"] is None
+    # dead in the water -> economy and range undefined
+    adrift = simulate_display_instruments(_state(sog_kn=0.0), overrides={"engine_order_pct": 90.0})
+    assert adrift["fuel_range_nm"] is None
 
 
 def test_load_rises_with_sea_state_at_fixed_order() -> None:
