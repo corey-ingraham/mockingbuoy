@@ -160,7 +160,11 @@ class SerialPort:
                     baudrate=self._baud,
                     write_timeout=self._write_timeout,
                     timeout=self._read_timeout,
-                    exclusive=(os.name == "posix"),
+                    # ISSUE-019: must be True or None — NEVER False. pyserial's win32 backend
+                    # rejects exclusive=False with ValueError ("win32 only supports exclusive
+                    # access"), which the except below swallows as "device absent", so the port
+                    # silently never opens and every sentence is dropped while status reads healthy.
+                    exclusive=(True if os.name == "posix" else None),
                     **self._kwargs,
                 )
             except (serial.SerialException, OSError, ValueError):
