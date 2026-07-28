@@ -16,6 +16,75 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-026 — Left conning column overflows silently at `--ui-scale: 1` · planned (2026-07-28)
+
+Found while measuring the [ISSUE-025](#issue-025) sibling; **pre-existing and unrelated to that
+change** — confirmed by A/B, the numbers are byte-identical with the off-course/off-track edit
+reverted in-page.
+
+At a 1920×1080 shell with `--ui-scale: 1` — the **real kiosk tier**, since 1080 does not match the
+`max-height: 1000px` query in `app.css:440` — three left-column panels exceed their box and scroll
+silently under `.ins-panel { overflow: auto }`:
+
+| panel | `--ui-scale: 1` | `--ui-scale: 0.82` |
+|---|---|---|
+| `.p-env` | **59px** | 25px |
+| `.p-coords` | 15px | 0 |
+| `.p-time` | 15px | 0 |
+
+`74a2c50` reported "zero panels overflowing (bar a 2-4px sub-pixel artifact in Environment)" at
+1080p. That measurement appears to have been taken at `--ui-scale: 0.82` — i.e. a *windowed* 1080p
+browser (inner height <1000) — and assumed to cover the fullscreen case, where the scale tier is 1
+and the content is correspondingly larger. The result is that the display Corey actually runs is the
+one case not covered.
+
+This is the exact failure mode `74a2c50` set out to fix (silent clipping, deliberately not masked
+with `overflow: hidden`), so it should not be left standing.
+
+**Fix:** re-measure the left column at `--ui-scale: 1` and raise `.p-env` / `.p-coords` / `.p-time`
+floors (`app.css:476-480`) to their real content heights, the same way `.p-autopilot` was corrected
+to 304px. Confirm on the bridge display, not only in a desktop browser — `74a2c50`'s own lesson is
+that the tier you measure at determines whether you see the bug.
+
+---
+
+### ISSUE-025 — The narrow-screen `max-height: none` reset never takes effect · planned (2026-07-28)
+
+`app.css:515-516`, inside `@media (max-width: 1100px)`, intends to uncap every gauge's height when
+the layout abandons the one-screen lock and scrolls as a single column:
+
+```css
+.ins-panel svg, .env-dial svg, .incl-dial svg,
+#cog-arc, #ship-schem, #rudder-arc, #depth-graph, .p-ship #compass.repeater, #rot { max-height: none; }
+```
+
+**Media queries add no specificity.** Every selector in that list has an identical-specificity
+counterpart declared *later* in the file, so the later declaration wins and the reset is dead:
+
+| selector | reset | later rule that beats it | cap that survives |
+|---|---|---|---|
+| `.ins-panel svg` | `:515` | `:576` | `20vh` |
+| `.env-dial svg` | `:515` | `:641` | `18vh` |
+| `.incl-dial svg` | `:515` | `:688` | `24vh` |
+| `#rot` | `:516` | `:577` | `10vh` |
+| `#depth-graph` | `:516` | `:663` | `26vh` |
+| `#ship-schem` | `:516` | `:673` | `100%` |
+
+(`#cog-arc` and `#rudder-arc` are separately dead — no such ids exist in `index.html` any more.)
+
+**Failure:** on a narrow screen the gauges stay vh-capped and letterbox instead of growing to the
+now-full-width column — the opposite of the block's stated intent. Invisible because the narrow
+layout is still *usable*, just under-sized.
+
+**Consequence already absorbed:** `.ap-ind svg` deliberately carries **no** `max-height` precisely
+so it cannot join this club — see the comment at `app.css:740`.
+
+**Fix:** move the reset block after the per-gauge rules (simplest), or raise its specificity, or
+fold `max-height` into the per-gauge rules as a custom property the media query overrides. Whichever
+is chosen, verify by measuring a gauge below 1100px — the current block gives no signal either way.
+
+---
+
 ### ISSUE-024 — Four documented mechanisms do not exist in the code · planned (2026-07-27)
 
 Surfaced while red-teaming [ISSUE-020](#issue-020) and each verified by direct grep, not inference.
