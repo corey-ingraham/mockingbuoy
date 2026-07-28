@@ -98,9 +98,10 @@ def simulate_display_instruments(
     weather: float = 1.0 + _WEATHER_PER_SS * ss
     load_pct: float = _clamp((rpm / _MCR_RPM) ** 3 * 100.0 * weather, 0.0, 110.0)
     shaft_power_mw: float = load_pct / 100.0 * _MCR_MW
-    # Telegraph-ORDERED shaft rpm (signed: +ahead / -astern): the demand the bridge is calling for,
-    # WITHOUT the governor hunt or heavy-weather sag that ride the ACTUAL rpm above. The conning tach
-    # draws this as a separate "order" marker so order-vs-actual divergence is visible (weather/manoeuvre).
+    # Telegraph-ORDERED shaft rpm (signed: +ahead / -astern): the demand the bridge is calling
+    # for, WITHOUT the governor hunt or heavy-weather sag that ride the ACTUAL rpm above. The
+    # conning tach draws this as a separate "order" marker so order-vs-actual divergence stays
+    # visible (weather/manoeuvre).
     rpm_ordered: float = _MCR_RPM * demand * (-1.0 if order < 0.0 else 1.0)
 
     # --- fuel (tonnes; rate = brake power x SFOC; slow cosmetic 72 h refill sawtooth) ----
@@ -111,7 +112,9 @@ def simulate_display_instruments(
     # formatter): % of capacity remaining, endurance (time to empty at current burn; None at STOP),
     # and range (distance at current economy; None below steerage speed where t/NM is undefined).
     fuel_pct: float = _clamp(fuel_total_t / _BUNKERS_T * 100.0, 0.0, 100.0)
-    fuel_endurance_days: float | None = fuel_total_t / fuel_rate_th / 24.0 if fuel_rate_th > 1e-6 else None
+    fuel_endurance_days: float | None = (
+        fuel_total_t / fuel_rate_th / 24.0 if fuel_rate_th > 1e-6 else None
+    )
     fuel_range_nm: float | None = fuel_total_t / fuel_per_nm_t if fuel_per_nm_t else None
 
     # --- environment (diurnal shaping -> reads like real weather) ------------------

@@ -164,7 +164,9 @@ def test_rpm_ordered_is_signed_by_telegraph_direction() -> None:
     Uses a clock where hunt != 0 (t % 8 != 0) AND rough weather (sea_state > 1) so the assertions
     actually pin the hunt/sag independence: rpm_ordered stays the clean demand while ACTUAL rpm is
     pulled off it by hunt+sag -- the divergence the tach's order-vs-actual marker depends on."""
-    rough = _state(sea_state=6, when=datetime(2024, 1, 1, 8, 30, 3, tzinfo=UTC))  # t % 8 == 3 -> hunt != 0
+    rough = _state(
+        sea_state=6, when=datetime(2024, 1, 1, 8, 30, 3, tzinfo=UTC)
+    )  # t % 8 == 3 -> hunt != 0
     ahead = simulate_display_instruments(rough, overrides={"engine_order_pct": 90.0})
     astern = simulate_display_instruments(rough, overrides={"engine_order_pct": -100.0})
     stop = simulate_display_instruments(rough, overrides={"engine_order_pct": 0.0})
