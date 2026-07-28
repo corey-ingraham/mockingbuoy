@@ -220,6 +220,7 @@ def test_input_spec_all_fields_round_trip() -> None:
         "function": "sat",
         "baud": 38400,
         "framing": "8N1",
+        "enabled": True,
         "liveness_timeout_s": 5.0,
         "read_timeout_s": 0.05,
     }

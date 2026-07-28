@@ -669,6 +669,12 @@ class InputSpec:
     function: str = "unused"
     baud: int = 4800
     framing: str = "8N1"
+    # Startup default for the slot's runtime on/off flag. The engine owns the live value once
+    # running, so this only decides whether the slot feeds the sim from its first line; an
+    # operator can flip it later without a restart and without touching config. Disabling drops
+    # received lines before the router sees them (liveness then ages out and the channel falls
+    # back to simulating) while the port stays open — a signal-loss test that needs no unplugging.
+    enabled: bool = True
     # How long without a valid sentence before this source counts as dead and the channel
     # falls back to simulating.
     liveness_timeout_s: float = 3.0
@@ -689,6 +695,9 @@ class InputSpec:
             function=str(data.get("function", "unused")),
             baud=int(data.get("baud", 4800)),
             framing=str(data.get("framing", "8N1")),
+            # Absent key means "on": configs written before per-input toggling existed must
+            # keep feeding the sim exactly as they did.
+            enabled=bool(data.get("enabled", True)),
             liveness_timeout_s=float(data.get("liveness_timeout_s", 3.0)),
             read_timeout_s=float(data.get("read_timeout_s", 0.03)),
         )
@@ -700,6 +709,7 @@ class InputSpec:
             "function": self.function,
             "baud": self.baud,
             "framing": self.framing,
+            "enabled": self.enabled,
             "liveness_timeout_s": self.liveness_timeout_s,
             "read_timeout_s": self.read_timeout_s,
         }

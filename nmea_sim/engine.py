@@ -26,7 +26,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, SupportsFloat, cast
 
@@ -373,6 +373,19 @@ class ChannelHealth:
 
 
 @dataclass(frozen=True)
+class InputHealth:
+    """Runtime RX mute state for one input slot, carried on the 1 Hz health frame.
+
+    Deliberately id + flag only, never the device path (R19). It rides the health report rather
+    than the polled diagnostics view so the input toggle reconciles on the SAME cadence and the
+    SAME code path as the output toggle, correct on every tab and across clients.
+    """
+
+    input_id: str
+    enabled: bool
+
+
+@dataclass(frozen=True)
 class HealthReport:
     ok: bool
     physics_alive: bool
@@ -383,6 +396,8 @@ class HealthReport:
     # to False, so a dead-but-green report is impossible.
     replay_alive: bool = True
     inputs_alive: bool = True
+    # One entry per configured input slot (empty when none are configured), in config order.
+    inputs: list[InputHealth] = field(default_factory=list)
 
 
 # --- physics ----------------------------------------------------------------------
@@ -1445,6 +1460,19 @@ class Engine:
         self._captures: dict[str, CaptureSession] = {}
         self._capture_residual: dict[str, bytes] = {}
         self._capture_lock = threading.Lock()
+        # Per-input mute switch, mirroring the channel worker's output toggle. An Event (not a
+        # plain bool) because it is written by the control seam and read by the reader thread.
+        # Populated UNCONDITIONALLY, deliberately NOT inside the auto-mode block below the way
+        # ``_diagnostics`` is: ``input_status`` walks ``config.inputs`` in EVERY mode, so a
+        # simulate-mode config that still declares input slots would KeyError on a dict that only
+        # auto fills (the same trap ``diagnostics_snapshot`` works around with a membership test).
+        # Enable state is mode-independent, so the map is too.
+        self._input_enabled: dict[str, threading.Event] = {}
+        for inp in config.inputs:
+            ev = threading.Event()
+            if inp.enabled:
+                ev.set()
+            self._input_enabled[inp.id] = ev
         if config.mode == "auto":
             for inp in config.inputs:
                 self._diagnostics[inp.id] = PortDiagnostics(inp.id, inp.baud)
@@ -1507,6 +1535,15 @@ class Engine:
         """
         if self._router is None:
             return
+        # Per-input mute (R55-style, RX side): a disabled slot contributes NOTHING downstream —
+        # no routing, no liveness stamp, and (because this returns before the Time Authority feed
+        # below) no clock fix either. Liveness then simply ages out, so the channel falls back to
+        # SIM on its own and the Time Authority demotes itself to the base clock, with no separate
+        # teardown anywhere. The port stays open and the raw-bytes tap (diagnostics/captures) is
+        # deliberately NOT gated — it observes the wire, not the sim.
+        gate = self._input_enabled.get(input_id)
+        if gate is not None and not gate.is_set():
+            return
         now = time.monotonic()
         routed = self._router.note_rx(input_id, line, now)
         if routed is not None:
@@ -1558,6 +1595,11 @@ class Engine:
             nonlocal tokens, last
             monitor = self._input_monitor
             if monitor is None:
+                return
+            # A muted slot publishes nothing, so its pane reads as a dead wire (checked BEFORE the
+            # bucket so an off input never burns tokens it cannot spend).
+            gate = self._input_enabled.get(input_id)
+            if gate is not None and not gate.is_set():
                 return
             now = time.monotonic()
             tokens = min(capacity, tokens + (now - last) * refill_per_s)
@@ -1728,7 +1770,9 @@ class Engine:
     def input_status(self) -> list[dict[str, object]]:
         """One read-only entry per configured input slot for the web ``/api/inputs`` view.
 
-        Each entry is ``{"id", "function", "detected_class", "live"}``. In auto mode the detection
+        Each entry is ``{"id", "function", "detected_class", "live", "enabled"}``. ``enabled`` is
+        the runtime RX mute flag (see :meth:`set_input_enabled`) and is meaningful in every mode,
+        unlike the detection pair. In auto mode the detection
         pair comes from the router's per-input liveness: if any sentence class is currently live on
         the slot, ``detected_class`` is that class and ``live`` is True; else ``None``/False. In
         simulate mode there is no router, so every slot reports ``detected_class=None, live=False``.
@@ -1747,6 +1791,7 @@ class Engine:
                     "function": inp.function,
                     "detected_class": detected,
                     "live": detected is not None,
+                    "enabled": self._input_enabled[inp.id].is_set(),
                 }
             )
         return entries
@@ -1843,6 +1888,24 @@ class Engine:
                 return True
         return False
 
+    def set_input_enabled(self, input_id: str, enabled: bool) -> bool:
+        """Mute/unmute one INPUT slot at runtime; False when no input has that id.
+
+        The RX mirror of :meth:`set_channel_enabled`, and deliberately just as cheap: a flag write
+        and nothing more. No reader is started, stopped or reopened and the serial port stays open,
+        so a toggle is safe to serve straight from a request handler and cannot fail the way a
+        close/reopen cycle can. Muting drops received lines before the router sees them; the
+        channel falls back to SIM by itself once liveness ages out.
+        """
+        gate = self._input_enabled.get(input_id)
+        if gate is None:
+            return False
+        if enabled:
+            gate.set()
+        else:
+            gate.clear()
+        return True
+
     def route_control(self, op: str) -> bool:
         """Runtime route-playback control (``start``/``pause``/``reset``).
 
@@ -1880,4 +1943,10 @@ class Engine:
             channels=channels,
             replay_alive=replay_alive,
             inputs_alive=inputs_alive,
+            # RX mute state per slot. Purely observational — it never feeds ``ok``, because a
+            # deliberately muted input is a healthy input, exactly as a muted channel is.
+            inputs=[
+                InputHealth(input_id=inp.id, enabled=self._input_enabled[inp.id].is_set())
+                for inp in self._config.inputs
+            ],
         )

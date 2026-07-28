@@ -252,6 +252,132 @@ def test_health_to_dict_includes_enabled() -> None:
     assert channel["alive"] is True  # alive and enabled are reported independently
 
 
+# --- input (RX) toggle -------------------------------------------------------------
+#
+# The RX mirror of the channel toggle above. Muting an input stops it feeding the router, so the
+# channel it sources falls back to SIM without any port being closed (see test_input_feed.py for
+# the behavioural half; these cover the HTTP surface).
+
+
+def _input_entry(client: TestClient, input_id: str) -> dict[str, Any]:
+    """Pull one slot's dict out of ``/api/inputs``."""
+    return next(s for s in client.get("/api/inputs").json() if s["id"] == input_id)
+
+
+def test_input_toggle_disables_then_re_enables(client: TestClient) -> None:
+    off = client.post(
+        "/api/control", json={"action": "input", "input_id": "gps_in", "enabled": False}
+    )
+    assert off.status_code == 200
+    assert off.json() == {"running": True, "input_id": "gps_in", "enabled": False}
+
+    assert _input_entry(client, "gps_in")["enabled"] is False
+    # Only the named slot moves; the other inputs are untouched.
+    others = [s for s in client.get("/api/inputs").json() if s["id"] != "gps_in"]
+    assert others and all(s["enabled"] is True for s in others)
+
+    on = client.post(
+        "/api/control", json={"action": "input", "input_id": "gps_in", "enabled": True}
+    )
+    assert on.status_code == 200
+    assert on.json()["enabled"] is True
+    assert _input_entry(client, "gps_in")["enabled"] is True
+
+
+def test_muted_input_rides_the_health_frame(client: TestClient) -> None:
+    """The toggle must reconcile off the 1 Hz health broadcast — the same path the channel
+    toggle uses — so a flip made by one client corrects every other client on every tab."""
+    assert (
+        client.post(
+            "/api/control", json={"action": "input", "input_id": "ais_in", "enabled": False}
+        ).status_code
+        == 200
+    )
+    body = client.get("/healthz").json()
+    assert body["ok"] is True  # muting an input is not a fault
+    entry = next(i for i in body["inputs"] if i["input_id"] == "ais_in")
+    assert entry["enabled"] is False
+    assert all(i["enabled"] is True for i in body["inputs"] if i["input_id"] != "ais_in")
+
+
+def test_health_inputs_never_leak_the_device_path(client: TestClient) -> None:
+    """R19: the health frame carries slot id + flag only, never the configured path."""
+    raw = client.get("/healthz").text
+    assert "/dev/serial" not in raw
+    assert "CHANGE-ME" not in raw
+
+
+def test_input_toggle_unknown_id_is_not_found(client: TestClient) -> None:
+    resp = client.post(
+        "/api/control", json={"action": "input", "input_id": "nope", "enabled": False}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "input", "enabled": False},  # no input_id
+        {"action": "input", "input_id": "gps_in"},  # no enabled
+        {"action": "input"},  # neither
+    ],
+)
+def test_input_toggle_requires_both_fields(client: TestClient, body: dict[str, Any]) -> None:
+    assert client.post("/api/control", json=body).status_code == 400
+
+
+def test_input_toggle_while_stopped_conflicts(client: TestClient) -> None:
+    assert client.post("/api/control", json={"action": "stop"}).status_code == 200
+    resp = client.post(
+        "/api/control", json={"action": "input", "input_id": "gps_in", "enabled": False}
+    )
+    assert resp.status_code == 409
+
+
+def test_inputs_endpoint_reports_enabled_while_stopped(client: TestClient) -> None:
+    """The stopped-engine fallback hand-builds its entries, so it has to carry ``enabled`` too —
+    the UI seeds each toggle from this payload at boot and would otherwise paint every slot ON."""
+    assert client.post("/api/control", json={"action": "stop"}).status_code == 200
+    slots = client.get("/api/inputs").json()
+    assert slots
+    assert all("enabled" in s for s in slots)
+    assert all(s["enabled"] is True for s in slots)  # config default
+
+
+def test_input_fields_do_not_leak_into_state_update() -> None:
+    """``input_id`` joins the model without widening ``state_changes()``."""
+    from web.app import ControlRequest
+
+    toggle = ControlRequest(action="input", input_id="gps_in", enabled=False)
+    assert toggle.state_changes() == {}
+
+    update = ControlRequest(action="update", lat=1.5)
+    assert update.state_changes() == {"lat": 1.5}
+    assert update.input_id is None
+
+
+def test_health_to_dict_includes_inputs() -> None:
+    from nmea_sim.engine import HealthReport, InputHealth
+    from web.app import _health_to_dict
+
+    report = HealthReport(
+        ok=True,
+        physics_alive=True,
+        channels=[],
+        inputs=[InputHealth(input_id="gps_in", enabled=False)],
+    )
+    assert _health_to_dict(report)["inputs"] == [{"input_id": "gps_in", "enabled": False}]
+
+
+def test_health_to_dict_inputs_defaults_empty() -> None:
+    """A report built without inputs (simulate configs with no slots) still serializes cleanly."""
+    from nmea_sim.engine import HealthReport
+    from web.app import _health_to_dict
+
+    report = HealthReport(ok=True, physics_alive=True, channels=[])
+    assert _health_to_dict(report)["inputs"] == []
+
+
 # --- SSE ---------------------------------------------------------------------------
 
 
@@ -827,7 +953,16 @@ def test_inputs_endpoint_shape_and_no_path_leak(client: TestClient) -> None:
     slots = resp.json()
     assert {s["id"] for s in slots} == {"gps_in", "satcompass_in", "ais_in"}
     for s in slots:
-        assert set(s) == {"id", "function", "detected_class", "live", "mismatch", "port"}
+        assert set(s) == {
+            "id",
+            "function",
+            "detected_class",
+            "live",
+            "enabled",
+            "mismatch",
+            "port",
+        }
+        assert s["enabled"] is True  # config default: every slot feeds the sim until muted
         assert s["port"] is None  # simulate placeholders don't resolve => no port revealed (R19)
         assert s["detected_class"] is None  # simulate mode: no router, no detection
         assert s["live"] is False

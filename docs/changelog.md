@@ -4,6 +4,46 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-07-28 — Per-input On/Off toggle (rehearse signal loss without unplugging)
+
+Input slots had no enable control at all. The input panes' **Freeze view** only pauses the display —
+the reader thread, router liveness, state feed and diagnostics all keep running behind it — so the
+only way to test how the app handles a live feed dying was to physically pull a cable. The nearest
+existing feature, `gps_kill` fault injection, mutes an *output* channel and never touches the input.
+
+Added `InputSpec.enabled` plus `Engine.set_input_enabled()`, an `action: "input"` branch on
+`POST /api/control`, and an **Input: ON / OFF** button in each input pane, in the same position as
+the output pane's toggle. Runtime-only: the config key is a startup default, not a persisted flip.
+
+- **The gate is deliberately placed, not blanket.** `SerialPort` fans each RX line to three
+  consumers; only `on_line` (the SSE pane feed) and `on_rx` (router + Time Authority) are gated.
+  `on_raw` stays ungated so port diagnostics and armed captures keep working — the toggle mutes the
+  *simulator*, not the wire. Both gated seams are engine-supplied closures, so `serialport.py` is
+  untouched and the transport stays dumb.
+- **No new fallback logic.** Muting simply stops liveness being stamped; `Router.winner()` ages the
+  source out, `_fire` stops being suppressed and resumes generating from the values
+  `_feed_passthrough_state` had already seeded, and `TimeAuthority` demotes itself to the base clock
+  because it resolves its winner through the same router.
+- **The enable map is built for every mode**, unlike the adjacent auto-only `_diagnostics` dict —
+  `input_status()` walks `config.inputs` unconditionally, so an auto-only map would `KeyError` on a
+  simulate config that declares slots (the shipped `config.json` shape).
+- **Reconciliation rides the 1 Hz health frame** (`HealthReport.inputs`, id + flag only — R19), not
+  the tab-gated `/api/diag` poll, so a flip by one client corrects every client on every tab.
+- **`renderInputStats` suppresses "receiving" when muted.** Diagnostics stay live by design, so
+  without this the 2 s repaint would paint "receiving" over a disabled input — the exact confusion
+  the toggle exists to remove.
+- Two pre-existing exact-assertion tests updated for the new field (`InputSpec` round-trip and the
+  `/api/inputs` shape guard).
+
+Documented, because both read as bugs during the test they are most likely to be seen in: the
+channel emits **nothing** between the mute and liveness expiring, and auto mode requires
+`movement.mode: static`, so after fallback position freezes while SOG/COG keep reporting.
+
+No conning-tab LIVE/SIM badge — the observable is the Streams output-pane `source` badge. Per-value
+provenance on the conning display remains **RM-009**.
+
+---
+
 ## 2026-07-28 — Conning display fits any screen [RM-023]
 
 At a 1920×1080 lab monitor the depth chart rendered as a ~40×20 postage stamp and the attitude

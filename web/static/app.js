@@ -549,52 +549,70 @@
     const fill = $(id + "-fill"); if (fill) fill.setAttribute("width", w.toFixed(1));
     const mark = $(id + "-mark"); if (mark) mark.setAttribute("x", (LOAD_X0 + w - 1).toFixed(1));
   }
-  // Autopilot linear deviation indicator: 220x44 with a centre-zero baseline, ±half labels and a
-  // diamond marker "<id>-mark" placed at x=110+clamp(v/half,-1,1)*100 by setLinearMarker. Amber.
+  // Autopilot linear deviation indicator: a centre-zero strip with ±half labels and a diamond
+  // marker "<id>-mark" placed at x=AP_CX+clamp(v/half,-1,1)*AP_SPAN by setLinearMarker. Amber.
+  // Geometry lives in these constants because buildLinearIndicator draws the ticks and
+  // setLinearMarker positions the marker that must land ON them -- when the two disagreed the
+  // marker silently pointed at the wrong graduation. Keep AP_CX/AP_SPAN shared by both.
+  // The box is deliberately wide and flat (~13:1). Height is width-derived from the viewBox
+  // (CSS sets width only), so a flat box buys render scale -- and therefore legible ticks and
+  // labels -- WITHOUT spending height in the right column, which is the tighter budget.
+  // AP_W/AP_H must match the viewBox on #ap-offcourse / #ap-xtd in index.html.
+  const AP_W = 360, AP_H = 28;                       // viewBox, ~13:1
+  const AP_CX = 180, AP_CY = 10;                     // centre-zero, baseline
+  const AP_X0 = 12, AP_X1 = 348, AP_SPAN = 168;      // full-scale ends; AP_SPAN = AP_CX - AP_X0
   function buildLinearIndicator(id, halfRange, unit) {
     const svg = $(id);
     if (!svg) return;
     const NS = "http://www.w3.org/2000/svg";
-    const cx = 110, cy = 22, x0 = 10, x1 = 210;
+    const cx = AP_CX, cy = AP_CY, x0 = AP_X0, x1 = AP_X1;
+    // keep the rendered box authoritative here so it can never drift from the constants above;
+    // index.html carries the same viewBox so the strip has an intrinsic ratio before JS runs
+    svg.setAttribute("viewBox", "0 0 " + AP_W + " " + AP_H);
     // glossy recessed track (JPG style)
     const track = document.createElementNS(NS, "rect");
-    track.setAttribute("x", String(x0 - 3)); track.setAttribute("y", String(cy - 7));
-    track.setAttribute("width", String(x1 - x0 + 6)); track.setAttribute("height", "14");
-    track.setAttribute("rx", "7"); track.setAttribute("fill", "url(#faceGrad)");
+    track.setAttribute("x", String(x0 - 3)); track.setAttribute("y", String(cy - 6));
+    track.setAttribute("width", String(x1 - x0 + 6)); track.setAttribute("height", "12");
+    track.setAttribute("rx", "6"); track.setAttribute("fill", "url(#faceGrad)");
     track.setAttribute("stroke", "url(#bezelGrad)"); track.setAttribute("stroke-width", "1");
     svg.appendChild(track);
     // light-green deviation fill between centre-zero and the marker (JPG style), sized by setLinearMarker
     const fillR = document.createElementNS(NS, "rect");
     fillR.setAttribute("id", id + "-fill");
-    fillR.setAttribute("x", String(cx)); fillR.setAttribute("y", String(cy - 5));
-    fillR.setAttribute("width", "0"); fillR.setAttribute("height", "10");
+    fillR.setAttribute("x", String(cx)); fillR.setAttribute("y", String(cy - 4));
+    fillR.setAttribute("width", "0"); fillR.setAttribute("height", "8");
     fillR.setAttribute("fill", "#00e07a"); fillR.setAttribute("opacity", "0.32");
     svg.appendChild(fillR);
     // graduations: minor every 0.1, major every 0.5
     for (let i = -10; i <= 10; i++) {
-      const f = i / 10, x = cx + f * 100, big = i % 5 === 0;
+      const f = i / 10, x = cx + f * AP_SPAN, big = i % 5 === 0;
       const ln = document.createElementNS(NS, "line");
-      ln.setAttribute("x1", x.toFixed(1)); ln.setAttribute("y1", String(cy - (big ? 7 : 4)));
-      ln.setAttribute("x2", x.toFixed(1)); ln.setAttribute("y2", String(cy + (big ? 7 : 4)));
+      ln.setAttribute("x1", x.toFixed(1)); ln.setAttribute("y1", String(cy - (big ? 6 : 3.5)));
+      ln.setAttribute("x2", x.toFixed(1)); ln.setAttribute("y2", String(cy + (big ? 6 : 3.5)));
       ln.setAttribute("stroke", big ? "#8792a0" : "#3a4655"); ln.setAttribute("stroke-width", big ? "1.4" : "0.8");
       svg.appendChild(ln);
     }
     const mklabel = (x, txt, anchor) => {
       const t = document.createElementNS(NS, "text");
-      t.setAttribute("x", String(x)); t.setAttribute("y", String(cy + 18));
+      // cy+15 (not +14): the marker's lower tip reaches cy+7.45 incl. stroke and the 8px caps
+      // rise ~5.7 above the baseline, so +14 left under a unit of clearance. No label here has a
+      // descender (digits, + - ° m), so the baseline can sit this close to the 28-unit floor.
+      t.setAttribute("x", String(x)); t.setAttribute("y", String(cy + 15));
       t.setAttribute("fill", "#7d8895"); t.setAttribute("font-size", "8");
       t.setAttribute("font-family", "monospace"); t.setAttribute("text-anchor", anchor);
       t.textContent = txt; svg.appendChild(t);
     };
     mklabel(x0, "-" + halfRange + unit, "start");
-    mklabel(cx - 50, "-" + (halfRange / 2) + unit, "middle");
+    mklabel(cx - AP_SPAN / 2, "-" + (halfRange / 2) + unit, "middle");
     mklabel(cx, "0", "middle");
-    mklabel(cx + 50, "+" + (halfRange / 2) + unit, "middle");
+    mklabel(cx + AP_SPAN / 2, "+" + (halfRange / 2) + unit, "middle");
     mklabel(x1, "+" + halfRange + unit, "end");
     // sleek rounded-diamond marker (gradient fill + dark rim + drop shadow), moved by transform
     const mk = document.createElementNS(NS, "path");
     mk.setAttribute("id", id + "-mark");
-    mk.setAttribute("d", "M0,-8.5 C3.4,-4.8 5.6,-2.4 6.6,0 C5.6,2.4 3.4,4.8 0,8.5 C-3.4,4.8 -5.6,2.4 -6.6,0 C-5.6,-2.4 -3.4,-4.8 0,-8.5 Z");
+    // same diamond, uniformly scaled 8.5 -> 7 half-height to sit inside the flatter box; at the
+    // wider render scale it still draws LARGER than the old 8.5 did in the old box
+    mk.setAttribute("d", "M0,-7 C2.8,-4 4.6,-2 5.4,0 C4.6,2 2.8,4 0,7 C-2.8,4 -4.6,2 -5.4,0 C-4.6,-2 -2.8,-4 0,-7 Z");
     mk.setAttribute("fill", "url(#diaGrad)");
     mk.setAttribute("stroke", "#0a4527"); mk.setAttribute("stroke-width", "0.9");
     mk.setAttribute("filter", "url(#needleShadow)");
@@ -604,9 +622,9 @@
   function setLinearMarker(id, v, half) {
     const mk = $(id);
     if (!mk) return;
-    const cx = 110, cy = 22;
+    const cx = AP_CX, cy = AP_CY;
     const frac = Number.isFinite(Number(v)) ? Math.max(-1, Math.min(1, Number(v) / half)) : 0;
-    const x = cx + frac * 100;
+    const x = cx + frac * AP_SPAN;
     mk.setAttribute("transform", "translate(" + x.toFixed(1) + " " + cy + ")");
     const fill = $(id.replace(/-mark$/, "-fill"));
     if (fill) { fill.setAttribute("x", Math.min(cx, x).toFixed(1)); fill.setAttribute("width", Math.abs(x - cx).toFixed(1)); }
@@ -1169,18 +1187,48 @@
     pane.appendChild(feed);
 
     const ctl = el("div", "pane-ctl");
+    // Real RX toggle, in the SAME first slot as an output pane's btnOut and reusing its classes so
+    // the two read as one control surface. Unlike Freeze (which only pauses the view), this stops
+    // the slot feeding the router, so the channel falls back to SIM — a signal-loss rehearsal.
+    const btnIn = el("button", "small out-toggle", "");
     const btnFreeze = el("button", "small", "Freeze view");
     const btnClear = el("button", "small", "Clear");
     const frozenTag = el("span", "frozen-tag", "");
+    ctl.appendChild(btnIn);
     ctl.appendChild(btnFreeze);
     ctl.appendChild(btnClear);
     ctl.appendChild(frozenTag);
     pane.appendChild(ctl);
 
     const state = {
-      pane, feed, frozen: false, count: 0,
+      pane, feed, frozen: false, count: 0, enabled: inp.enabled !== false, btnIn,
       dotEl, msgsEl, busEl, errEl, errBar, talkersEl, invEl, aliveEl, frozenTag, btnFreeze,
     };
+
+    function paintIn() {
+      const on = state.enabled;
+      btnIn.textContent = on ? "Input: ON" : "Input: OFF";
+      btnIn.classList.toggle("out-on", on);
+      btnIn.classList.toggle("out-off", !on);
+      pane.classList.toggle("in-off", !on);
+      // A disabled slot must read as a dead wire even though the raw-byte diagnostics behind it
+      // keep running; renderInputStats re-asserts this every poll (see paintInputLiveness).
+      if (!on) {
+        dotEl.className = "dot dead";
+        aliveEl.className = "stat-alive";
+        aliveEl.textContent = "input off";
+      }
+    }
+    state.paintIn = paintIn;
+    paintIn();
+
+    btnIn.addEventListener("click", async () => {
+      const next = !state.enabled;
+      btnIn.disabled = true;
+      try { await control({ action: "input", input_id: inp.id, enabled: next }); state.enabled = next; paintIn(); }
+      catch (e) { toast("Toggle failed: " + e.message); }
+      finally { btnIn.disabled = false; }
+    });
     btnFreeze.addEventListener("click", () => {
       state.frozen = !state.frozen;
       btnFreeze.textContent = state.frozen ? "Resume view" : "Freeze view";
@@ -1366,6 +1414,16 @@
         wrap.appendChild(document.createTextNode(s.name + (s.errors ? " (" + s.errors + ")" : "")));
         p.sSinks.appendChild(wrap);
       }
+    }
+    // Input toggles reconcile off this SAME 1 Hz frame as the channel toggles above, so a flip by
+    // another client (or an engine restart back to config defaults) corrects on every tab — not
+    // just the two tabs the /api/diag poll happens to run on.
+    const ins = Array.isArray(h.inputs) ? h.inputs : [];
+    for (const i of ins) {
+      const p = inPanes[i.input_id || i.id];
+      if (!p) continue;
+      const enabled = i.enabled !== false;
+      if (p.enabled !== enabled) { p.enabled = enabled; if (p.paintIn) p.paintIn(); }
     }
     updateSourceStrip();
     updateConfigChannelSources();
@@ -2202,10 +2260,15 @@
       // Liveness must track the live feed, not the frozen page-load /api/inputs value: a port is
       // "receiving" when sentences are currently arriving. /api/diag carries no live flag, so derive
       // it from the rolling rate (verdict "no-data" or zero rate => idle).
-      const up = String(p.verdict || "") !== "no-data" && (Number(p.sentences_per_s) || 0) > 0;
+      // A muted slot reads as a dead wire regardless of the rolling rate: diagnostics are fed from
+      // the ungated raw-bytes tap, so bytes keep arriving while the sim ignores them. The check
+      // MUST live here, not only in paintIn — this runs every 2 s and would otherwise repaint
+      // "receiving" over a disabled input, the exact confusion the toggle exists to avoid.
+      const up = s.enabled !== false
+        && String(p.verdict || "") !== "no-data" && (Number(p.sentences_per_s) || 0) > 0;
       s.dotEl.className = "dot " + (up ? "live" : "dead");
       s.aliveEl.className = "stat-alive" + (up ? " up" : "");
-      s.aliveEl.textContent = up ? "receiving" : "idle";
+      s.aliveEl.textContent = s.enabled === false ? "input off" : (up ? "receiving" : "idle");
       const structured = (Number(p.valid) || 0) + (Number(p.bad_checksum) || 0);
       const errRate = structured ? (Number(p.bad_checksum) || 0) / structured : 0;
       s.msgsEl.textContent = num(p.sentences_per_s, 2);

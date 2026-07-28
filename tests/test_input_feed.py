@@ -15,6 +15,7 @@ exercised end to end, not a stubbed shim.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -227,3 +228,128 @@ def test_simulate_mode_builds_no_input_readers() -> None:
     so there is no ``on_line`` seam to fire and no ``input_nmea`` is ever produced."""
     engine = _auto_engine(input_monitor=_Capture(), mode="simulate", inputs=[])
     assert engine._input_readers == []
+
+
+# --- per-input RX mute (the signal-loss rehearsal) --------------------------------
+#
+# Muting an input is a flag write: the port stays open and the reader thread keeps running, but
+# lines stop reaching the monitor and the router. Liveness then simply ages out, so the channel
+# falls back to SIM on its own. These drive the REAL reader seam (``_handle_rx_line``), so the
+# gate is exercised exactly where a live wire would hit it.
+
+
+def _muted_engine(monitor: Any = None, *, enabled: bool = True) -> Engine:
+    """An auto engine whose single input slot starts in the given enable state."""
+    return _auto_engine(
+        monitor,
+        inputs=[InputSpec(id="gps_in", path="none", liveness_timeout_s=30.0, enabled=enabled)],
+    )
+
+
+def test_muted_input_publishes_no_input_nmea() -> None:
+    """The pane must go fully silent: no ``input_nmea`` escapes a disabled slot."""
+    cap = _Capture()
+    engine = _muted_engine(cap)
+    reader = engine._input_readers[0]
+
+    reader._handle_rx_line(_rmc(1.1))
+    assert len(cap.pairs) == 1  # baseline: enabled slots publish
+
+    assert engine.set_input_enabled("gps_in", False) is True
+    reader._handle_rx_line(_rmc(2.2))
+    reader._handle_rx_line(_rmc(3.3))
+    assert len(cap.pairs) == 1  # muted: nothing further published
+
+    assert engine.set_input_enabled("gps_in", True) is True
+    reader._handle_rx_line(_rmc(4.4))
+    assert len(cap.pairs) == 2  # unmuting restores the feed immediately
+
+
+def test_muted_input_falls_back_to_sim_then_recovers() -> None:
+    """The heart of the feature: mute -> liveness ages out -> the channel reports SIM; unmute ->
+    LIVE returns. ``now`` is passed forward explicitly rather than sleeping, so the ageing window
+    is exercised deterministically and the test stays fast."""
+    engine = _muted_engine(_Capture())
+    reader = engine._input_readers[0]
+    router = engine._router
+    assert router is not None
+
+    reader._handle_rx_line(_rmc(1.1))
+    now = time.monotonic()
+    assert router.source_label("gps", "gnss", now) == "LIVE:gps_in"
+
+    # Mute, then keep feeding the wire: no new line may stamp liveness, so once the existing
+    # stamp ages past liveness_timeout_s the channel is on its own and reports SIM.
+    engine.set_input_enabled("gps_in", False)
+    reader._handle_rx_line(_rmc(2.2))
+    aged = now + 31.0  # > liveness_timeout_s (30.0)
+    assert router.source_label("gps", "gnss", aged) == "SIM"
+    # ...and generation is no longer suppressed, so the channel resumes emitting its own sentences.
+    assert router.any_live("gps", "gnss", aged) is False
+
+    # Unmute and feed again: the source wins straight back, no restart involved.
+    engine.set_input_enabled("gps_in", True)
+    reader._handle_rx_line(_rmc(3.3))
+    assert router.source_label("gps", "gnss", time.monotonic()) == "LIVE:gps_in"
+
+
+def test_muted_input_feeds_neither_router_nor_clock() -> None:
+    """The gate sits at the TOP of ``_dispatch_rx``, so a muted slot supplies no time fix either —
+    the Time Authority demotes itself to the base clock rather than coasting on a dead source."""
+    engine = _muted_engine(_Capture())
+    engine.set_input_enabled("gps_in", False)
+    router = engine._router
+    assert router is not None
+
+    engine._dispatch_rx("gps_in", _rmc(5.5))
+
+    now = time.monotonic()
+    assert router.live_class_for_input("gps_in", now) is None
+    assert router.winner("gps", "gnss", now) is None
+
+
+def test_muted_input_still_feeds_diagnostics() -> None:
+    """Deliberate asymmetry: the raw-bytes tap is NOT gated, because it observes the wire rather
+    than the sim. A muted slot still scores bytes, so Maintenance can prove data is arriving."""
+    engine = _muted_engine(_Capture())
+    engine.set_input_enabled("gps_in", False)
+    reader = engine._input_readers[0]
+    assert reader._on_raw is not None
+
+    reader._on_raw((_rmc(6.6) + "\r\n").encode("ascii"))
+
+    snap = engine._diagnostics["gps_in"].snapshot(time.monotonic())
+    assert int(snap["bytes"]) > 0
+
+
+def test_input_enable_defaults_from_config() -> None:
+    """``InputSpec.enabled`` is a STARTUP default only; the engine owns the live value after."""
+    engine = _muted_engine(_Capture(), enabled=False)
+    assert engine.input_status()[0]["enabled"] is False
+    engine.set_input_enabled("gps_in", True)
+    assert engine.input_status()[0]["enabled"] is True
+
+
+def test_set_input_enabled_reports_unknown_slot() -> None:
+    engine = _muted_engine(_Capture())
+    assert engine.set_input_enabled("nope", False) is False
+
+
+def test_input_status_works_in_simulate_mode_with_inputs() -> None:
+    """Regression guard: the enable map is built for EVERY mode, not only auto. ``input_status``
+    walks ``config.inputs`` unconditionally, so a simulate config that still declares slots (the
+    shipped config.json shape) must not KeyError the way an auto-only dict would."""
+    engine = _auto_engine(_Capture(), mode="simulate", inputs=[InputSpec(id="gps_in", path="none")])
+    assert engine._input_readers == []  # simulate builds no readers...
+    entries = engine.input_status()  # ...but the slot is still reportable
+    assert entries == [
+        {
+            "id": "gps_in",
+            "function": "unused",
+            "detected_class": None,
+            "live": False,
+            "enabled": True,
+        }
+    ]
+    assert engine.set_input_enabled("gps_in", False) is True
+    assert engine.input_status()[0]["enabled"] is False

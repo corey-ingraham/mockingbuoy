@@ -371,6 +371,9 @@ def _health_to_dict(
             }
             for ch in report.channels
         ],
+        # Per-input RX mute state, so the input toggle reconciles off the same 1 Hz frame as the
+        # output toggle instead of a tab-gated poll. Id + flag only — never the device path (R19).
+        "inputs": [{"input_id": i.input_id, "enabled": i.enabled} for i in report.inputs],
     }
     if mode is not None:
         out["mode"] = mode
@@ -652,7 +655,8 @@ def _request_basic_password(request: Request) -> str | None:
 class ControlRequest(BaseModel):
     """Body of ``POST /api/control``. ``action`` is required; the numeric fields apply
     only to ``action == "update"`` and are each optional, while ``channel_id``/``enabled``
-    apply only to ``action == "channel"``. The two groups are kept in one model because
+    apply only to ``action == "channel"`` and ``input_id``/``enabled`` only to
+    ``action == "input"``. The groups are kept in one model because
     :meth:`state_changes` reads *only* the keys in :data:`_UPDATE_RANGES`, so a channel
     toggle can never leak into a vessel-state update."""
 
@@ -660,6 +664,9 @@ class ControlRequest(BaseModel):
 
     action: str
     channel_id: str | None = None
+    # Input-slot mute (action == "input"): the RX mirror of channel_id. Like channel_id it is
+    # absent from _UPDATE_RANGES, so it can never leak into a vessel-state update either.
+    input_id: str | None = None
     enabled: bool | None = None
     # Route-playback control (action == "route"): op in {start, pause, reset}. Fault injection
     # (action == "fault"): ``fault`` names the allow-listed fault; ``value`` is the magnitude for
@@ -1206,6 +1213,16 @@ class EngineManager:
             raise RuntimeError("engine is not running")
         return self._engine.set_channel_enabled(channel_id, enabled)
 
+    def set_input_enabled(self, input_id: str, enabled: bool) -> bool:
+        """Toggle one input slot's RX feed on/off; ``False`` when the id is unknown.
+
+        A flag write only — the reader thread and its serial port are untouched, so this needs no
+        engine restart and cannot fail the way a close/reopen cycle can.
+        """
+        if self._engine is None:
+            raise RuntimeError("engine is not running")
+        return self._engine.set_input_enabled(input_id, enabled)
+
     def route_control(self, op: str) -> bool:
         """Runtime route-playback control (``start``/``pause``/``reset``) — a cheap cursor-flag
         write like the channel toggle, no restart. ``False`` when no route is active (not simulate
@@ -1230,11 +1247,21 @@ class EngineManager:
     def input_status(self) -> list[dict[str, object]]:
         """Per-slot detection view. When running, delegates to :meth:`Engine.input_status` (which
         never exposes the device path — R19); when stopped, reports every configured slot idle
-        (``detected_class=None``, ``live=False``) so the UI can still render the slot list."""
+        (``detected_class=None``, ``live=False``) so the UI can still render the slot list.
+
+        The stopped branch must carry ``enabled`` too, sourced from the config default: the UI seeds
+        each input toggle from this payload at boot, so omitting it here would paint every slot ON
+        regardless of what the config says."""
         if self._engine is not None:
             return self._engine.input_status()
         return [
-            {"id": inp.id, "function": inp.function, "detected_class": None, "live": False}
+            {
+                "id": inp.id,
+                "function": inp.function,
+                "detected_class": None,
+                "live": False,
+                "enabled": inp.enabled,
+            }
             for inp in self._config.inputs
         ]
 
@@ -1575,6 +1602,22 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"unknown channel: {body.channel_id!r}")
             # The toggle reaches every client through the existing 1 Hz health broadcast.
             return {"running": True, "channel_id": body.channel_id, "enabled": body.enabled}
+
+        if action == "input":
+            # The RX mirror of "channel": mute one input SLOT so its lines stop feeding the router
+            # (and the clock), letting an operator rehearse signal loss without unplugging a cable.
+            # Same 409 -> 400 -> 404 ordering as the channel branch, and just as cheap — one flag
+            # write, no port closed and no reader thread touched.
+            if not manager.running:
+                raise HTTPException(status_code=409, detail="engine is not running")
+            if body.input_id is None or body.enabled is None:
+                raise HTTPException(
+                    status_code=400, detail="input action requires input_id and enabled"
+                )
+            if not manager.set_input_enabled(body.input_id, body.enabled):
+                raise HTTPException(status_code=404, detail=f"unknown input: {body.input_id!r}")
+            # The toggle reaches every client through the existing 1 Hz health broadcast.
+            return {"running": True, "input_id": body.input_id, "enabled": body.enabled}
 
         if action == "route":
             # F1 runtime route control: pause/resume/reset the route cursor. A flag write, no
@@ -1983,6 +2026,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     "function": function,
                     "detected_class": detected_class,
                     "live": bool(entry["live"]),
+                    # Runtime RX mute flag. This projection is a fixed key set, so a new field
+                    # added upstream is silently dropped unless it is named here too.
+                    "enabled": bool(entry["enabled"]),
                     "mismatch": _input_mismatch(function, detected_class),
                     "port": port_by_id.get(str(entry["id"])),
                 }

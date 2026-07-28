@@ -49,6 +49,10 @@ The live per-channel sentence streams as they go out on the wire. Each pane has 
 on/off switch** and its own **LIVE / SIM / OFF badge**, so you can see exactly what each output
 channel is emitting and whether the data is real or simulated.
 
+In **auto** mode an **Inputs** section sits above the outputs, one pane per configured input slot,
+each with its own **Input: ON / OFF** switch in the same position as an output pane's. See
+*Rehearsing signal loss* below.
+
 ### 3. Config
 
 Where you drive the simulation.
@@ -150,6 +154,37 @@ Each channel has a **runtime on/off toggle** — flip it from the NMEA Streams p
 Config tab's per-channel enable checkbox and it takes effect **without an engine restart**. A
 **persisted per-channel default** decides whether the channel comes up enabled on the next
 start.
+
+### Per-input on/off toggles — rehearsing signal loss
+
+Each **input slot** has its own **Input: ON / OFF** switch, in the same place on an input pane that
+the output toggle occupies on an output pane. It is the RX mirror of the output toggle: a runtime
+flag, no engine restart, and — unlike **Freeze view**, which only pauses the display — it genuinely
+stops that slot feeding the simulator.
+
+Use it to rehearse a live feed dying and coming back without unplugging anything:
+
+1. With a source live, the channel it feeds shows **LIVE:&lt;input&gt;** on its output pane badge.
+2. Switch the input **OFF**. Its pane goes silent and reads **input off**.
+3. Within the slot's `liveness_timeout_s` (default 3 s) the source ages out and the output pane's
+   badge flips to **SIM** — the channel has resumed generating.
+4. Switch the input back **ON**; the badge returns to **LIVE:&lt;input&gt;**.
+
+Three things to expect, none of them faults:
+
+- **A brief silent gap.** Between the toggle and the badge flipping to SIM the channel emits
+  nothing at all — passthrough has stopped but generation is still suppressed until liveness ages
+  out. That gap is the `liveness_timeout_s` window, and it mirrors a real cable pull.
+- **The ship stops moving but still reports way.** Auto mode requires `movement.mode: static`, so
+  after fallback the generator resumes from the last values the live feed seeded and position never
+  advances — a generated RMC can report several knots over a position that does not change. This is
+  pre-existing auto-mode behaviour; the toggle just makes it easy to reach.
+- **Diagnostics keep running.** The toggle gates the *simulator*, not the wire. Maintenance-tab
+  port statistics keep updating and an armed raw capture **keeps recording** while the pane reads
+  "input off" — deliberate, so you can still prove bytes are arriving.
+
+The setting is **runtime-only**: an input toggled off returns to its configured default on restart.
+An input slot's `enabled` key in `config.json` sets that startup default (absent means on).
 
 The optional **instrument channel** (talker **II**) carries the derived instrument data:
 VHW, DPT, DBT, MWV (apparent), MWD (true), ROT, XDR, RSA, VDR, and `$PASHR`. Its values (pitch, roll,

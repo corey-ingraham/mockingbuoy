@@ -154,6 +154,38 @@ Auto/replay add a top-level `inputs` list — physical input adapters, decoupled
 `function` is one of `gps | sat | ais | unused`. Each **output** channel names a priority-ordered
 `sources: [input ids]`; the first live source satisfying that output wins, else the output simulates.
 
+### Per-input runtime enable/disable (RX mute)
+
+`InputSpec.enabled` is the RX mirror of the channel toggle: `Engine.set_input_enabled(id, bool)` mutes
+one input slot at runtime. Like the channel toggle it is **a flag write and nothing more** — the reader
+thread keeps running and the serial port stays open, so it cannot fail the way a close/reopen cycle can.
+
+**Where the gate sits is the whole design.** `SerialPort._read_loop` fans a received line to three
+consumers, and only two are gated:
+
+| Seam | Feeds | Gated? |
+|---|---|---|
+| `on_raw(chunk)` | `PortDiagnostics` + bounded raw captures | **No** — it observes the *wire*, not the sim |
+| `on_line(line)` | SSE `input_nmea` → the input pane feed | **Yes** — the pane reads as a dead wire |
+| `on_rx(line)` | router liveness → channel inbox → Time Authority | **Yes** — liveness ages out |
+
+Both gated seams are **engine-supplied closures** (`_make_input_line_feed`, `_make_dispatch`), so
+`serialport.py` is untouched: the transport stays dumb and the policy stays in the engine. The gate in
+`_dispatch_rx` sits at the very **top** of the method, which is what also silences the Time Authority
+feed at its end — a muted slot supplies no clock fix either.
+
+Everything downstream then falls out of existing behaviour, with no teardown logic anywhere:
+`Router.winner()` ages the source out after `liveness_timeout_s`, `_ChannelWorker._fire` stops being
+suppressed by `any_live` and resumes generating, `_feed_passthrough_state` has already seeded state so
+generation resumes from the last real values, and `TimeAuthority.advance` (which resolves its winner
+through the same router) demotes itself to the base clock.
+
+The enable map is built **unconditionally** for every mode, deliberately unlike the adjacent
+auto-only `_diagnostics` dict: `input_status()` walks `config.inputs` in all modes, so a simulate
+config that still declares slots must not `KeyError`. `HealthReport.inputs` carries the flag on the
+1 Hz health frame (id + flag only, never the device path — R19) so the input toggle reconciles on the
+same path and cadence as the output toggle, on every tab and across clients.
+
 ### Priority-routed passthrough + sentence-class cross-routing
 
 In `auto`, inbound lines are **classified by sentence class** (`gnss` / `heading` / `ais`) and dispatched
@@ -170,6 +202,11 @@ On loss of an output's highest-priority live source, that output **falls back to
 state with no restart and no gap; when the source returns, it resumes passthrough. Consumers never see a
 dead bus. Provenance (LIVE / SIM / OFF) is surfaced **per channel** — as each channel's `source` badge on
 the web `health` event and the NMEA Streams pane, not per value on the `state` event.
+
+Failover is reachable **on demand** via the per-input RX mute above, which is how signal loss is
+rehearsed without unplugging a cable. Note the two windows this exposes: the channel emits nothing
+between the mute and liveness expiring, and because auto mode requires `movement.mode: static`, the
+post-fallback generator holds the last seeded position while still reporting the last SOG/COG.
 
 ### Unified Time Authority (single-source position + time)
 

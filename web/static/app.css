@@ -208,6 +208,9 @@
      unclickable. Dimming per-section keeps the red "Output: OFF" button fully lit + obviously live. */
   .pane.ch-off .pane-hdr, .pane.ch-off .stats, .pane.ch-off .tcp, .pane.ch-off .feed,
   .pane.ch-off .pane-ctl > *:not(.out-toggle) { opacity: 0.5; }
+  /* Same treatment for a muted INPUT slot, so an off input reads identically to an off output. */
+  .pane.in-off .pane-hdr, .pane.in-off .stats, .pane.in-off .feed,
+  .pane.in-off .pane-ctl > *:not(.out-toggle) { opacity: 0.5; }
   .pane-hdr {
     display: flex;
     align-items: center;
@@ -493,10 +496,16 @@
      the .ap-ind cap) + AIS (~55px) were all `0 0 auto` = ~865px of unshrinkable content in
      an ~802px budget, so Attitude -- `1 1 auto; min-height: 0` -- was handed zero or
      negative space and vanished. That was the "attitude cut off by the sections above and
-     below". Floors sum to 200+150+150+50 = 550 + 18 gaps = 568 < ~802. */
+     below". Floors sum to 200+150+150+50 = 550 + 18 gaps = 568 < ~802.
+     The autopilot floor is 304, not the original 292: measured at 1920x1080 (--ui-scale 1, the
+     REAL kiosk tier -- 1080 does not match the max-height:1000px query) the panel's content is
+     ~298px, so 292 left it scrolling silently by 3px under `.ins-panel { overflow: auto }` even
+     before the wider indicator strips added ~4px more. 304 clears both with a small margin and
+     costs Attitude ~5px, which its dials absorb (135 -> 130px). Verified apOver == 0 at
+     1920x1080, 1920x1000, 1920x940, 1440x900, 2560x1440 and 1280x1024. */
   .conn-col-right .p-propulsion { flex: 0 1 auto; min-height: 200px; }
   .conn-col-right .p-helm       { flex: 1 1 auto; min-height: 150px; }
-  .conn-col-right .p-autopilot  { flex: 0 1 auto; min-height: 292px; }
+  .conn-col-right .p-autopilot  { flex: 0 1 auto; min-height: 304px; }
   .conn-col-right .p-ais        { flex: 0 1 auto; min-height: 62px; }
   /* tight top/bottom on Attitude so propulsion above + autopilot below sit closer */
   .conn-col-right .p-helm { padding-top: 0; padding-bottom: 4px; }
@@ -735,12 +744,24 @@
   .ap-cell { display: flex; flex-direction: column; gap: 1px; }
   .ap-num { font-family: var(--mono); font-size: calc(clamp(18px, 2.4vh, 28px) * var(--ui-scale, 1)); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .ap-ind { display: flex; flex-direction: column; gap: 2px; }
-  /* Off-course / off-track indicators. These are 220x44 strips (5:1), and with only a
-     percentage width they inflated to ~104px tall EACH in a 604px column — ~240px of
-     panel for two thin bars, which is what starved the Attitude panel below them.
-     Height here is width-derived, so the width cap IS the height governor: 260px -> ~52px. */
-  .ap-ind svg { width: 100%; height: auto; max-width: 260px; margin: 0 auto; display: block; }
-  .ap-ind svg { max-width: min(86%, calc(210px * var(--ui-scale, 1))); }
+  /* Off-course / off-track indicators (360x28 strips, ~13:1 — see AP_W/AP_H in app.js).
+     Height is width-derived from the viewBox, so this max-width is the ONLY size knob.
+     It previously read `min(86%, 210px * scale)`, where the 86% never bound: at any panel
+     wider than ~244px the pixel term won, so the strips rendered at ~0.95x their user units
+     while every sibling gauge rendered at 1.5-1.9x. That is why they looked undersized at
+     EVERY window size, and why --ui-scale appeared to be the only thing that moved them.
+     The terms are now ordered so the percentage binds at full scale and the pixel term takes
+     over only once --ui-scale steps down:
+       1080p (scale 1)    -> 96% ~= 578px wide, ~45px tall, detail at ~1.6x
+       <=1000px (0.82)    -> 508px
+       <=960px  (0.74)    -> 459px
+       <1100px wide       -> 620px (single-column tier, where 96% would be full-bleed)
+     Flattening the box from the old 5:1 is what makes this affordable: the strip is ~2.75x
+     wider than before at the SAME rendered height, so it costs the right column nothing.
+     Deliberately NO max-height here: for a fixed-aspect SVG the width cap already determines
+     height, and a max-height would be overridden by `.ins-panel svg` (line 576) exactly the
+     way the max-width:1100px reset block is (ISSUE-025). */
+  .ap-ind svg { width: 100%; height: auto; margin: 0 auto; display: block; max-width: min(96%, calc(620px * var(--ui-scale, 1))); }
 
   /* alerts panel — derived rows + Ack/Silence */
   #alerts-silence.active { color: var(--warn); border-color: var(--warn); }
