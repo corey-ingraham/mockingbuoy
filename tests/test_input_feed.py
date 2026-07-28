@@ -500,3 +500,20 @@ def test_conning_panel_field_groups_can_all_reach_live() -> None:
     assert "pitch_deg" not in prov and "roll_deg" not in prov  # pill-attitude
     assert "depth_m" not in prov  # pill-depth
     assert "wind_speed_kn" not in prov and "wind_dir_deg" not in prov  # pill-env
+
+
+def test_utc_resolves_live_only_for_gnss_clock_tiers() -> None:
+    """The Time panel must answer the same question as every other panel: did this value come from
+    a sensor on the wire? An NTP-disciplined clock is real time but LOCAL time — not an NMEA source
+    — so it resolves SIM. Guards against the pill and the engine disagreeing about one value.
+    """
+    engine = _auto_engine(None)
+    utc = _BASE.utc
+
+    for tier in ("gps", "sat"):
+        engine._shared.update(_sources={"utc": f"clock:{tier}"}, utc=utc)
+        assert engine.provenance().get("utc") == "LIVE", tier
+
+    for tier in ("ntp", "system", "simulated", "hold"):
+        engine._shared.update(_sources={"utc": f"clock:{tier}"}, utc=utc)
+        assert "utc" not in engine.provenance(), tier

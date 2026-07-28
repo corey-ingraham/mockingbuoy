@@ -328,6 +328,13 @@ Colour is never the only signal, so the readout is colourblind-safe. The Conning
 a **time-source label** reflecting the active Time Authority tier — GPS, SAT, NTP (local
 disciplined clock), or system — so you always know where UTC is coming from.
 
+The Time panel's **pill** and that **label** answer different questions, deliberately. The label
+names the tier supplying UTC; the pill says whether that tier is a *sensor on the wire*. Only **GPS**
+and **SAT** read LIVE. **NTP reads SIM** — it is real, externally disciplined time, but it comes from
+the local clock rather than a vessel sensor, so it is held to the same standard as every other value
+on the tab. A box with no GNSS attached therefore shows `Time source NTP` with a **SIM** pill, and
+that pairing is correct, not a fault.
+
 ## Maintenance and Troubleshooting
 
 The Maintenance tab (and its CLI twin, below) is a bench NMEA diagnostic surface. It is

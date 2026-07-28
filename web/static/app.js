@@ -1036,6 +1036,9 @@
     "pill-coords": ["lat", "lon"],
     "pill-heading": ["heading_true_deg", "sog_kn", "cog_deg"],
     "pill-ship": ["lat", "lon", "cog_deg", "heading_true_deg"],
+    // utc is live-capable: the Time Authority tags it clock:gps / clock:sat when a real GNSS
+    // source is disciplining the clock, and the engine resolves only those tiers to LIVE.
+    "pill-time": ["utc"],
   };
   // A panel is LIVE only when EVERY live-capable field it shows is LIVE — never overclaim on a
   // panel of mixed provenance.
@@ -1066,9 +1069,13 @@
     setPill("pill-prop", false);
     setPill("pill-autopilot", false);
     setPill("pill-alerts", false);
-    // time is LIVE only when disciplined by a live NMEA source (not the SYSTEM clock / sim)
-    const ts = String((lastHealth && lastHealth.time_source) || "").toUpperCase();
-    setPill("pill-time", ts !== "" && ts !== "SYSTEM" && ts.indexOf("SIM") < 0 && ts !== "OFF");
+    // Time is LIVE only when disciplined by a live NMEA source. This reads the SAME utc provenance
+    // the engine resolves (gps/sat => LIVE; ntp/system/simulated/hold => SIM) rather than the
+    // health frame's time_source tier. The old predicate treated anything that was not
+    // SYSTEM/SIM/OFF as live, so an NTP-disciplined clock rendered green — contradicting both this
+    // comment (NTP is the local chrony clock, not an NMEA source) and the engine's own resolver,
+    // which reports utc as SIM under NTP. One value must not have two answers on one screen.
+    setPill("pill-time", live("pill-time"));
     setAisPill();
   }
 

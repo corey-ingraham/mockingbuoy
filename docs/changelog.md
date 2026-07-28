@@ -44,6 +44,15 @@ and resolved at read time.
 - Carried on the SSE `state` frame **and** `GET /api/state`, since the UI fetches the latter for its
   first paint.
 
+**Follow-up the same day — `pill-time` brought into line.** The first cut deliberately left the Time
+pill on its old health-based predicate ("keep it, don't regress it"), which turned out to leave the
+one pill contradicting the mechanism the change introduced: it treated anything not
+`SYSTEM`/`SIM`/`OFF` as live, so an **NTP-disciplined clock rendered green while the engine resolved
+that same `utc` as SIM**. One value, two answers, on one screen. It also contradicted its own code
+comment ("LIVE only when disciplined by a live NMEA source" — NTP is the local chrony clock). It now
+reads the same `utc` provenance as every other pill: GPS/SAT are LIVE, NTP/system/simulated/hold are
+SIM. Caught on the bench, not by a test — hence the new clock-tier resolution test.
+
 Per-readout badges (as opposed to per-panel) remain outstanding as RM-028; the data is now on the
 wire, so that follow-up is UI-only.
 
