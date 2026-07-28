@@ -10,7 +10,10 @@ Status ∈ {planned, in-progress, done, deferred}. Effort: S / M / L.
 
 ---
 
-### RM-023 — Conning display + Config tab UX backlog · planned · M (2026-07-27)
+### RM-023 — Conning display + Config tab UX backlog · in-progress · M (2026-07-27)
+
+**Done 2026-07-28:** monitor-resolution auto-scaling, lat/long hemisphere entry, and the
+detected-adapter port picker. Remaining items are marked below.
 
 Bench findings from the 2026-07-27 `eemslab` session, carried over from that box's RM-011.
 
@@ -21,21 +24,25 @@ Bench findings from the 2026-07-27 `eemslab` session, carried over from that box
   **Caveat:** per [ISSUE-020](issues.md#issue-020), `down: false` does **not** mean the port opened —
   fix that first or the pills will confidently show green on a dead port.
 - **GPS IN and OUT don't scroll** in the NMEA Stream pane.
-- **Full-screen mode** for the conning display (Fullscreen API).
-- **Monitor-resolution auto-scaling.**
+- **Full-screen mode** for the conning display (Fullscreen API). *(Still open — demoted: once the
+  bridge runs a kiosk browser it is already chromeless, so this is a workstation convenience.)*
+- ~~Monitor-resolution auto-scaling.~~ **DONE 2026-07-28** — container-aware floors + `--ui-scale`
+  tiers; see [changelog](changelog.md).
 
 **Config tab** — `web/static/index.html`
-- **Lat/Long entry has no E/W or N/S control.** Config stores signed decimal degrees (west and south
-  negative), so the UI needs explicit hemisphere handling rather than a bare number.
+- ~~Lat/Long entry has no E/W or N/S control.~~ **DONE 2026-07-28** — magnitude + hemisphere select
+  across all four client paths, with a guard for the negative-magnitude/opposite-hemisphere trap.
+  *(Route-waypoints textarea still takes signed `"lat, lon"` lines — separate follow-up.)*
 - **`movement.mode` cannot be set from the UI at all.** Enabling auto fails with a validator message
   about `movement.mode` needing `'static'` (`nmea_sim/validate.py:793`) while no control exists
   anywhere to change it — it must be hand-edited in `data/config.local.json`. **This cost real bench
   time.** Either expose it or make the error say plainly that it's JSON-only and name the file.
-- **Port selection should be a picker of detected adapters**, not hand-typed device paths (also for
-  mux/testing while in auto mode). **Design constraint — read before building:** `web/app.py`
-  deliberately redacts device paths over the API (R19), returning only a resolved kernel name like
-  `ttyUSB0` or `null`, so an adapter's brand/serial is never surfaced. A picker needs a deliberate,
-  safe enumeration seam. This is a security decision, not an oversight.
+- ~~Port selection should be a picker of detected adapters.~~ **DONE 2026-07-28** — `GET /api/ports`
+  is the safe enumeration seam this called for: the client picks an **opaque handle** labelled with
+  the kernel port and what the adapter is receiving, and the server resolves handle → by-id path, so
+  the brand/serial is never surfaced and a device path is never a client-supplied value. Slots also
+  gained the explanation of what `function` vs adapter means.
+  *(Still open: the read-only Maintenance "attached adapters" table.)*
 
 ### RM-018 — Wheelhouse `MANIFEST.sha256` · planned · S
 

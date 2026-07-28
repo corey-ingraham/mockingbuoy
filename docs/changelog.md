@@ -4,6 +4,36 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-07-28 — Conning display fits any screen [RM-023]
+
+At a 1920×1080 lab monitor the depth chart rendered as a ~40×20 postage stamp and the attitude
+gauges were clipped away entirely. Diagnosed by measuring rendered geometry in a browser, not by
+reading CSS — an initial diagnosis blaming the `vh` caps was wrong, since at 1080p the gauge heights
+are **width**-derived from their SVG viewBox ratios and almost none of the `vh` caps bind.
+
+- **`height: 100dvh` was unpaired** and is the app shell's only height declaration. `dvh` needs
+  Chromium 108+; the bridge display ran Konqueror/QtWebEngine, whose Chromium lags well behind. A
+  dropped declaration leaves the root with an **indefinite height**, so every `1fr` / `minmax(0,Nfr)`
+  row in the conning grid resolves against nothing. Now `100vh` first, `100dvh` second.
+- **`.ap-ind svg` had no height governor** — two 220×44 (5:1) strips rendered ~104px tall each,
+  ~240px of panel for two thin bars, directly starving Attitude beneath them.
+- **Panels were `flex: 0 0 auto`**, so one flexible sibling absorbed the whole shortfall. All panels
+  are now `0 1 auto` with floors sized to real content; floors set *below* content merely pin the
+  panel and hand the slack to a growing sibling.
+- **`min-height: 0` down the dial chains** — flex items default to `min-height: auto` and refuse to
+  shrink below content, so squeezed dial rows scrolled instead of shrinking.
+- **No height breakpoint existed at all**: 1920×1080 got the one-screen lock purely for being *wide*.
+  Added one, plus a `--ui-scale` density knob with tiers measured by sweeping each viewport.
+
+Measured at a 1920×1080 shell: depth SVG 10–25px → **222px**; attitude dials clipped → **138px each**;
+zero panels overflowing. Verified clean at kiosk-1080, windowed-940, 1440p, and both scale overrides.
+
+Recommended alongside: run the bridge display on Chromium/Firefox in kiosk mode rather than
+Konqueror — it unblocks modern CSS, is chromeless (recovering ~15–20% of vertical budget), and
+matches the browser the UI is developed against.
+
+---
+
 ## 2026-07-28 — Config/Maintenance usability: hemisphere entry, adapter binding [RM-023]
 
 - **N/S + E/W selectors** for lat/long. Config stores signed decimal degrees, so a western longitude

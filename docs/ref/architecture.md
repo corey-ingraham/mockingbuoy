@@ -226,6 +226,7 @@ The stream carries three named event types:
 | `POST /api/config/initial-state` | allow-listed **Save-as-defaults** → `data/config.local.json` |
 | `GET /api/profiles` | discovered AIS realism-profile basenames |
 | `GET /api/inputs` | discovered/assigned input slots + their function |
+| `GET /api/ports` | attached USB-serial adapters: opaque handle, kernel port, detected class, live, owning slot. Never the by-id link (brand + serial, R19) — the client binds a slot by *handle* and the server resolves it |
 | `GET /api/security` | posture **booleans only** — never a secret value |
 | `GET /api/diag` | Maintenance diagnostics snapshot (per-port analyzer, fault verdicts) |
 | `POST /api/diag/decode` | decode a pasted/selected sentence to its field map |

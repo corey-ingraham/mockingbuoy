@@ -44,6 +44,29 @@ SUBSYSTEM=="tty", DRIVERS=="ftdi_sio", KERNELS=="<BUS-PORT>", SYMLINK+="nmea-gps
 ```
 Apply: `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty`.
 
+## Binding an adapter to an input slot
+
+Since 2026-07-28 this is a UI action rather than a config hand-edit.
+
+1. Plug the adapter in. The **catch-all udev rule** (`ops/99-mockingbuoy.rules`) puts every USB-serial
+   tty in `dialout` at `0660`, so the service can open it immediately — no per-device rule needed
+   first. Without that rule an unruled adapter lands outside `dialout`, the open fails with EACCES,
+   and the serial layer reports it as *device absent* (ISSUE-020) — a silent dead channel.
+2. **Config → Input Slots** lists each slot with two controls:
+   - **Function** — what kind of data is on that wire (`gps` / `sat` / `ais` / `unused`). This tells
+     the router what to expect; it does **not** choose a port. One satellite compass legitimately
+     feeds both the heading and GPS channels, which is why the two settings are separate.
+   - **Adapter** — which physical device the slot reads, listed by kernel port and by what it is
+     currently receiving. That is how you tell adapters apart: the by-id name carries the brand and
+     per-unit serial and is deliberately never sent to the browser (R19). The client posts an opaque
+     handle; the server maps it to the by-id path.
+3. **Stop → Start.** Input readers are built once at engine construction, so a new binding takes
+   effect on the next start — not live.
+
+The stored path is always the **by-id** link, never `ttyUSBn`, so a replug into a different physical
+port keeps the binding. `validate.py` compares device paths by `realpath`, so two aliases for the
+same tty are caught as a collision instead of failing later as an unexplained absent device.
+
 ## Gotchas
 
 - **Custom-PID devices:** some USB-serial gateways use a vendor-specific FTDI PID that older kernels
