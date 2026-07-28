@@ -5,14 +5,14 @@ Defect / incident log. Newest first. `ISSUE-NNN` shares one counter with `RM-NNN
 
 Status ∈ {planned, in-progress, done, deferred}.
 
-> **Provenance.** ISSUE-001..003 are the residue of a whole-repo red-team performed against
+> **Provenance.** ISSUE-001..002 are the residue of a whole-repo red-team performed against
 > `ca7b284` (branch `feat/tabbed-ui-instruments`). Everything else from that pass — 3 critical,
 > 10 high, and 21 medium findings — was remediated across the commits landing `36bf3f6..bd5e37d`
 > and re-verified in-tree on 2026-07-27. See [changelog.md](changelog.md#2026-07-27--red-team-triage).
 
 > **Lab session 2026-07-27.** ISSUE-019..022 and [RM-023](roadmap.md#rm-023) come from bench testing
-> on the `eemslab` appliance. Source notes live **only** on that box at `~/repos/eemslab/docs/` —
-> that directory is **not under git** and has no remote, so it is one SD-card failure from gone.
+> on the `eemslab` appliance. Host-side counterparts live in the separate
+> [eemslab](https://github.com/corey-ingraham/eemslab) repo (RM-007 clock/NTP, ISSUE-008 udev).
 
 ---
 
@@ -106,20 +106,6 @@ unchanged; `None` is pyserial's win32-correct value.
 - **Not yet verified on hardware** — the fix is reasoned from the pyserial contract and matches the
   observed symptom exactly, but no Windows box with a COM port has been re-tested since.
 - **eemslab was never affected** — POSIX accepts the bool fine. Windows-only.
-
----
-
-### ISSUE-003 — Voltage sensing is half-wired: no provider is ever constructed · deferred (2026-07-27)
-
-`nmea_sim/voltage.py:64` defines `AdcVoltageProvider` and the `voltage_sense` config block parses,
-but nothing in `nmea_sim/engine.py` or `web/app.py` ever constructs a provider, so the path is inert.
-`web/app.py:824` deliberately keeps `voltage_sense` out of the persist allow-list.
-
-**Not a doc bug** — `docs/user-guide.md:317` correctly labels the tiles "(planned)", so no shipped
-claim is false. Deferred as reserved-but-unbuilt design surface.
-
-**Decide:** build it (needs ADS1115 hardware + analog front-end) or delete the dead
-`AdcVoltageProvider`/config block. Do not leave it ambiguous a third time.
 
 ---
 
