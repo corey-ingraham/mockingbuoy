@@ -50,3 +50,6 @@ Thumbs.db
 
 # Untracked whole-repo red-team scratch report (never commit)
 .redteam-report.md
+
+# Machine-local subagent memory (never committed)
+.claude/agent-memory-local/
