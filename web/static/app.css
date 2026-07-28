@@ -418,6 +418,12 @@
   }
   .hint { font-size: 11px; color: var(--muted); }
 
+  /* magnitude + hemisphere entry (lat/lon). The select is sized to its 1-char content so the
+     number field keeps the width it had before the split. */
+  .coord-entry { display: flex; gap: 6px; align-items: stretch; }
+  .coord-entry input { flex: 1 1 auto; min-width: 0; }
+  .coord-entry select { flex: 0 0 auto; width: 4.5ch; text-align: center; }
+
   /* ================= CONNING ================= */
   /* --ui-scale: the single density knob for the conning view (§3).
      Gauge heights here are WIDTH-derived from their SVG viewBox aspect ratios, so scaling

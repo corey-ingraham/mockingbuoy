@@ -1442,6 +1442,13 @@
   // container ids are "grp-<slug>" (owned by index.html); sea_state renders as a <select>. Cards
   // that only carry non-data-field controls (time-source, overrides, depth-sim toggle) have their
   // special inputs authored in index.html and are read/written directly by the handlers below.
+  // Hemisphere-entered fields: config stores SIGNED decimal degrees (south/west negative), which
+  // meant typing "-122.47" for a western longitude. These render as magnitude + hemisphere select.
+  // Sign convention deliberately matches fmtLat/fmtLon on the display side, so entry and readout
+  // cannot drift apart. The magnitude input KEEPS the canonical "cfg-<key>" id and data-field so
+  // driven-field greying (applyDrivenFields) and allCfgFields() keep working untouched.
+  const HEMI = { lat: ["N", "S"], lon: ["E", "W"] };  // [positive, negative]
+
   const CFG_FIELDS = {
     "coordinates": [["lat", "Latitude"], ["lon", "Longitude"]],
     "heading-motion": [
@@ -1464,6 +1471,23 @@
       f.appendChild(inp);
       return f;
     };
+    const mkCoord = (key, label) => {
+      const [pos, neg] = HEMI[key];
+      const f = el("div", "field");
+      f.appendChild(el("label", null, label));
+      const row = el("div", "coord-entry");
+      const inp = document.createElement("input");
+      // min=0: the magnitude is unsigned. A negative magnitude with S/W selected would otherwise
+      // multiply to a POSITIVE value that passes RANGES silently (-122.47 with W -> +122.47).
+      inp.type = "number"; inp.step = "any"; inp.min = "0";
+      inp.id = "cfg-" + key; inp.dataset.field = key;
+      const sel = document.createElement("select");
+      sel.id = "cfg-" + key + "-hemi";
+      for (const h of [pos, neg]) { const o = document.createElement("option"); o.value = h; o.textContent = h; sel.appendChild(o); }
+      row.appendChild(inp); row.appendChild(sel);
+      f.appendChild(row);
+      return f;
+    };
     const mkSeaState = () => {
       const f = el("div", "field");
       f.appendChild(el("label", null, "Sea state (0–9)"));
@@ -1478,7 +1502,7 @@
       if (!c) continue;              // index.html owns the card scaffolding; skip a missing container
       c.textContent = "";
       for (const [key, label] of CFG_FIELDS[slug]) {
-        c.appendChild(key === "sea_state" ? mkSeaState() : mkNumber(key, label));
+        c.appendChild(key === "sea_state" ? mkSeaState() : HEMI[key] ? mkCoord(key, label) : mkNumber(key, label));
       }
     }
     bindConfigCards();
@@ -1492,14 +1516,24 @@
     if (!node) return null;
     const raw = String(node.value).trim();
     if (raw === "") return null;
-    const n = Number(raw);
-    return { node, raw, n };
+    const mag = Number(raw);
+    if (!HEMI[key]) return { node, raw, n: mag };
+    // Magnitude + hemisphere -> signed decimal degrees, the only form the server accepts.
+    const sel = $("cfg-" + key + "-hemi");
+    const neg = sel && sel.value === HEMI[key][1];
+    return { node, raw, n: neg ? -Math.abs(mag) : mag, magnitude: mag, hemi: sel ? sel.value : HEMI[key][0] };
   }
   function validateCfgField(key) {
     const v = readCfgField(key);
     const node = $("cfg-" + key);
     if (!v) { if (node) node.classList.remove("invalid"); return { present: false }; }
     if (!Number.isFinite(v.n)) { node.classList.add("invalid"); return { present: true, ok: false, msg: key + " is not a number" }; }
+    if (HEMI[key] && v.magnitude < 0) {
+      // RANGES cannot catch this: -122.47 with W selected combines to +122.47, which is in range
+      // but the OPPOSITE hemisphere from what the operator sees selected.
+      node.classList.add("invalid");
+      return { present: true, ok: false, msg: key + ": enter a positive value and pick " + HEMI[key].join("/") };
+    }
     const [lo, hi] = RANGES[key] || [null, null];
     if ((lo != null && v.n < lo) || (hi != null && v.n > hi)) {
       node.classList.add("invalid");
@@ -1766,7 +1800,17 @@
     for (const key of Object.keys(RANGES)) {
       if (key === "sea_state") continue;
       const node = $("cfg-" + key);
-      if (node && s[key] != null) node.value = s[key];
+      if (!node || s[key] == null) continue;
+      if (HEMI[key]) {
+        // Live state is signed; the widget shows magnitude + hemisphere, so split rather than
+        // dumping "-122.47" into a min=0 magnitude box with the select left stale.
+        const val = Number(s[key]);
+        node.value = Math.abs(val);
+        const sel = $("cfg-" + key + "-hemi");
+        if (sel) sel.value = HEMI[key][val < 0 ? 1 : 0];
+      } else {
+        node.value = s[key];
+      }
     }
     const sea = $("cfg-sea_state");
     if (sea && s.sea_state != null) sea.value = String(Math.max(0, Math.min(9, Math.round(Number(s.sea_state)))));
