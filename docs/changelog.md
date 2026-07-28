@@ -4,6 +4,50 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-07-28 — Conning: off-course / off-track bars rescaled (wide + flat, not just bigger)
+
+After [74a2c50](#) the two autopilot deviation strips read as undersized against every neighbouring
+gauge, **at every window size**. Measured cause, not inferred: each conning gauge's *render scale*
+(rendered px ÷ viewBox user units) was depth graph 1.88×, propulsion tach 1.73×, attitude dials
+1.47× — and these strips **0.95×**. Their cap was `min(86%, 210px * --ui-scale)`, and at any panel
+wider than ~244px the pixel term won, so the 86% never bound and the strips rendered ~1:1 with their
+user units. That is why `--ui-scale` appeared to be the only thing that ever moved them.
+
+The naive fix — raise the width cap — is not free: the box was a fixed 5:1 strip with `height:auto`,
+so width *is* the height governor, and matching the tach's 380px would have added ~68px to the right
+column whose budget `74a2c50` had just balanced. Instead the strip was **redrawn wide and flat**,
+220×44 (5:1) → **360×28 (~13:1)**, which decouples apparent size from height cost.
+
+Measured at 1920×1080, `--ui-scale` 1 (the real kiosk tier — 1080 does *not* match the
+`max-height:1000px` query):
+
+| | before | after |
+|---|---|---|
+| bar | 210 × 42 px | **578 × 45 px** |
+| render scale | 0.95× | **1.57×** |
+| axis labels | 7.6 px | **12.5 px** |
+| minor tick spacing | 9.6 px | **26 px** |
+
+- **Geometry is now one shared set of constants** (`AP_W/AP_H/AP_CX/AP_CY/AP_X0/AP_X1/AP_SPAN`).
+  `buildLinearIndicator` drew the ticks while `setLinearMarker` *independently* hardcoded the same
+  `cx=110, cy=22` and half-span `100` — the marker that must land on those ticks was free to drift
+  from them. `buildLinearIndicator` also now writes the `viewBox` itself, so it cannot disagree with
+  `index.html`. Verified: majors at 12/96/180/264/348 match the marker positions exactly.
+- **`min()` terms reordered** to `min(96%, 620px * --ui-scale)` so the *percentage* binds at full
+  scale and the pixel term takes over only as `--ui-scale` steps down — the inverse of before.
+- **`.p-autopilot` floor 292px → 304px.** Measurement found the panel was *already* scrolling
+  silently by 3px at the kiosk tier under `.ins-panel { overflow: auto }`; the wider strips added
+  ~4px. 304 clears both, costing Attitude ~5px (dials 135 → 130px). Verified `scrollHeight ==
+  clientHeight` at 1920×1080, 1920×1000, 1920×940, 1440×900, 2560×1440 and 1280×1024.
+- Deliberately **no `max-height`** on `.ap-ind svg`: for a fixed-aspect SVG the width cap already
+  determines height, and a `max-height` there would be silently overridden exactly the way the
+  narrow-screen reset block is — see [ISSUE-025](issues.md#issue-025).
+- Dead `max-width: 260px` rule removed (it was overridden by the next line at equal specificity).
+
+Gate: ruff + black + mypy clean, full suite green.
+
+---
+
 ## 2026-07-28 — Per-input On/Off toggle (rehearse signal loss without unplugging)
 
 Input slots had no enable control at all. The input panes' **Freeze view** only pauses the display —
