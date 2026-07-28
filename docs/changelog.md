@@ -4,6 +4,32 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-07-28 — Config/Maintenance usability: hemisphere entry, adapter binding [RM-023]
+
+- **N/S + E/W selectors** for lat/long. Config stores signed decimal degrees, so a western longitude
+  meant typing `-122.47`. Touched four client paths, not one — builder, `readCfgField`,
+  `loadStateIntoConfig`, and the driven-field greying that keys on `cfg-<field>` ids. Guards the trap
+  the range check cannot see: a negative magnitude with W selected combines to a positive value in
+  the opposite hemisphere.
+- **Input slots can now be bound to a physical adapter.** The control previously set only
+  `function`; the slot→port binding lived solely in `data/config.local.json` and no enumeration
+  existed. New `GET /api/ports` returns opaque handles + kernel name + what each adapter is
+  receiving — never the by-id link (brand + serial, R19). The client posts a handle; the server
+  resolves it. Card renamed *Input Slots* and given the explanation it never had.
+- **Catch-all `dialout` udev rule.** An unruled adapter landed outside `dialout`, the app could not
+  open it, and ISSUE-020 reported that as "device absent" — eemslab ISSUE-008, a lost bench session.
+  Replaces an earlier design in which the web app wrote udev rules via a root helper; adversarial
+  review killed it (udev rules hold code that runs as root, and a programmable USB device presents
+  an arbitrary `iSerial`).
+- **Duplicate device paths are now compared by `realpath`.** ⚠ *May reject configs that previously
+  "worked"* — two aliases for the same tty used to pass validation, then the second exclusive open
+  failed and was misreported as absent hardware. Surfacing it is the fix, not a regression.
+- **`docs/ref/security.md`** — corrected the `DeviceAllow=` claim (it is a char-major *class* grant,
+  not per-device) and added the missing R19 section, including the accepted exception that
+  ISSUE-020's error text may carry a by-id path.
+
+---
+
 ## 2026-07-27 — Lab-session findings; Windows serial fix [ISSUE-019..022, RM-023]
 
 Bench testing on the `eemslab` appliance surfaced four app-level defects that the red-team pass had
