@@ -216,7 +216,13 @@ Native processes obey UFW normally — there is no firewall-bypass special case 
 Back up: `config.json` + `data/` (config + state), the Caddy data dir (root CA + certs), the
 `secrets/` files, the udev rules, and the `Caddyfile` (optionally the wheelhouse).
 
-A host systemd timer rsyncs these to a LAN share. Restore:
+> **There is no working backup today.** `ops/mockingbuoy-backup.{service,timer}` are installed by
+> `setup.sh` but the timer is `static` (no `[Install]`) and cannot be enabled, and neither documented
+> destination works — see [ISSUE-001](../issues.md#issue-001) and [RM-031](../roadmap.md#rm-031).
+> Until that lands, **copy the paths above off the box by hand**. The restore procedure below is the
+> intended design and has never been drilled end to end.
+
+Restore (untested):
 1. fresh host; re-run `bootstrap.sh`/`setup.sh` (rebuild the venv from the wheelhouse, no internet);
 2. restore `config.json` + `secrets/` + the Caddy data dir + udev rules
    (`udevadm control --reload && udevadm trigger`); fix ownership to the `mockingbuoy` user;

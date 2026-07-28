@@ -21,7 +21,8 @@ curl -fsSL https://raw.githubusercontent.com/corey-ingraham/mockingbuoy/main/boo
 4. generates the Caddy custom root CA and a first-run web password (printed once), and writes the
    non-secret runtime env to `secrets/service.env` (site, Basic-auth user, bcrypt hash — see below);
 5. installs the systemd units (`mockingbuoy.service`, Caddy drop-in), `daemon-reload`, `enable --now`;
-6. builds the offline **wheelhouse** and enables the host backup timer;
+6. builds the offline **wheelhouse**. It installs the host backup units but deliberately does **not**
+   enable the timer — the backup subsystem is non-functional, see [ISSUE-001](../issues.md#issue-001);
 7. prints the web URL, the one-time password, the CA file to trust on clients, and the per-channel
    TCP-tap `host:port` list.
 
@@ -40,7 +41,7 @@ non-default knobs. Unset values fall back to sensible defaults:
 | `APP_PORT` | Loopback port the app binds; Caddy reverse-proxies to it | `8000` |
 | `TAP_PORTS` | Per-channel raw NMEA-over-TCP tap ports (`nc`/OpenCPN) | per-channel list |
 | `CHRONY_SERVER` | NTP source for `chrony` time sync | distro pool |
-| `BACKUP_DEST` | rsync destination for the host backup timer (writes `MOCKINGBUOY_BACKUP_DEST`) | unset (backup disabled) |
+| `BACKUP_DEST` | rsync destination for the host backup timer (writes `MOCKINGBUOY_BACKUP_DEST`). **Inert either way** — the timer is `static` and never fires ([ISSUE-001](../issues.md#issue-001)); setting this only warns | unset |
 | `ENABLE_UFW` | Set to `true` to apply the default-deny UFW hardening (any other value skips it) | `false` (skipped) |
 
 Runtime secrets/site values land in `secrets/service.env` (git-ignored; `0600`), read by both

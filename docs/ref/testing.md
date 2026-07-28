@@ -192,9 +192,11 @@ Run on the real host with adapters attached, after `setup.sh`. Tick each box.
 **Autostart.**
 - [ ] **Reboot** → both the app service and Caddy come back automatically (`systemctl enable --now`).
 
-**Backups + restore drill.**
-- [ ] The host **backup timer** runs and writes to the configured destination.
-- [ ] Restore drill: on a clean host, re-run `setup.sh`, **repopulate `data/`** (+ `config.json`,
+**Backups + restore drill.** *(Blocked — the backup timer is `static` and cannot fire; see
+[ISSUE-001](../issues.md#issue-001) / [RM-031](../roadmap.md#rm-031). The restore half can still be
+drilled from a hand-copied backup, and should be, since it is the only recovery path today.)*
+- [ ] ~~The host **backup timer** runs and writes to the configured destination.~~ **Not runnable.**
+- [ ] Restore drill (from a **manual** copy): on a clean host, re-run `setup.sh`, **repopulate `data/`** (+ `config.json`,
       `secrets/`, Caddy data dir, udev rules), fix ownership, restart — `/healthz`, live feed, and
       Basic login all pass.
 

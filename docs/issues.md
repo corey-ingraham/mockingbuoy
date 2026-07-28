@@ -21,8 +21,13 @@ Status ∈ {planned, in-progress, done, deferred}.
 **Not root-caused — observed on a deployed host, data restored, save path not yet traced.** Filed so
 the evidence is not lost; confirm or refute before acting on it.
 
-Observed: two runtime configs three minutes apart, the earlier one auto-saved by the app itself as
-`data/config.local.json.bak-preauto` immediately before the mode switch.
+Observed: two runtime configs three minutes apart, the earlier one present on the host as
+`data/config.local.json.bak-preauto`.
+
+> **Provenance of that file is unknown.** The original note said the app auto-wrote it before the
+> mode switch — **no code in this repo writes any `.bak*` file** (repo-wide grep for `preauto` hits
+> only this file). It was either produced by hand or by an older deployed build. Do not rely on one
+> appearing; capture a `cp` of `data/config.local.json` yourself before reproducing.
 
 | | `bak-preauto` | after the switch |
 |---|---|---|
@@ -46,7 +51,7 @@ out either.
 **To investigate:** trace the `auto` conversion in the Config-tab save path (`/api/config/initial-state`
 in `web/app.py`) and check whether `inputs` / `sources` are rebuilt from the posted body rather than
 merged into the existing config. Reproduce by defining several slots in `simulate`, switching to
-`auto`, and diffing `data/config.local.json` against the `bak-preauto` the app writes.
+`auto`, and diffing `data/config.local.json` against a copy taken by hand beforehand.
 
 **Related trap:** verifying this with `--validate-only` gives false confidence — see
 [ISSUE-030](#issue-030).
@@ -448,3 +453,4 @@ section), so it cannot be enabled and never fires. Confirmed on the appliance 20
 **Fix:** provision a keypair + pre-seeded `known_hosts` (or add `ReadWritePaths=<mount>` for the share
 form), switch to encrypted dated generations (`tar | age`, N kept) instead of a single mirrored copy,
 then prove it with one end-to-end backup **and restore**. Add `[Install]` only once that passes.
+Now tracked as scheduled work in [RM-031](roadmap.md#rm-031).

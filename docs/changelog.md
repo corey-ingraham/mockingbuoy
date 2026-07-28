@@ -4,6 +4,31 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-07-28 — Docs no longer claim backups work; backup redesign gets a roadmap slot [RM-031, ISSUE-001]
+
+Docs-only. A review of the backup/DR state found the reference docs describing a subsystem that has
+never completed a single successful run. Nothing about the runtime changed — this makes the docs
+match `ops/mockingbuoy-backup.timer` being `static` and unenableable.
+
+- **`ref/deployment.md`** — step 6 claimed `setup.sh` "enables the host backup timer". It does the
+  opposite (`setup.sh:485-495` warns and refuses). Corrected, and the `BACKUP_DEST` row now says the
+  variable is inert either way rather than implying set = enabled.
+- **`ref/security.md`** — the "Backups & restore" section now opens with the fact that there is no
+  working backup, points at the manual copy as the only real procedure today, and marks the restore
+  steps as never drilled.
+- **`ref/testing.md`** — the "backup timer runs" checkbox was uncheckable by construction; struck it
+  and rewrote the restore drill to run from a hand-copied backup, which is worth doing regardless.
+- **`issues.md` ISSUE-029** — the repro instructions told the reader to diff against a
+  `config.local.json.bak-preauto` "the app writes". **No code in this repo writes any `.bak` file.**
+  The observed file's provenance is unknown (older build, or a manual copy); the repro now says to
+  take the copy by hand. This mattered — following it as written would have produced no baseline and
+  looked like the bug failing to reproduce.
+- **New [RM-031](roadmap.md#rm-031)** — the redesign had no roadmap item at all; the only forward
+  tracking was a deferred issue with no owner. Sequenced: one working destination → encrypted dated
+  generations → an actual restore script → a proven end-to-end drill → `[Install]` last.
+
+---
+
 ## 2026-07-28 — Per-field provenance: the conning pills now tell the truth [RM-009, ISSUE-027]
 
 The conning panel pills were derived from the owning channel's **role**, not from who wrote the

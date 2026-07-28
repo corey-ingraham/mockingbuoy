@@ -44,6 +44,33 @@ Bench findings from the 2026-07-27 `eemslab` session, carried over from that box
   gained the explanation of what `function` vs adapter means.
   *(Still open: the read-only Maintenance "attached adapters" table.)*
 
+### RM-031 — Backup subsystem redesign + first proven restore · planned · M (2026-07-28)
+
+**Goal:** make the appliance actually recoverable. Today nothing backs up: the units ship, the timer
+is `static`, and neither documented destination works — the breakage inventory lives in
+[ISSUE-001](issues.md#issue-001), which this item carries forward as scheduled work.
+
+Scope, in order:
+1. **Make one destination work.** Either `ReadWritePaths=<mount>` for the mounted-share form, or
+   provision an `ssh-keygen` keypair + pre-seeded `known_hosts` in `setup.sh` for the rsync-over-ssh
+   form (`ProtectHome=true` currently makes `~/.ssh` unwritable). Pick one and document the other as
+   unsupported rather than half-shipping both.
+2. **Encrypted dated generations.** Replace the single `rsync -aR --delete` mirror — which propagates
+   corruption into the only copy — with `tar | age` and an N-kept retention sweep.
+3. **A restore script.** None exists; `security.md`'s procedure is prose only. It should be runnable
+   and idempotent, including ownership fixup and the Caddy CA re-mint.
+4. **Prove it.** One end-to-end backup *and* restore on a clean host, which unblocks the
+   [testing.md](ref/testing.md) restore drill (currently uncheckable).
+5. **Only then add `[Install]`** to `mockingbuoy-backup.timer` and let `setup.sh` enable it when
+   `BACKUP_DEST` is set.
+
+**Tests:** the repo has **zero** backup/restore coverage. At minimum, cover the retention sweep and
+the restore script's path/ownership handling; the systemd half stays a hardware-checklist item.
+
+**Related:** [RM-018](#rm-018) (wheelhouse integrity — a DR redeploy depends on it),
+[RM-005](#rm-005) (capture→replay, the other DR workflow), [ISSUE-024](issues.md#issue-024)
+(the unimplemented self-exit path the DR story assumes).
+
 ### RM-018 — Wheelhouse `MANIFEST.sha256` · planned · S
 
 **Goal:** verify the offline wheelhouse against the lock's own hashes at build time and again at
