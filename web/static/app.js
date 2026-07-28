@@ -1764,12 +1764,17 @@
 
   async function refreshInputs() {
     try {
-      const res = await fetch("/api/inputs");
-      const inputs = await res.json();
-      renderConfigInputs(Array.isArray(inputs) ? inputs : []);
+      // /api/ports is the adapter enumeration: opaque handles + kernel name + what each is
+      // receiving. Never a device path -- the server maps handle -> path on save (R19).
+      const [inRes, portRes] = await Promise.all([fetch("/api/inputs"), fetch("/api/ports")]);
+      const inputs = await inRes.json();
+      let ports = [];
+      try { ports = await portRes.json(); } catch (e) { ports = []; }
+      renderConfigInputs(Array.isArray(inputs) ? inputs : [], Array.isArray(ports) ? ports : []);
     } catch (e) { /* leave prior render */ }
   }
-  function renderConfigInputs(inputs) {
+  function renderConfigInputs(inputs, ports) {
+    ports = ports || [];
     const c = $("cfg-inputs"); c.textContent = "";
     if (inputs.length === 0) { c.appendChild(el("span", "hint", "No provisioned input slots.")); return; }
     for (const inp of inputs) {
@@ -1782,6 +1787,28 @@
         sel.appendChild(o);
       }
       wrap.appendChild(sel);
+
+      // WHICH physical adapter this slot reads. Options are opaque handles labelled with the
+      // kernel port and what the adapter is currently receiving -- that is how you tell them
+      // apart, since the by-id name (brand + serial) is deliberately never sent (R19).
+      const psel = document.createElement("select");
+      psel.id = "cfg-inport-" + inp.id; psel.dataset.slotPort = inp.id;
+      const keep = document.createElement("option");
+      keep.value = ""; keep.textContent = ports.length ? "— leave unchanged —" : "— no adapters detected —";
+      psel.appendChild(keep);
+      for (const pt of ports) {
+        const o = document.createElement("option");
+        o.value = pt.handle;
+        const bits = [pt.port || "unknown port"];
+        if (pt.detected_class) bits.push("seeing " + pt.detected_class);
+        else bits.push(pt.live ? "live" : "idle");
+        if (pt.assigned_to && pt.assigned_to !== inp.id) bits.push("in use by " + pt.assigned_to);
+        o.textContent = bits.join(" · ");
+        if (pt.assigned_to === inp.id) o.selected = true;
+        psel.appendChild(o);
+      }
+      wrap.appendChild(psel);
+
       const det = el("div", "hint");
       const cls = inp.detected_class ? inp.detected_class : "none";
       const live = inp.live ? "live" : "idle";
@@ -2038,7 +2065,15 @@
       return entry;
     });
     const inputSels = Array.from(document.querySelectorAll("[data-slot]"));
-    if (inputSels.length) body.inputs = inputSels.map((s) => ({ id: s.dataset.slot, function: s.value }));
+    if (inputSels.length) {
+      body.inputs = inputSels.map((s) => {
+        const entry = { id: s.dataset.slot, function: s.value };
+        // Empty handle => "leave the current binding alone", so a function-only save is unchanged.
+        const pv = $("cfg-inport-" + s.dataset.slot);
+        if (pv && pv.value) entry.handle = pv.value;
+        return entry;
+      });
+    }
     const routeEnabled = !!($("cfg-route-enabled") && $("cfg-route-enabled").checked);
     const wpts = parseWaypoints();
     if (routeEnabled || wpts.length) {

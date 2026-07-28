@@ -471,7 +471,20 @@
     <h2 class="mode-settings-head">Settings for selected mode</h2>
 
     <div class="card" id="cfg-inputs-card">
-      <h2>Input Assignment <span class="hint">(Auto mode)</span></h2>
+      <h2>Input Slots <span class="hint">(Auto mode)</span></h2>
+      <p class="hint" style="margin:0 0 10px;">
+        An <strong>input slot</strong> is one physical wire the simulator can read live NMEA from.
+        Each slot has two settings:
+        <br>&bull; <strong>Function</strong> &mdash; what kind of data you say is on that wire
+        (<em>GPS</em> position/time, <em>SAT</em> satellite compass, <em>AIS</em> traffic). This tells the
+        router what to expect; it does <em>not</em> pick a port. One satellite compass legitimately feeds
+        <em>both</em> the heading and GPS outputs, which is why function and port are separate.
+        <br>&bull; <strong>Adapter</strong> &mdash; which physical USB device the slot reads. Adapters are
+        listed by their port and by what they are currently receiving, which is how you tell them apart.
+        Leave it on &ldquo;leave unchanged&rdquo; to keep the current binding.
+        <br><em>Changing the adapter takes effect on the next Stop &rarr; Start &mdash; it does not re-bind a
+        running engine.</em>
+      </p>
       <div id="cfg-inputs" class="ctl-row" style="gap:16px;"></div>
       <p class="hint" id="cfg-inputs-note" style="margin-top:8px;">Switch to Auto mode to assign provisioned input slots.</p>
     </div>
@@ -736,7 +749,7 @@
 
 <!-- ==================== TAB 4: MAINTENANCE ==================== -->
 <section id="view-maintenance" class="view">
-  <p class="tab-intro">Diagnostic tools, safest first: the top two sections only read or work offline — nothing here touches hardware until Active TX Controls, which is bench-only and clearly marked.</p>
+  <p class="tab-intro">Use this tab to <strong>see what is attached and what it is doing</strong>; change bindings over in Config &rarr; Input Slots. Diagnostic tools, safest first: the top two sections only read or work offline — nothing here touches hardware until Active TX Controls, which is bench-only and clearly marked.</p>
 
   <div class="card">
     <h2>Port Diagnostics <span class="hint">(polled)</span></h2>
