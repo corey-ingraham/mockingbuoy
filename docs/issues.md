@@ -16,6 +16,68 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-029 — Switching to `auto` may silently drop input slots and channel sources · planned (2026-07-28)
+
+**Not root-caused — observed on a deployed host, data restored, save path not yet traced.** Filed so
+the evidence is not lost; confirm or refute before acting on it.
+
+Observed: two runtime configs three minutes apart, the earlier one auto-saved by the app itself as
+`data/config.local.json.bak-preauto` immediately before the mode switch.
+
+| | `bak-preauto` | after the switch |
+|---|---|---|
+| `mode` | `simulate` | `auto` |
+| `inputs` | `gps_in`, `satcompass_in`, `ais_in` | **`gps_in` only** |
+| `gps.sources` | `[gps_in, satcompass_in]` | `[gps_in]` |
+| `heading.sources` | `[satcompass_in]` | **`[]`** |
+| `ais.sources` | `[ais_in]` | **`[]`** |
+
+**Why it matters:** a channel with an empty `sources` list can never pass through live data — it
+silently simulates forever, which is exactly the failure the LIVE/SIM tagging exists to make
+visible. A dropped slot also has no input pane and no RX toggle, so it cannot be exercised at all.
+Nothing errors; the config validates cleanly in the reduced state.
+
+**Leading hypothesis (unverified):** the save path may persist only slots that resolve to a present
+device, dropping any whose `path` does not currently exist. All three slots' paths were absent at
+the time (adapters unplugged), yet only one survived — which does not fit that theory cleanly, so it
+may instead be the mode-switch conversion rather than device binding. A manual edit cannot be ruled
+out either.
+
+**To investigate:** trace the `auto` conversion in the Config-tab save path (`/api/config/initial-state`
+in `web/app.py`) and check whether `inputs` / `sources` are rebuilt from the posted body rather than
+merged into the existing config. Reproduce by defining several slots in `simulate`, switching to
+`auto`, and diffing `data/config.local.json` against the `bak-preauto` the app writes.
+
+**Related trap:** verifying this with `--validate-only` gives false confidence — see
+[ISSUE-030](#issue-030).
+
+---
+
+### ISSUE-030 — `--validate-only` checks the base config, not the runtime override · planned (2026-07-28)
+
+**Confirmed by direct observation.** `python main.py --validate-only` validates `config.json`, but
+the app at runtime prefers **`data/config.local.json`** whenever that file exists (the target the web
+UI writes on "Save as defaults"); `config.json` is then never loaded. So the documented health check
+can report `config.json is valid` while the config actually in force is untouched by that check —
+and could be broken.
+
+Confirmed hierarchy (`web/app.py`, `create_app`): explicit `config_path` arg → `MOCKINGBUOY_CONFIG`
+env var → `data/config.local.json` if present → `config.json`.
+
+**Failure mode:** an operator edits the live config (or a save path mangles it — see
+[ISSUE-029](#issue-029)), runs `--validate-only`, sees a pass, and ships. The check validated a file
+the service will not read. On any host where the UI has ever saved defaults, the default invocation
+is checking the wrong file.
+
+**Workaround today:** `python main.py --config data/config.local.json --validate-only`.
+
+**Fix:** make `--validate-only` resolve the config by the SAME precedence the app uses, and print the
+resolved path it validated (it already prints the filename, which is what makes the mismatch
+noticeable once you know to look). `docs/ref/deployment.md` and `CLAUDE.md`'s dev-commands block
+should then state which file is checked.
+
+---
+
 ### ISSUE-027 — Docs promise per-value LIVE/SIM/OFF tagging that does not exist · done (2026-07-28)
 
 **Resolved by [RM-009](roadmap.md#rm-009).** Provenance is now tracked per state field and the
