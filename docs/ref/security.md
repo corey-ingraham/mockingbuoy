@@ -94,6 +94,34 @@ then discarded (Global CLAUDE.md §9). This is a conscious concession — the st
 secret entirely off the wire — traded for the operational value of rotating the password from the browser
 without host shell access. The host CLI method below remains available as a fallback.
 
+## Information-leak posture (R19)
+
+A `/dev/serial/by-id/...` link carries the adapter **brand and per-unit serial**, and full filesystem
+paths describe the host layout. Neither is needed by the UI, so the API withholds them:
+
+| Surface | Emits | Never emits |
+|---|---|---|
+| `GET /api/config` | resolved kernel name (`ttyUSB0`) via `_redacted_config_dict` | `path`, by-id link |
+| `GET /api/inputs` | slot id, function, detection flags, kernel name | device path |
+| `GET /api/ports` | opaque handle, kernel name, detected class, live | by-id link, brand, serial |
+| Persist endpoints | — | device paths are not accepted as input either |
+
+The `/api/ports` handle is deliberately opaque: the client picks an adapter by handle and the **server**
+maps it to a path, so a device path is never a client-supplied value. Accepting one would be an
+arbitrary-device-open primitive — bounded by the cgroup grant above to serial ttys, but still a wider
+primitive than any UI needs.
+
+### Accepted exception — error text (decided 2026-07-27)
+
+`ISSUE-020` surfaces serial-open failures to the operator, and a `serial.SerialException` repr embeds
+the **full configured path** — including the by-id link for a TX channel. This is **accepted**: the
+diagnostic value of seeing the real failing path outweighs the leak, given the reader is already
+authenticated on a LAN-only appliance and can read the config anyway.
+
+Recorded here so the contradiction is explicit rather than discovered later. The exception covers
+**error/diagnostic text only** — the structured endpoints above stay strict, and there is a regression
+test asserting `/api/ports` emits no by-id string.
+
 ## Process sandboxing
 
 The app runs under `mockingbuoy.service` as a dedicated non-login user, hardened with systemd
@@ -101,10 +129,24 @@ sandboxing — dropped privileges and a read-only rootfs: `NoNewPrivileges=true`
 `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `ProtectKernelTunables=true`, empty
 `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `MemoryMax=`/`TasksMax=`,
 and a single `ReadWritePaths=/opt/mockingbuoy/data`. Do **not** set `PrivateDevices=yes` — it hides
-`/dev/tty*`; grant serial via `dialout` + explicit `DeviceAllow=`. **Device access is enforced via the
-activated cgroup device controller** — the `DeviceAllow=` allowlist confines the service to exactly the
-named char devices (the output adapters, the input slots, and — only if enabled — the ADC), nothing else
-on `/dev`.
+`/dev/tty*`; grant serial via `dialout` + `DeviceAllow=`. **Device access is enforced via the activated
+cgroup device controller** — but be precise about what it actually grants:
+
+```ini
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
+```
+
+These are **char-major CLASS grants, not per-device grants** — every USB-serial and CDC-ACM tty on the
+box is reachable, not only the ones named in config. That is deliberate (M19): a per-symlink grant like
+`DeviceAllow=/dev/nmea-gps rw` is resolved to a major:minor pair *at unit start*, so any adapter plugged
+or replugged afterwards gets EPERM until a restart — which would break the hotplug failover the appliance
+exists for.
+
+So the boundary this enforces is **"serial ttys only"**, not "these specific adapters". It is still the
+control that matters: no configured path can reach a block device, a fifo, or `/dev/random`, whatever
+ends up in `data/config.local.json`. Per-adapter confinement is *not* provided and should not be
+assumed.
 
 ### Input-slot provisioning + wiring
 

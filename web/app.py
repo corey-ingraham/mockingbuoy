@@ -24,6 +24,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -401,6 +402,40 @@ def _resolve_port(path: str | None) -> str | None:
     return base
 
 
+#: Where USB-serial adapters advertise themselves under stable, per-unit names. Module-level so
+#: tests can point it at a tmpdir — CI has no ``/dev/serial/by-id``, and the enumeration below is
+#: the only place the app touches it.
+_BY_ID_DIR = "/dev/serial/by-id"
+
+
+def _adapter_handle(by_id_path: str) -> str:
+    """Opaque, stable handle for an adapter, derived from its by-id link.
+
+    Deliberately a digest, not the link name: the by-id tail IS the adapter brand + per-unit serial
+    (R19). The client picks an adapter by handle and the SERVER maps handle -> path, so a device
+    path is never a client-supplied value — accepting one would be an arbitrary-device-open
+    primitive. Stable across reboots and replugs because the by-id name is.
+    """
+    return hashlib.sha256(by_id_path.encode("utf-8")).hexdigest()[:16]
+
+
+def _enumerate_adapters() -> list[tuple[str, str]]:
+    """Attached USB-serial adapters as ``(handle, by_id_path)``, sorted for a stable UI order.
+
+    Returns ``[]`` when the directory is absent (no adapters, or not Linux) rather than raising —
+    an empty picker is a correct answer on a hardware-less dev box.
+    """
+    try:
+        names = sorted(os.listdir(_BY_ID_DIR))
+    except OSError:
+        return []
+    out: list[tuple[str, str]] = []
+    for name in names:
+        path = os.path.join(_BY_ID_DIR, name)
+        out.append((_adapter_handle(path), path))
+    return out
+
+
 def _redacted_config_dict(config: EngineConfig) -> dict[str, Any]:
     """``config.to_dict()`` with every device ``path`` dropped (R19 / M9).
 
@@ -750,13 +785,25 @@ class AisTrafficDefault(BaseModel):
 
 
 class InputDefault(BaseModel):
-    """One per-slot input-function assignment in a persist request. Extras forbidden: the device
-    ``path`` and every other InputSpec field are deliberately NOT reachable from here (R15/R19)."""
+    """One per-slot input assignment in a persist request.
+
+    Two fields are reachable, and no others (extras forbidden, R15/R19):
+
+    * ``function`` — what the operator declares is wired to this slot.
+    * ``handle`` — WHICH physical adapter the slot binds to, as the opaque handle from
+      ``GET /api/ports``. The client never sends, and never sees, a device path: the handler maps
+      handle -> by-id path against the LIVE enumeration and rejects anything unknown. Accepting a
+      path here would be an arbitrary-device-open primitive (bounded by the unit's char-major
+      ``DeviceAllow=`` to serial ttys, but still wider than any UI needs).
+
+    ``None`` means "leave the current binding alone", so a function-only save is unchanged.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     function: str
+    handle: str | None = None
 
 
 class DepthSimDefault(BaseModel):
@@ -1854,6 +1901,23 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     if target is None:
                         raise HTTPException(status_code=400, detail=f"unknown input: {slot.id!r}")
                     target["function"] = slot.function
+                    if slot.handle is not None:
+                        # Map handle -> device path HERE, against the live adapter set. An unknown
+                        # handle is a 400, never a silent no-op: a binding the operator thinks
+                        # succeeded but did not would present later as a dead channel (ISSUE-020
+                        # reports a failed open as "device absent"), which is exactly the confusion
+                        # this feature exists to remove.
+                        by_handle = dict(_enumerate_adapters())
+                        resolved = by_handle.get(slot.handle)
+                        if resolved is None:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"input {slot.id!r}: unknown adapter handle — it may have been "
+                                    f"unplugged; reload the adapter list and pick again"
+                                ),
+                            )
+                        target["path"] = resolved
 
             # 3. Rebuild + deep-validate the merged config; any structural or cross-field problem
             #    (incl. a bad input function) becomes a 400 with the validator's own message.
@@ -1921,6 +1985,50 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     "live": bool(entry["live"]),
                     "mismatch": _input_mismatch(function, detected_class),
                     "port": port_by_id.get(str(entry["id"])),
+                }
+            )
+        return out
+
+    @app.get("/api/ports")
+    async def api_ports(_: None = Depends(auth)) -> list[dict[str, Any]]:
+        """Attached USB-serial adapters, for the Config port picker and the Maintenance table.
+
+        R19: emits an OPAQUE handle plus the resolved kernel name (``ttyUSB0``) — never the
+        ``/dev/serial/by-id/...`` link, which carries the adapter brand and per-unit serial. The
+        handle is what the client sends back to bind a slot; the server does the handle -> path
+        mapping. There is a regression test asserting no by-id string appears in this response.
+
+        ``assigned_to`` lets the UI show which slot already owns an adapter, so an operator can see
+        at a glance that a port is spoken for rather than double-binding it (which validate.py now
+        catches via realpath, but seeing it beforehand is better than being told after).
+        """
+        adapters = _enumerate_adapters()
+        # Which slot, if any, already points at each adapter — compared on the RESOLVED device so a
+        # slot configured under a different alias for the same tty still matches.
+        slot_by_device: dict[str, str] = {}
+        for inp in manager.config.inputs:
+            try:
+                slot_by_device[os.path.realpath(inp.path)] = inp.id
+            except OSError:  # pragma: no cover - realpath does not touch the FS for a plain string
+                continue
+        status_by_id = {str(e["id"]): e for e in manager.input_status()}
+
+        out: list[dict[str, Any]] = []
+        for handle, by_id_path in adapters:
+            try:
+                device = os.path.realpath(by_id_path)
+            except OSError:  # pragma: no cover
+                device = by_id_path
+            slot = slot_by_device.get(device)
+            status = status_by_id.get(slot or "", {})
+            detected = status.get("detected_class")
+            out.append(
+                {
+                    "handle": handle,
+                    "port": _resolve_port(by_id_path),
+                    "assigned_to": slot,
+                    "detected_class": str(detected) if detected is not None else None,
+                    "live": bool(status.get("live", False)),
                 }
             )
         return out

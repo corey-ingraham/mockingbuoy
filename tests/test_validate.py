@@ -851,3 +851,32 @@ def test_update_ranges_agree_with_state_ranges_for_manual_fields() -> None:
         "web _UPDATE_RANGES and validate._STATE_RANGES disagree on manual-field bounds "
         f"(field -> (update, state)): {mismatches}"
     )
+
+
+def test_aliased_device_paths_collide_via_realpath(tmp_path) -> None:
+    """Two DIFFERENT path strings naming the SAME device must collide.
+
+    Keyed on the raw string this passed validation, and the second exclusive open then failed at
+    runtime -- which ISSUE-020 reports as "device absent", so the operator saw a silently dead
+    channel instead of a config error. Reachable by a click now that slots are bound from the UI.
+    """
+    device = tmp_path / "ttyUSB0"
+    device.write_text("")
+    alias = tmp_path / "nmea-gps"
+    try:
+        alias.symlink_to(device)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without symlink privilege
+        pytest.skip("symlinks unavailable on this platform/account")
+
+    a = _gps(id="a", path=str(device))
+    b = _gps(id="b", path=str(alias))
+    problems = validate(_config([a, b]))
+    assert any("already used by" in p for p in problems), problems
+
+
+def test_absent_device_paths_still_compare_by_string() -> None:
+    """Non-existent paths (dev box, pre-hotplug) must behave exactly as before -- realpath returns
+    them unchanged, so absent hardware never becomes a validation error."""
+    a = _gps(id="a", path="/dev/serial/by-id/does-not-exist-1")
+    b = _gps(id="b", path="/dev/serial/by-id/does-not-exist-2")
+    assert not any("already used by" in p for p in validate(_config([a, b])))

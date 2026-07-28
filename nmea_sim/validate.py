@@ -14,6 +14,7 @@ exceptions. :func:`validate_or_raise` is the throwing convenience wrapper.
 from __future__ import annotations
 
 import math
+import os
 from typing import TYPE_CHECKING
 
 from . import budget
@@ -136,6 +137,27 @@ class ConfigError(ValueError):
 def _is_placeholder(path: str) -> bool:
     p = path.strip().lower()
     return p == "" or any(marker in p for marker in _PLACEHOLDER_MARKERS)
+
+
+def _device_key(path: str) -> str:
+    """Collision key for a device path, resolved through symlinks.
+
+    The duplicate check below shares ONE namespace across outputs and inputs, but keyed on the
+    raw string it could not see aliases: ``/dev/serial/by-id/usb-...`` and ``/dev/nmea-gps`` are
+    different strings naming the SAME tty. That passed validation, then the second
+    ``exclusive=True`` open failed at runtime -- and per ISSUE-020 an open failure is reported as
+    "device absent", so the operator saw a silently dead channel rather than a config error.
+
+    Reachable by a click now that slots are bound from the UI, hence resolving here.
+
+    ``realpath`` is deliberately non-strict: on a dev box or before hotplug the device does not
+    exist, and it then returns the input unchanged -- so absent hardware behaves exactly as it did
+    before and never turns into a validation error. Only genuinely-aliased paths change outcome.
+    """
+    try:
+        return os.path.realpath(path.strip())
+    except OSError:  # pragma: no cover - realpath on a plain string does not touch the FS
+        return path.strip()
 
 
 def _is_valid_framing(framing: str) -> bool:
@@ -420,7 +442,7 @@ def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:
         ids[spec.id] = ids.get(spec.id, 0) + 1
 
         if not _is_placeholder(spec.path):
-            key = spec.path.strip()
+            key = _device_key(spec.path)
             if key in paths:
                 kind, owner = paths[key]
                 if kind == "channel":
@@ -453,7 +475,7 @@ def _validate_cross_channel(config: EngineConfig, errors: list[str]) -> None:
         input_ids[inp.id] = input_ids.get(inp.id, 0) + 1
 
         if not _is_placeholder(inp.path):
-            key = inp.path.strip()
+            key = _device_key(inp.path)
             if key in paths:
                 kind, owner = paths[key]
                 errors.append(

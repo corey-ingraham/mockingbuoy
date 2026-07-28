@@ -2080,3 +2080,75 @@ def test_persist_bad_display_override_key_is_bad_request(tmp_config: Path) -> No
     with TestClient(app) as c:
         resp = c.post("/api/config/initial-state", json={"display_overrides": {"rpm_port": 800.0}})
         assert resp.status_code == 400
+
+
+# --- adapter enumeration + handle binding (R19) --------------------------------------
+
+
+def _fake_by_id(tmp_path, monkeypatch, *names: str) -> dict[str, str]:
+    """Point the adapter enumeration at a tmpdir of fake by-id links; return handle -> name."""
+    by_id = tmp_path / "by-id"
+    by_id.mkdir()
+    for n in names:
+        (by_id / n).write_text("")
+    monkeypatch.setattr(web_app, "_BY_ID_DIR", str(by_id))
+    return {web_app._adapter_handle(str(by_id / n)): n for n in names}
+
+
+def test_api_ports_never_leaks_by_id_brand_or_serial(client, tmp_path, monkeypatch) -> None:
+    """R19 regression. This endpoint feeds a picker, so it is the surface most likely to grow a
+    'helpful' adapter label later -- fail loudly if one appears."""
+    name = "usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0"
+    _fake_by_id(tmp_path, monkeypatch, name)
+
+    resp = client.get("/api/ports")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    entry = body[0]
+    assert set(entry) == {"handle", "port", "assigned_to", "detected_class", "live"}
+
+    blob = json.dumps(body)
+    assert "by-id" not in blob
+    assert "FTDI" not in blob
+    assert "A50285BI" not in blob  # the per-unit serial
+    assert name not in blob
+    assert entry["handle"] and name not in entry["handle"]
+
+
+def test_api_ports_handle_is_stable(client, tmp_path, monkeypatch) -> None:
+    _fake_by_id(tmp_path, monkeypatch, "usb-adapter-one", "usb-adapter-two")
+    first = [e["handle"] for e in client.get("/api/ports").json()]
+    second = [e["handle"] for e in client.get("/api/ports").json()]
+    assert first == second
+    assert len(set(first)) == 2
+
+
+def test_api_ports_empty_without_hardware(client, tmp_path, monkeypatch) -> None:
+    """A hardware-less box returns an empty picker, not a 500."""
+    monkeypatch.setattr(web_app, "_BY_ID_DIR", str(tmp_path / "absent"))
+    resp = client.get("/api/ports")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_persist_rejects_unknown_adapter_handle(client, tmp_path, monkeypatch) -> None:
+    """An unplugged/unknown handle must 400, never silently no-op: a binding the operator believes
+    succeeded but did not shows up later as a dead channel (ISSUE-020 calls it 'device absent')."""
+    _fake_by_id(tmp_path, monkeypatch, "usb-adapter-one")
+    resp = client.post(
+        "/api/config/initial-state",
+        json={"inputs": [{"id": "gps_in", "function": "gps", "handle": "deadbeefdeadbeef"}]},
+    )
+    assert resp.status_code == 400
+    assert "handle" in resp.json()["detail"]
+
+
+def test_persist_rejects_device_path_in_input_slot(client) -> None:
+    """The client must never be able to send a path — that would be an arbitrary-device-open
+    primitive. `extra="forbid"` on InputDefault is what enforces it."""
+    resp = client.post(
+        "/api/config/initial-state",
+        json={"inputs": [{"id": "gps_in", "function": "gps", "path": "/dev/ttyUSB9"}]},
+    )
+    assert resp.status_code == 422

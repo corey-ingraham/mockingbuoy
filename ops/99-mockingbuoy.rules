@@ -59,6 +59,29 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{ser
 SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<IN6_SERIAL>", \
     SYMLINK+="nmea-in-6", GROUP="dialout", MODE="0660", TAG+="systemd"
 
+# --- CATCH-ALL: every USB serial tty joins dialout ---------------------------
+# Without this, an adapter with no matching rule above falls back to whatever group
+# the system defaults to (observed: plugdev). The service user is in `dialout` but NOT
+# plugdev, so the open fails with EACCES -- and the serial layer reports EACCES as
+# "device absent" (ISSUE-020), so the channel just sits on SIM forever with no log line,
+# no error counter, and nothing in the UI. That cost a full bench session once
+# (eemslab ISSUE-008); this line retires the whole failure class.
+#
+# Ordering: this is a catch-all, not an override. The per-adapter rules above already
+# set GROUP="dialout" and additionally create the stable SYMLINK+= names; this only
+# supplies the group for adapters that match none of them. Later rules win in udev, so
+# keep this BELOW the per-adapter block.
+#
+# Scope: `SUBSYSTEMS=="usb"` restricts it to USB-attached ttys -- it does not touch
+# on-board UARTs (ttyAMA*, the serial console) or any non-serial device.
+#
+# Cost, and why it is already paid: any USB serial adapter on this box becomes openable
+# by the service. The unit already grants exactly that -- `DeviceAllow=char-ttyUSB rw`
+# and `char-ttyACM rw` are char-major CLASS grants (see mockingbuoy.service, M19), chosen
+# deliberately so hotplug works. That cgroup grant, not this rule, is the real boundary:
+# it is why a config path can never reach a block device, a fifo, or /dev/random.
+SUBSYSTEM=="tty", SUBSYSTEMS=="usb", GROUP="dialout", MODE="0660"
+
 # --- FTDI latency tuning -----------------------------------------------------
 # FTDI defaults to a 16 ms read latency timer; drop it to 1 ms so per-sentence writes
 # aren't coalesced/delayed. Applies to the FTDI USB device node backing the tty.
