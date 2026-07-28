@@ -34,6 +34,7 @@ from nmea_sim.config import (
 )
 from nmea_sim.engine import Engine
 from nmea_sim.gps_generator import GpsGenerator
+from nmea_sim.heading_generator import HeadingGenerator
 from nmea_sim.state import VesselState
 from web.app import Broker, _render_frame
 
@@ -353,3 +354,149 @@ def test_input_status_works_in_simulate_mode_with_inputs() -> None:
     ]
     assert engine.set_input_enabled("gps_in", False) is True
     assert engine.input_status()[0]["enabled"] is False
+
+
+# --- per-field provenance + expiry (RM-009) ---------------------------------------
+#
+# The point of these is the EXPIRY half. Capturing "who wrote this" is easy; the safety property
+# is that a live tag cannot outlive its source. Auto mode requires movement.mode static, so once a
+# source dies nothing rewrites lat/lon and the value freezes at its last real reading — a tag that
+# did not expire would keep calling that frozen number LIVE forever.
+
+
+def _fed_engine() -> tuple[Engine, Any, str]:
+    """An auto engine with one live-fed gps input; returns (engine, reader, line)."""
+    engine = _auto_engine(
+        _Capture(), inputs=[InputSpec(id="gps_in", path="none", liveness_timeout_s=30.0)]
+    )
+    return engine, engine._input_readers[0], _rmc(12.3)
+
+
+def _forward(engine: Engine, line: str) -> None:
+    """Drive one line all the way through routing AND the owning worker's passthrough.
+
+    The worker thread is not running (the engine is never started), so the inbox it would drain is
+    pumped by hand — this is what actually seeds state, and therefore provenance.
+    """
+    engine._dispatch_rx("gps_in", line)
+    engine._worker_by_id["gps"]._on_passthrough(("gps_in", "gnss", line))
+
+
+def test_passthrough_fields_resolve_live() -> None:
+    engine, _, line = _fed_engine()
+    assert engine.provenance() == {}  # nothing fed yet -> everything SIM (sparse: omitted)
+
+    _forward(engine, line)
+
+    prov = engine.provenance()
+    assert prov["lat"] == "LIVE"
+    assert prov["lon"] == "LIVE"
+    assert prov["cog_deg"] == "LIVE"
+    # Never-live fields stay omitted even while a source is winning.
+    assert "pitch_deg" not in prov
+    assert "depth_m" not in prov
+
+
+def test_live_tag_expires_when_the_source_dies_but_the_value_does_not() -> None:
+    """The core safety property, driven through the per-input mute so it needs no hardware."""
+    engine, _, line = _fed_engine()
+    _forward(engine, line)
+    assert engine.provenance()["lat"] == "LIVE"
+    frozen = engine._shared.snapshot().lat
+
+    # Mute the input: no further line stamps liveness, so the router's winner ages out.
+    engine.set_input_enabled("gps_in", False)
+    engine._router._liveness.clear()  # equivalent to the timeout elapsing, without sleeping
+
+    assert engine.provenance() == {}  # degraded to SIM...
+    assert engine._shared.snapshot().lat == frozen  # ...while the value is unchanged, not re-simmed
+
+
+def test_live_tag_returns_when_the_source_comes_back() -> None:
+    engine, _, line = _fed_engine()
+    _forward(engine, line)
+    engine.set_input_enabled("gps_in", False)
+    engine._router._liveness.clear()
+    assert engine.provenance() == {}
+
+    engine.set_input_enabled("gps_in", True)
+    _forward(engine, line)
+    assert engine.provenance()["lat"] == "LIVE"
+
+
+def test_manual_and_replay_writes_never_resolve_live() -> None:
+    engine, _, _ = _fed_engine()
+    engine.update_state(lat=1.0)
+    assert "lat" not in engine.provenance()
+    engine._shared.update(_sources="replay", lon=2.0)
+    assert "lon" not in engine.provenance()
+
+
+def test_simulate_mode_reports_no_live_fields() -> None:
+    """No router, so nothing can be arbitrated live — and provenance must not crash without one."""
+    engine = _auto_engine(_Capture(), mode="simulate", inputs=[InputSpec(id="gps_in", path="none")])
+    assert engine.provenance() == {}
+
+
+def test_conning_panel_field_groups_can_all_reach_live() -> None:
+    """The regression guard for the aggregation rule, automated because the browser check needs
+    hardware.
+
+    Each conning pill is LIVE only when EVERY live-capable field its panel shows is LIVE, so a
+    field that can never be live-seeded would pin its panel to SIM forever — a silent regression
+    that every simulate-mode test would happily pass. This drives a realistic two-input auto config
+    (GNSS + satellite compass) and asserts each pill's field group actually resolves LIVE.
+    """
+    channels = [
+        ChannelSpec(
+            id="gps",
+            role="gps",
+            path="none",
+            baud=115200,
+            talker="GP",
+            emit=[EmitSpec("RMC", 5.0)],
+            sources=["gps_in", "sat_in"],
+        ),
+        ChannelSpec(
+            id="heading",
+            role="heading",
+            path="none",
+            baud=115200,
+            talker="HE",
+            emit=[EmitSpec("HDT", 5.0)],
+            sources=["sat_in"],
+        ),
+    ]
+    inputs = [
+        InputSpec(id="gps_in", path="none", function="gps", liveness_timeout_s=30.0),
+        InputSpec(id="sat_in", path="none", function="sat", liveness_timeout_s=30.0),
+    ]
+    cfg = EngineConfig(
+        writer_backend="serial",
+        movement=MovementSpec(mode="static", physics_hz=20.0),
+        time_source=TimeSourceSpec(mode="system_utc"),
+        initial_state_raw=dict(_INITIAL),
+        channels=channels,
+        inputs=inputs,
+        mode="auto",
+    )
+    engine = Engine(cfg, strict_budget=False)
+
+    rmc = _rmc(12.3)
+    hdt = HeadingGenerator("HE").hdt(replace(_BASE, heading_true_deg=77.0))
+    engine._dispatch_rx("gps_in", rmc)
+    engine._worker_by_id["gps"]._on_passthrough(("gps_in", "gnss", rmc))
+    engine._dispatch_rx("sat_in", hdt)
+    engine._worker_by_id["heading"]._on_passthrough(("sat_in", "heading", hdt))
+
+    prov = engine.provenance()
+    # Mirrors PILL_FIELDS in app.js — if these lists drift apart, a pill silently pins to SIM.
+    assert all(prov.get(f) == "LIVE" for f in ("lat", "lon"))  # pill-coords
+    assert all(prov.get(f) == "LIVE" for f in ("heading_true_deg", "sog_kn", "cog_deg"))  # heading
+    assert all(
+        prov.get(f) == "LIVE" for f in ("lat", "lon", "cog_deg", "heading_true_deg")
+    )  # pill-ship
+    # Panels with no live-capable field must NOT appear, however live the sources are.
+    assert "pitch_deg" not in prov and "roll_deg" not in prov  # pill-attitude
+    assert "depth_m" not in prov  # pill-depth
+    assert "wind_speed_kn" not in prov and "wind_dir_deg" not in prov  # pill-env

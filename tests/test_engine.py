@@ -774,3 +774,63 @@ def test_time_authority_future_sim_base_does_not_freeze_live_gnss() -> None:
     resolved2 = authority.advance(resolved, dt_s=0.05)
     assert resolved2 >= resolved
     assert resolved2.year == 2026
+
+
+# --- physics-tick provenance (RM-009) ---------------------------------------------
+
+
+def _prov_thread(clock_tag: object = None) -> tuple[SharedState, _PhysicsThread]:
+    """A minimal physics thread over a static-movement engine, for provenance assertions."""
+    ts = TimeSource(TimeSourceSpec(mode="system_utc"), None)
+    physics = PhysicsEngine(MovementSpec(mode="static", physics_hz=10.0), ts)
+    shared = SharedState(VesselState(**_INITIAL, utc=ts.initial()))
+    thread = _PhysicsThread(
+        shared,
+        physics,
+        hz=10.0,
+        stop=threading.Event(),
+        **({} if clock_tag is None else {"clock_tag": clock_tag}),
+    )
+    return shared, thread
+
+
+def test_physics_tick_tags_derived_fields_sim() -> None:
+    """pitch/roll come from the sea-state model and can never be live — this is the regression
+    guard for the reported bug, where the Attitude panel read LIVE over wholly simulated values."""
+    shared, thread = _prov_thread()
+    thread._tick(0.1)
+    _, prov = shared.snapshot_with_provenance()
+    assert prov["pitch_deg"].source == "sim"
+    assert prov["roll_deg"].source == "sim"
+
+
+def test_physics_tick_tags_utc_from_the_clock_callable() -> None:
+    """``utc`` rides the SAME atomic commit as the simulated motion but may be a live GNSS instant,
+    so it must carry its own tag rather than inheriting the write's blanket 'sim'."""
+    shared, thread = _prov_thread(clock_tag=lambda: "gps")
+    thread._tick(0.1)
+    _, prov = shared.snapshot_with_provenance()
+    assert prov["utc"].source == "clock:gps"
+    assert prov["pitch_deg"].source == "sim"  # same commit, different provenance
+
+
+def test_physics_tick_survives_a_clock_without_source_tag() -> None:
+    """In simulate/replay the clock is a bare ``TimeSource`` with no ``source_tag``. Reaching for it
+    would raise AttributeError, which the run-loop's blanket except converts into a DEAD physics
+    thread and every channel frozen — so the default tag must never touch the clock object."""
+    shared, thread = _prov_thread()  # no clock_tag -> default
+    thread._tick(0.1)  # must not raise
+    _, prov = shared.snapshot_with_provenance()
+    assert prov["utc"].source == "clock:simulated"
+
+
+def test_physics_thread_stays_alive_in_simulate_mode() -> None:
+    """End-to-end form of the trap above: a real engine over a bare TimeSource must report
+    physics_alive, not a silently dead thread."""
+    engine = Engine(_config([_gps_channel()]), strict_budget=False)
+    engine.start()
+    try:
+        assert _wait_until(lambda: engine.health().physics_alive, timeout=2.0)
+        assert engine.health().physics_alive is True
+    finally:
+        engine.stop()

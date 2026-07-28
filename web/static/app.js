@@ -1027,14 +1027,41 @@
     else if (tag === "OFF") { p.textContent = "OFF"; p.className = "stat-pill off"; }
     else { p.textContent = "SIM"; p.className = "stat-pill sim"; }
   }
+  // Which LIVE-CAPABLE state fields each panel displays. Only fields a real sentence can actually
+  // set appear here: the engine seeds passthrough state from RMC/GGA/VTG/HDT/HDG only, so stw_kn
+  // and rot_dpm (shown in the Heading panel) can never be live and are deliberately excluded —
+  // including them would make the panel permanently SIM. A panel absent from this map has no
+  // live-capable value at all and is honestly always SIM.
+  const PILL_FIELDS = {
+    "pill-coords": ["lat", "lon"],
+    "pill-heading": ["heading_true_deg", "sog_kn", "cog_deg"],
+    "pill-ship": ["lat", "lon", "cog_deg", "heading_true_deg"],
+  };
+  // A panel is LIVE only when EVERY live-capable field it shows is LIVE — never overclaim on a
+  // panel of mixed provenance.
+  function fieldsLive(ids) {
+    // Guard the empty/missing case explicitly: [].every() is vacuously TRUE, so a panel with no
+    // live-capable fields would otherwise claim LIVE — the exact class of false claim this whole
+    // change exists to remove.
+    if (!Array.isArray(ids) || ids.length === 0) return false;
+    const prov = (lastState && lastState.provenance) || null;
+    if (!prov) return false;
+    return ids.every((f) => prov[f] === "LIVE");   // sparse: absent == SIM
+  }
   function updateStatusPills() {
-    const roleLive = (role) => parseSource(channelSourceByRole(role)).tag === "LIVE";
-    setPill("pill-coords", roleLive("gps"));
-    setPill("pill-heading", roleLive("heading"));
-    setPill("pill-ship", roleLive("gps"));       // ship vectors are position/heading-derived
-    setPill("pill-env", roleLive("instrument")); // wind + weather off the instrument channel
-    setPill("pill-depth", roleLive("instrument")); // depth sounder (DBT) on the instrument channel
-    setPill("pill-attitude", roleLive("heading")); // pitch/roll off the satcompass/heading source
+    // A stopped engine emits no state frames while health keeps flowing; without this the pills
+    // would freeze at their last LIVE instead of degrading.
+    const stopped = !!(lastHealth && lastHealth.status === "stopped");
+    const live = (id) => !stopped && fieldsLive(PILL_FIELDS[id]);
+    setPill("pill-coords", live("pill-coords"));
+    setPill("pill-heading", live("pill-heading"));
+    setPill("pill-ship", live("pill-ship"));      // ship vectors are position/heading-derived
+    // Wind/weather and depth are simulator-owned (no rx mapping exists for them), and pitch/roll
+    // are ALWAYS derived from the sea-state model — so none of these can ever be live. Previously
+    // pill-attitude tracked the heading CHANNEL and so read LIVE over wholly simulated numbers.
+    setPill("pill-env", false);
+    setPill("pill-depth", false);
+    setPill("pill-attitude", false);
     // engine, autopilot and derived alerts are display-only synthetic values → always SIM
     setPill("pill-prop", false);
     setPill("pill-autopilot", false);
@@ -1456,6 +1483,10 @@
       let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       lastState = d; lastStateTs = Date.now();
       sampleDepth(d);
+      // Provenance rides the state frame, so the pills must repaint here as well as on the 1 Hz
+      // health frame — pill-time still reads its tier from health, so BOTH paths drive them off
+      // the cached lastState/lastHealth pair rather than one owning them.
+      updateStatusPills();
       if (activeTab === "conning") requestConningPaint();
       else if (activeTab === "config") { renderRouteProgress(d.route || null); applyDrivenFields(d.driven_fields); }
     });

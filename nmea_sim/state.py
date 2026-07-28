@@ -13,7 +13,8 @@ RMC/VTG consume COG; HDT/HDG/HDM consume heading. They are never cross-wired.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, replace
+import time
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from typing import Any
 
@@ -82,20 +83,87 @@ class AisTarget:
     imo: int = 0
 
 
-class SharedState:
-    """Thread-safe holder of the current ``VesselState`` (one lock, atomic swap)."""
+@dataclass(frozen=True)
+class Prov:
+    """Who last wrote one state field, and when.
 
-    def __init__(self, initial: VesselState) -> None:
+    ``source`` is an opaque tag the engine assigns at write time — ``"sim"``, ``"config"``,
+    ``"manual"``, ``"replay"``, ``"live:<input_id>"`` (auto passthrough) or ``"rx:<channel_id>"``
+    (a duplex channel's own RX feed). ``cls`` is the sentence class the value arrived on
+    (``gnss``/``heading``/``ais``) when one applies, so a live tag can later be re-checked against
+    the router without needing a field->class table. ``ts`` is ``time.monotonic()`` at the write.
+
+    Provenance is deliberately held BESIDE the frozen snapshot rather than inside it: embedded in
+    ``VesselState`` it would be carried forward by every ``dataclasses.replace`` that did not touch
+    the field, so a stale tag would ride along on unrelated writes.
+    """
+
+    source: str
+    cls: str | None
+    ts: float
+
+
+class SharedState:
+    """Thread-safe holder of the current ``VesselState`` (one lock, atomic swap).
+
+    Also carries a per-field provenance side-map, written under the SAME lock as the snapshot so a
+    reader can take a value and its tag as one consistent pair (see ``snapshot_with_provenance``).
+    """
+
+    def __init__(self, initial: VesselState, *, source: str = "config") -> None:
         self._lock = threading.Lock()
         self._state = initial
+        now = time.monotonic()
+        # Seed every field, so a value that is never rewritten still reports where it came from.
+        self._prov: dict[str, Prov] = {f.name: Prov(source, None, now) for f in fields(initial)}
 
     def snapshot(self) -> VesselState:
         """Return the current immutable snapshot (safe to use after the lock releases)."""
         with self._lock:
             return self._state
 
-    def update(self, **changes: Any) -> VesselState:
-        """Atomically replace fields on the current state; return the new snapshot."""
+    def snapshot_with_provenance(self) -> tuple[VesselState, dict[str, Prov]]:
+        """Return the snapshot AND its provenance map, read under a single lock acquisition.
+
+        Reading the two separately would tear: at the ~4 Hz serialization cadence against a 10-20 Hz
+        physics writer (plus RX threads), a write landing between the two reads yields a frame whose
+        value came from one commit and whose tag came from another. Callers that only need values
+        should keep using ``snapshot`` — this pairs them for the provenance surface.
+        """
+        with self._lock:
+            return self._state, dict(self._prov)
+
+    def update(self, *, _sources: dict[str, str] | str, **changes: Any) -> VesselState:
+        """Atomically replace fields on the current state; return the new snapshot.
+
+        ``_sources`` tags the provenance of this write: a plain string tags every key in
+        ``changes``, or a dict tags per key (missing keys fall back to ``"sim"``). It is
+        **required and keyword-only** on purpose — a default would let a new writer silently
+        inherit ``"sim"``, and a mislabelled source is precisely the failure this surface exists to
+        prevent. The per-key form is what lets one atomic commit carry mixed provenance: the physics
+        tick writes a possibly-live-GNSS ``utc`` alongside genuinely simulated pitch/roll, and
+        splitting that into two calls would tear the tick's atomic swap.
+        """
+        now = time.monotonic()
         with self._lock:
             self._state = replace(self._state, **changes)
+            for name in changes:
+                tag = _sources if isinstance(_sources, str) else _sources.get(name, "sim")
+                # No class here: only the RX/passthrough writers know one (see update_tagged).
+                self._prov[name] = Prov(tag, None, now)
+            return self._state
+
+    def update_tagged(
+        self, changes: dict[str, Any], *, source: str, cls: str | None
+    ) -> VesselState:
+        """``update`` for the live paths, carrying the sentence class alongside the source tag.
+
+        Split from ``update`` because only the RX/passthrough writers know a class, and threading a
+        parallel per-key class map through the common path would clutter every other call site.
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._state = replace(self._state, **changes)
+            for name in changes:
+                self._prov[name] = Prov(source, cls, now)
             return self._state

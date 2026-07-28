@@ -201,12 +201,47 @@ transcoder of real data.
 On loss of an output's highest-priority live source, that output **falls back to generation** from vessel
 state with no restart and no gap; when the source returns, it resumes passthrough. Consumers never see a
 dead bus. Provenance (LIVE / SIM / OFF) is surfaced **per channel** — as each channel's `source` badge on
-the web `health` event and the NMEA Streams pane, not per value on the `state` event.
+the web `health` event and the NMEA Streams pane. Per-FIELD provenance rides the `state` event
+separately; see *Per-field provenance* below.
 
 Failover is reachable **on demand** via the per-input RX mute above, which is how signal loss is
 rehearsed without unplugging a cable. Note the two windows this exposes: the channel emits nothing
 between the mute and liveness expiring, and because auto mode requires `movement.mode: static`, the
 post-fallback generator holds the last seeded position while still reporting the last SOG/COG.
+
+### Per-field provenance (RM-009)
+
+`SharedState` is the single write choke point for vessel state, so provenance is recorded there: a
+`dict[str, Prov]` side-map holding `(source, cls, ts)` per field, written under the **same lock** as
+the snapshot. `snapshot_with_provenance()` returns both in one lock acquisition — reading them
+separately would tear (value from one commit, tag from another) at the 4 Hz serialization cadence
+against a 10-20 Hz physics writer.
+
+It is a side-map and **not** a `VesselState` field on purpose: embedded in the frozen dataclass a tag
+would be carried forward by every `dataclasses.replace` that did not touch the field, so a stale tag
+would ride along on unrelated writes.
+
+`update()` takes a **required keyword-only** `_sources` — a string tagging every key, or a dict
+tagging per key. Required rather than defaulted so a new writer cannot silently inherit `"sim"`. The
+per-key form is load-bearing: the physics tick commits `utc` alongside pitch/roll in ONE atomic swap,
+and `utc` may be a live GNSS instant while its siblings are simulated. Splitting that into two calls
+would tear the swap a generator depends on to read time and position off one snapshot.
+
+Writer tags: `sim` (physics), `clock:<tier>` (`utc`), `live:<input_id>` + class (auto passthrough),
+`rx:<channel_id>` (a duplex channel's own RX), `replay`, `manual`, `config` (initial).
+
+**Expiry happens at read time, and is the whole point.** `Engine.provenance()` returns a SPARSE map
+(`{field: "LIVE"}`; absent means SIM, so a new field defaults to the safe answer). A `live:<input>`
+tag only survives while the router still names that input the winner for the class the value arrived
+on — the stored class is what makes that check possible without a field→class table. The moment the
+source dies the value freezes at its last reading and the tag degrades to SIM; without that re-check
+a frozen position would read LIVE forever. The `rx:` path cannot use the router (liveness is keyed by
+`(input_id, cls)` and a duplex channel has no such row) so it ages on its write timestamp instead.
+
+The clock tag reaches the physics tick as an **injected callable**, defaulting to `"simulated"`. The
+tick's clock is a `_Clock` protocol — a `TimeAuthority` only in auto mode, a bare `TimeSource`
+otherwise, which has no `source_tag()`. Reaching for it unconditionally would raise `AttributeError`,
+and the run loop's blanket `except` turns that into a dead physics thread with every channel frozen.
 
 ### Unified Time Authority (single-source position + time)
 
@@ -248,8 +283,9 @@ The stream carries three named event types:
 - **`nmea`** — every emitted sentence line, per channel (feeds the NMEA Streams tab).
 - **`health`** — per-channel/port health + status transitions.
 - **`state`** — a snapshot of the synchronized vessel state at **~4 Hz** (feeds the Conning gauges),
-  as flat JSON values. Provenance (LIVE/SIM/OFF) is **not** carried per value here — it is per channel on
-  the `health` event (per-value state provenance is a planned enhancement, not yet shipped).
+  as flat JSON values, plus a sparse `provenance` map (`{field: "LIVE"}`; absent means SIM) resolved
+  per frame — see *Per-field provenance*. The same map rides `GET /api/state` so the UI's first paint
+  is correct before any stream frame arrives. Channel-level LIVE/SIM/OFF stays on the `health` event.
 
 ### HTTP endpoints
 

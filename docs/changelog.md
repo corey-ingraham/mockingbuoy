@@ -4,6 +4,51 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-07-28 — Per-field provenance: the conning pills now tell the truth [RM-009, ISSUE-027]
+
+The conning panel pills were derived from the owning channel's **role**, not from who wrote the
+value — `roleLive("gps")` asks *"is the GPS channel's source live?"*, never *"where did this number
+come from?"* Two failures followed, both verified before being fixed:
+
+- **`pill-attitude` claimed LIVE over wholly simulated values.** It tracked `roleLive("heading")`,
+  but `pitch_deg`/`roll_deg` come from the sea-state model, are excluded from `_UPDATE_RANGES`, and
+  appear nowhere in `rx.parse_line`. A live compass made the Attitude panel read LIVE while every
+  number in it was synthetic — exactly what `design-decisions.md` says the tag exists to prevent.
+- **A frozen position kept reading LIVE.** Auto mode requires `movement.mode: static`, so when a
+  source dies nothing rewrites lat/lon; the pill only moved when the *channel* fell back.
+
+Provenance is now recorded at the `SharedState` write choke point as a `(source, cls, ts)` side-map
+and resolved at read time.
+
+- **Expiry is the feature, not capture.** `Engine.provenance()` returns a sparse `{field: "LIVE"}`
+  map (absent means SIM, so a new field defaults to the safe answer). A `live:<input>` tag survives
+  only while the router still names that input the winner for the class the value arrived on —
+  storing the class at write time is what makes that check possible without a field→class table.
+- **A side-map, not a `VesselState` field** — not for constructor breakage (defaulted trailing
+  fields are supported), but because a tag inside the frozen snapshot would be carried forward by
+  every `replace()` that didn't touch the field, so stale tags would ride along on unrelated writes.
+- **`update()` takes a required keyword-only `_sources`**, string or per-key dict. Required so a new
+  writer can't silently inherit `sim`. The per-key form is load-bearing: the physics tick commits a
+  possibly-live-GNSS `utc` alongside simulated pitch/roll in **one** atomic swap, and splitting that
+  would tear the swap a generator relies on to read time and position off a single snapshot.
+- **The clock tag is an injected callable defaulting to `"simulated"`.** The tick's clock is a
+  protocol — a `TimeAuthority` only in auto mode, a bare `TimeSource` otherwise with no
+  `source_tag()`. Reaching for it unconditionally raises `AttributeError`, which the run loop's
+  blanket `except` converts into a dead physics thread and every channel frozen. Guarded by a test.
+- **Single-lock `snapshot_with_provenance()`** — reading value and tag separately would tear at
+  4 Hz against a 10-20 Hz writer.
+- Pills aggregate over **live-capable fields only**. `stw_kn`/`rot_dpm` are shown in the Heading
+  panel but can never be live-seeded (`_STATE_FORMATTERS` is `{RMC,GGA,VTG,HDT,HDG}`), so including
+  them would have pinned that panel to SIM forever — a regression no simulate-mode test could catch.
+  An automated two-input test now asserts each pill's field group really can reach LIVE.
+- Carried on the SSE `state` frame **and** `GET /api/state`, since the UI fetches the latter for its
+  first paint.
+
+Per-readout badges (as opposed to per-panel) remain outstanding as RM-028; the data is now on the
+wire, so that follow-up is UI-only.
+
+---
+
 ## 2026-07-28 — Conning: off-course / off-track bars rescaled (wide + flat, not just bigger)
 
 After [74a2c50](#) the two autopilot deviation strips read as undersized against every neighbouring

@@ -2287,3 +2287,52 @@ def test_persist_rejects_device_path_in_input_slot(client) -> None:
         json={"inputs": [{"id": "gps_in", "function": "gps", "path": "/dev/ttyUSB9"}]},
     )
     assert resp.status_code == 422
+
+
+# --- per-field provenance (RM-009) -------------------------------------------------
+
+
+def test_state_endpoint_carries_provenance(client: TestClient) -> None:
+    """The block must be on /api/state, not just the SSE frame: the UI fetches this endpoint for
+    its FIRST paint, so omitting it here would leave every conning pill wrong until a stream frame
+    arrived."""
+    body = client.get("/api/state").json()
+    assert "provenance" in body
+    assert isinstance(body["provenance"], dict)
+
+
+def test_provenance_is_empty_in_simulate_mode(client: TestClient) -> None:
+    """Sparse means absent == SIM. The shipped config is simulate, so nothing can be live and the
+    map is empty — a value that is merely unlisted must never be read as LIVE."""
+    assert client.get("/api/state").json()["provenance"] == {}
+
+
+def test_stopped_state_payload_omits_provenance_entirely(client: TestClient) -> None:
+    """Stopped, the endpoint collapses to ``{"running": False}`` (as it already did for
+    ``driven_fields``). Absent is the SAFE reading — the client treats a missing/omitted field as
+    SIM — so nothing can be left claiming LIVE after the engine goes away."""
+    assert client.post("/api/control", json={"action": "stop"}).status_code == 200
+    body = client.get("/api/state").json()
+    assert body == {"running": False}
+    assert "provenance" not in body
+
+
+def test_provenance_never_leaks_a_device_path(client: TestClient) -> None:
+    """R19: tags name input SLOTS, never the configured device path."""
+    raw = client.get("/api/state").text
+    assert "/dev/serial" not in raw
+    assert "CHANGE-ME" not in raw
+
+
+def test_provenance_resolves_live_fields_to_the_wire_vocabulary() -> None:
+    """Unit-level: the engine resolves to the same LIVE token the UI compares against."""
+    from tests.test_input_feed import _auto_engine, _rmc
+
+    engine = _auto_engine(None)
+    line = _rmc(12.3)
+    engine._dispatch_rx("gps_in", line)
+    engine._worker_by_id["gps"]._on_passthrough(("gps_in", "gnss", line))
+
+    prov = engine.provenance()
+    assert prov["lat"] == "LIVE"
+    assert all(v == "LIVE" for v in prov.values())  # only LIVE is ever emitted; SIM is omitted

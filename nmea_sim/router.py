@@ -136,6 +136,16 @@ class Router:
             ]
         return min(live) if live else None
 
+    def channel_for_class(self, cls: str) -> str | None:
+        """The channel id that consumes ``cls``, or ``None`` if no channel owns that class.
+
+        Inverse of :meth:`channel_class`. The lookup already existed inlined in :meth:`note_rx`;
+        it is public here so the provenance resolver can go field -> class -> channel and ask
+        :meth:`winner` whether a stored ``live:<input>`` tag is still true.
+        """
+        role = CLASS_TO_ROLE.get(cls)
+        return None if role is None else self._channel_by_role.get(role)
+
     def channel_class(self, channel_id: str) -> str | None:
         """The sentence class this channel's role consumes, or ``None`` if it consumes none.
 

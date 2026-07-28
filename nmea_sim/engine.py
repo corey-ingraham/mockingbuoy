@@ -112,6 +112,15 @@ _RX_PARSE_ERRORS = (pynmea2.ParseError, ValueError, TypeError, AttributeError)
 _TIME_FORMATTERS = frozenset({"RMC", "ZDA"})
 _STATE_FORMATTERS = frozenset({"RMC", "GGA", "VTG", "HDT", "HDG"})
 
+# Time Authority tiers that count as a genuinely live clock. "ntp"/"system" are a local machine
+# clock and "simulated"/"hold" are synthetic, so none of those may report LIVE.
+_LIVE_CLOCK_TAGS = frozenset({"gps", "sat"})
+
+# How long a duplex channel's own RX state write stays LIVE without a refresh. Mirrors the default
+# InputSpec.liveness_timeout_s; the router cannot arbitrate this path (it keys liveness by
+# (input_id, cls) and a channel has no such row), so the write timestamp is the only signal.
+_RX_STATE_LIVENESS_S = 3.0
+
 # A device may emit ZDA only transiently. If the winning GNSS source falls silent on ZDA for longer
 # than this, the "source sends its own ZDA" latch expires so synthesis resumes (DOM10) — otherwise a
 # transiently-ZDA device loses its ZDA on the wire forever.
@@ -639,10 +648,18 @@ class _PhysicsThread(threading.Thread):
         stop: threading.Event,
         route: _RouteDriver | None = None,
         replay_mode: bool = False,
+        clock_tag: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(name="physics", daemon=True)
         self._shared = shared
         self._physics = physics
+        # How to tag the provenance of the ``utc`` this tick commits. The clock is a _Clock PROTOCOL
+        # here: in auto mode it is a TimeAuthority (which knows whether a live GNSS source is
+        # disciplining it), but in simulate/replay it is a bare TimeSource with NO ``source_tag``.
+        # Calling that unconditionally would raise AttributeError, which ``run``'s blanket except
+        # turns into a dead physics thread and every channel frozen — so the tag arrives as an
+        # injected callable and defaults to the honest simulate answer instead.
+        self._clock_tag: Callable[[], str] = clock_tag or (lambda: "simulated")
         self._period = 1.0 / hz
         self._stop_event = stop
         # Route driver (simulate route playback) and replay flag are both None/False in the common
@@ -706,7 +723,15 @@ class _PhysicsThread(threading.Thread):
                 changes.pop(owned, None)
         if route_changes:
             changes = {**route_changes, **changes}
-        self._shared.update(**changes)
+        # Mixed provenance in ONE atomic commit: everything the physics engine derives is genuinely
+        # simulated, but ``utc`` may be a live GNSS instant resolved by the Time Authority. Tagging
+        # the whole write "sim" would mislabel a real clock; splitting it into two updates would
+        # tear the atomic swap that lets a generator read time and position off one snapshot.
+        sources: dict[str, str] = dict.fromkeys(changes, "sim")
+        if "utc" in sources:
+            tag = self._clock_tag()
+            sources["utc"] = f"clock:{tag}"
+        self._shared.update(_sources=sources, **changes)
 
 
 # --- single-source ZDA carve-out (auto mode, GPS channel only) --------------------
@@ -992,7 +1017,7 @@ class _ChannelWorker(threading.Thread):
         now = time.monotonic()
         if self._router is not None and input_id == self._router.winner(self._spec.id, cls, now):
             self._inject(line)
-            self._feed_passthrough_state(line)
+            self._feed_passthrough_state(line, input_id, cls)
             # Single-source ZDA carve-out (GPS channel only): if the winning source sent an RMC but
             # no ZDA, synthesize one from the RMC's exact time and inject it here on the WORKER
             # thread, so time and position never split and the single-writer invariant holds.
@@ -1020,7 +1045,9 @@ class _ChannelWorker(threading.Thread):
         self._emitted += 1
         self._last_emit = time.monotonic()
 
-    def _feed_passthrough_state(self, line: str) -> None:
+    def _feed_passthrough_state(
+        self, line: str, input_id: str = "", cls: str | None = None
+    ) -> None:
         # Seed shared state from the live line so that when the source dies the generator resumes
         # from the last real values (seamless failover). NO rx_accept whitelist here: in auto the
         # router is the trust boundary and the line is already checksum-verified. Unparseable lines
@@ -1032,7 +1059,10 @@ class _ChannelWorker(threading.Thread):
         with contextlib.suppress(*_RX_PARSE_ERRORS):
             changes = _sanitize_state_changes(rx.parse_line(line))  # H9 finite/range gate
             if changes:
-                self._shared.update(**changes)
+                # Carry the winning input AND the sentence class: the class is what lets the
+                # resolver later ask the router "is this input still the winner?" without needing
+                # a field -> class table that does not exist anywhere.
+                self._shared.update_tagged(changes, source=f"live:{input_id}", cls=cls)
 
     def _fan_out(self, line: str) -> None:
         for sink in self._sinks:
@@ -1211,13 +1241,14 @@ class _ReplayThread(threading.Thread):
             with contextlib.suppress(*_RX_PARSE_ERRORS):
                 changes = _sanitize_state_changes(rx.parse_line(line))  # H9 finite/range gate
                 if changes:
-                    self._shared.update(**changes)
+                    # A capture is recorded data, not a live sensor: it resolves SIM, never LIVE.
+                    self._shared.update(_sources="replay", **changes)
         if fmt in _TIME_FORMATTERS:
             with contextlib.suppress(*_RX_PARSE_ERRORS):
                 utc = rx.parse_time(line)
                 if utc is not None:
                     self._shared.update(
-                        utc=utc
+                        _sources="replay", utc=utc
                     )  # replayed clock: exempt from monotonic clamp (R51)
         worker.enqueue(_ReplayLine(line))
 
@@ -1365,6 +1396,10 @@ class Engine:
             # Physics owns own-ship lat/lon/utc only under FULL replay; under ais-only own-ship is
             # simulated, so physics dead-reckons normally (replay_mode False).
             replay_mode=full_replay,
+            # Only the TimeAuthority can say whether the clock is disciplined by a live GNSS source.
+            # Bound here (where it is actually known) and left None otherwise, so the tick never
+            # reaches for ``source_tag`` on a bare TimeSource that has no such method.
+            clock_tag=(None if self._time_authority is None else self._time_authority.source_tag),
         )
 
         # Sinks that own I/O resources (serial ports, TCP taps) and must be started before
@@ -1505,17 +1540,36 @@ class Engine:
                 framing=spec.framing,
                 direction=spec.direction,
                 on_rx=self._rx_monitor(spec),
-                state_feed=self._feed_state,
+                state_feed=self._make_state_feed(spec.id),
                 rx_feeds_state=spec.rx_feeds_state,
                 rx_accept=spec.rx_accept,
             )
         raise NotImplementedError(f"writer backend {backend!r} is not available yet")
 
-    def _feed_state(self, changes: dict[str, float]) -> None:
-        """RX state seam: apply whitelisted, checksum-verified fields to shared state."""
+    def _make_state_feed(self, channel_id: str) -> Callable[[dict[str, float]], None]:
+        """Bind a channel id to the RX state seam so its writes carry that channel's provenance.
+
+        ``SerialPort`` hands this a bare changes dict (``Callable[[dict], None]``) with no identity,
+        so the id is captured in a closure here rather than widening the transport's contract —
+        the same idiom as ``_make_dispatch`` / ``_make_raw_feed`` / ``_make_input_line_feed``.
+        """
+
+        def feed(changes: dict[str, float]) -> None:
+            self._feed_state(changes, channel_id)
+
+        return feed
+
+    def _feed_state(self, changes: dict[str, float], channel_id: str = "") -> None:
+        """RX state seam: apply whitelisted, checksum-verified fields to shared state.
+
+        Tagged ``rx:<channel>`` rather than ``live:<input>``: this is a DUPLEX channel reading its
+        own wire, and the router holds liveness by ``(input_id, cls)`` — it has no row for a channel
+        id, so a router lookup here would resolve SIM forever. The resolver ages this tag on the
+        stored timestamp instead.
+        """
         clean = _sanitize_state_changes(changes)  # H9: never let a non-finite/out-of-range field in
         if clean:
-            self._shared.update(**clean)
+            self._shared.update_tagged(clean, source=f"rx:{channel_id}", cls=None)
 
     def _make_dispatch(self, input_id: str) -> Callable[[str], None]:
         """Bind an input id to the RX dispatcher so a reader's lines route to the right channel."""
@@ -1874,7 +1928,7 @@ class Engine:
             self._physics_engine.set_heading_setpoint(
                 float(cast("SupportsFloat", changes["heading_true_deg"]))
             )
-        return self._shared.update(**changes)
+        return self._shared.update(_sources="manual", **changes)
 
     def set_channel_enabled(self, channel_id: str, enabled: bool) -> bool:
         """Mute/unmute one channel at runtime; False when no channel has that id.
@@ -1887,6 +1941,43 @@ class Engine:
                 worker.set_enabled(enabled)
                 return True
         return False
+
+    def provenance(self) -> dict[str, str]:
+        """Resolve each state field's provenance to ``"LIVE"`` right now; SIM fields are omitted.
+
+        SPARSE by design: absent means SIM, so the 4 Hz frame stays small and a new field defaults
+        to the safe answer rather than silently claiming LIVE.
+
+        Expiry happens HERE, not at write time — that is the whole point. A stored ``live:<input>``
+        tag only survives while the router still names that input the winner for the class the value
+        arrived on; the moment the source dies the value freezes at its last reading and this
+        degrades to SIM. Without that re-check a frozen position would read LIVE forever, which is
+        precisely the mistake the tag exists to prevent. The ``rx:`` path cannot use the router (its
+        liveness is keyed by ``(input_id, cls)``, and a duplex channel has no such row), so it ages
+        on the write timestamp instead.
+        """
+        _, prov = self._shared.snapshot_with_provenance()
+        now = time.monotonic()
+        out: dict[str, str] = {}
+        for field_name, entry in prov.items():
+            source = entry.source
+            if source.startswith("live:"):
+                if self._router is None or entry.cls is None:
+                    continue
+                channel_id = self._router.channel_for_class(entry.cls)
+                if channel_id is None:
+                    continue
+                if self._router.winner(channel_id, entry.cls, now) == source[len("live:") :]:
+                    out[field_name] = "LIVE"
+            elif source.startswith("rx:"):
+                if (now - entry.ts) <= _RX_STATE_LIVENESS_S:
+                    out[field_name] = "LIVE"
+            elif source.startswith("clock:"):
+                # The Time Authority's own tier vocabulary: only a real GNSS fix is LIVE; ntp /
+                # system / simulated / hold are all locally generated time.
+                if source[len("clock:") :] in _LIVE_CLOCK_TAGS:
+                    out[field_name] = "LIVE"
+        return out
 
     def set_input_enabled(self, input_id: str, enabled: bool) -> bool:
         """Mute/unmute one INPUT slot at runtime; False when no input has that id.

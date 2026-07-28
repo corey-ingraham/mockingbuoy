@@ -1213,6 +1213,16 @@ class EngineManager:
             raise RuntimeError("engine is not running")
         return self._engine.set_channel_enabled(channel_id, enabled)
 
+    def provenance(self) -> dict[str, str]:
+        """Per-field provenance for the display, resolved now; ``{}`` when stopped.
+
+        Sparse (``{field: "LIVE"}``, SIM omitted). A stopped engine yields ``{}`` so every value
+        reads SIM rather than freezing at whatever it last claimed.
+        """
+        if self._engine is None:
+            return {}
+        return self._engine.provenance()
+
     def set_input_enabled(self, input_id: str, enabled: bool) -> bool:
         """Toggle one input slot's RX feed on/off; ``False`` when the id is unknown.
 
@@ -1554,6 +1564,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # A3b: advisory list of fields the engine overwrites each tick (route/auto-RX/depth-sim) so
         # the editor can grey them out. Always a list (possibly empty) — absent-safe for the UI.
         out["driven_fields"] = _driven_fields(manager)
+        # RM-009: per-field LIVE provenance, resolved at read time. Carried HERE as well as on the
+        # SSE frame because the UI fetches this endpoint for its initial paint — omitting it would
+        # leave every conning pill wrong until the first stream frame arrived.
+        out["provenance"] = manager.provenance()
         return out
 
     @app.post("/api/control")
@@ -2369,6 +2383,9 @@ async def _state_broadcast_loop(manager: EngineManager, broker: Broker) -> None:
                     # A3b: advisory driven-fields list (route/auto-RX/depth-sim) so the editor's
                     # grey-out stays live off the same stream the conning display reads.
                     frame["driven_fields"] = _driven_fields(manager)
+                    # RM-009: per-field LIVE provenance (sparse; absent == SIM). Resolved per frame
+                    # so a live tag expires with its source rather than outliving it.
+                    frame["provenance"] = manager.provenance()
                     # Display-only instrument sim (propulsion/fuel/environment/autopilot):
                     # SSE-only, never on the wire; rendered amber so it is not mistaken for
                     # NMEA-backed truth. Grafted here, not in ``_state_to_dict``.

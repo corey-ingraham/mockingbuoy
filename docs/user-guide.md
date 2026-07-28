@@ -43,12 +43,20 @@ the display stays colourblind-safe):
 - **amber + "SIM"** — synthesized from vessel state.
 - **grey + "OFF"** — the source channel is disabled.
 
-Today this tag is **per channel, not per value**: it is each channel's `source` badge, shown on the
-NMEA Streams panes and carried on the `health` event. The conning display itself shows the
-**time-source** label but does *not* yet badge each individual reading — so on the conning tab you
-cannot tell, value by value, which readings are real and which are simulated. Per-value tagging is
-planned ([RM-009](roadmap.md#rm-009), tracked as [ISSUE-027](issues.md#issue-027)); until it lands,
-use the Streams tab's per-channel badges to establish what is live.
+On the conning tab the tag is **per panel**, and it reflects the provenance of the values that panel
+actually displays — not merely whether some channel has a live source. A panel reads **LIVE** only
+when *every* one of its readings that could come from a sensor really is coming from one right now;
+otherwise it reads SIM. Two consequences worth knowing:
+
+- **A panel degrades on its own when a source dies.** Because the tag is re-checked continuously,
+  a position that freezes when its GNSS goes quiet flips to **SIM** within the input's
+  `liveness_timeout_s` — it does not keep claiming LIVE over a stale number.
+- **Some panels are always SIM, correctly.** Attitude (pitch/roll), Environment (wind, weather) and
+  Depth are synthesized by the simulator — no NMEA sentence feeds them — so they never claim LIVE.
+
+Individual *readouts* are not badged separately yet; the panel pill is the unit. Per-readout tagging
+is tracked as a follow-up. The Streams tab keeps the three-state channel badges (`LIVE`/`SIM`/`OFF`),
+which answer a different question: what each channel is putting on the wire.
 
 ### 2. NMEA Streams
 
@@ -313,8 +321,8 @@ Wherever a **channel** is shown, its provenance is labelled with **both colour a
 - **amber + "SIM"** — the channel is generating from vessel state.
 - **grey + "OFF"** — the channel is disabled.
 
-Individual conning *values* are not yet badged this way — see the note in *The Conning Display*
-above, and [ISSUE-027](issues.md#issue-027).
+On the conning tab the same vocabulary applies **per panel**, reflecting where that panel's values
+came from — see *The Conning Display* above. Individual readouts are not badged separately yet.
 
 Colour is never the only signal, so the readout is colourblind-safe. The Conning tab also shows
 a **time-source label** reflecting the active Time Authority tier — GPS, SAT, NTP (local

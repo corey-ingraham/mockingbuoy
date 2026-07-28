@@ -16,7 +16,14 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
-### ISSUE-027 — Docs promise per-value LIVE/SIM/OFF tagging that does not exist · planned (2026-07-28)
+### ISSUE-027 — Docs promise per-value LIVE/SIM/OFF tagging that does not exist · done (2026-07-28)
+
+**Resolved by [RM-009](roadmap.md#rm-009).** Provenance is now tracked per state field and the
+conning panel pills report it, so the documents no longer overstate the product. Investigation also
+found the original framing here was itself too harsh: the conning tab *did* have per-panel pills and
+a channel source-chip strip — they were simply derived from the channel's ROLE rather than from who
+wrote the value, which is why `pill-attitude` could read LIVE over always-simulated pitch/roll.
+Per-readout badges remain outstanding as [RM-028](roadmap.md#rm-028). Original report below.
 
 Same class as [ISSUE-024](#issue-024) (documented mechanisms with no implementation), but
 **safety-relevant**: the docs tell an operator they will be warned when a displayed value is

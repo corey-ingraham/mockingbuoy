@@ -92,7 +92,16 @@ triplication of the state-range table across `validate.py`, `web/app.py`, and `s
 **Goal:** plotter-native transports with zero serial hardware. The Writer seam in `nmea_sim/engine.py`
 is already shaped for it.
 
-### RM-009 — Per-value LIVE/SIM/OFF provenance on the state stream · planned · M
+### RM-009 — Per-value LIVE/SIM/OFF provenance on the state stream · done (2026-07-28) · M
+
+**Shipped per FIELD and per PANEL**, not yet per individual readout. Provenance is recorded at the
+`SharedState` write choke point and resolved at read time against router liveness, so the conning
+panel pills now report where their values came from and a live tag expires with its source. The
+defect that motivated it — `pill-attitude` reading LIVE over always-simulated pitch/roll because it
+tracked the heading *channel* — is fixed and guarded by a test. Badging each readout individually is
+a UI-only follow-up (see RM-028). Details in `docs/ref/architecture.md`, *Per-field provenance*.
+
+<details><summary>Original entry</summary>
 
 **Goal:** tag each state field with its source. Safety-relevant, and `nmea_sim/state.py` is a single
 choke point — every writer funnels through one locked `SharedState.update()`, so provenance can be
@@ -111,6 +120,22 @@ field and re-resolve at serialization against `Router.winner()`, which already t
 The per-input toggle makes this directly testable: mute a slot and assert the tag decays.
 
 **Open question:** what `OFF` means for a *value* (state fields are not 1:1 with channels).
+*Resolved:* dropped. Per-field tags are LIVE/SIM only; `OFF` stays channel-level on the Streams tab,
+where it means "this channel is muted" — a question about the wire, not about a value's origin.
+
+</details>
+
+### RM-028 — Per-readout provenance badges on the conning display · planned · S
+
+**Goal:** badge individual conning readouts, not just their panel. The data already exists
+(RM-009 puts a sparse per-field `provenance` map on the `state` frame), so this is UI-only.
+
+Attach points are cheap and were scouted during RM-009: `.coord-row` has an **empty third grid
+column** (LAT/LON/UTC), and `.v-live`/`.v-sim` classes already sit on nearly every readout but both
+currently resolve to plain text colour — a wired-up hook at zero layout cost. Constraint: the conning
+layout is a one-screen lock with only a few px of slack in places (ISSUE-025/026), so a badge must
+ride an existing line; anything adding a line is not viable. `#heading-big` and the ship/fuel numbers
+are inside SVG viewBoxes, where an in-viewBox badge costs no layout at all.
 
 ### RM-008 — Scenario scripting · planned · M
 
