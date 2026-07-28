@@ -16,6 +16,42 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-027 — Docs promise per-value LIVE/SIM/OFF tagging that does not exist · planned (2026-07-28)
+
+Same class as [ISSUE-024](#issue-024) (documented mechanisms with no implementation), but
+**safety-relevant**: the docs tell an operator they will be warned when a displayed value is
+simulated, and no such warning is ever shown.
+
+Two documents assert it as shipped behaviour:
+
+- `docs/user-guide.md:39-44` — "Every value is tagged **LIVE / SIM / OFF** using **both colour and
+  text**", with a per-state legend, in the *Conning display* section.
+- `docs/user-guide.md:303-308` — "Wherever a value or channel is shown, its provenance is labelled".
+- `docs/design-decisions.md:371` — recorded as a made decision: "Tag **every displayed value** with
+  its provenance", justified explicitly on safety ("acting on a simulated value as though it were
+  live is the mistake this tag exists to prevent").
+
+Verified absent, by reading the whole path rather than inferring:
+
+| Hop | State |
+|---|---|
+| `web/app.py:243` `_state_to_dict` | flat scalars only — carries no provenance field at all |
+| `state` SSE frame → conning paint | consumes those scalars; no per-value badge exists in `app.js` |
+| `web/app.py:290` `driven_fields` | the nearest thing, and it is **not** this: config-derived (not live), advisory, and it only greys **Config-tab inputs** — it never reaches the conning display |
+
+`docs/ref/architecture.md:203-204, 251-252` states the truth ("not per value on the `state` event";
+"a planned enhancement, not yet shipped"), so the doc set currently **contradicts itself** — which
+is how the claim survived: architecture.md was corrected while the user guide was not.
+
+What *is* implemented is **per-channel** provenance: each channel's `OFF` / `LIVE:<input>` / `SIM`
+`source` badge on the 1 Hz `health` frame, rendered on the NMEA Streams panes.
+
+**Fix:** the feature itself is [RM-009](roadmap.md#rm-009). Until it lands, the two documents above
+must describe what exists (channel-level badges) and mark per-value tagging as planned — done in
+this commit, so the register entry stands only for the missing *feature*, not the false claim.
+
+---
+
 ### ISSUE-026 — Left conning column overflows silently at `--ui-scale: 1` · planned (2026-07-28)
 
 Found while measuring the [ISSUE-025](#issue-025) sibling; **pre-existing and unrelated to that

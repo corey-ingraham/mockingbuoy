@@ -36,12 +36,19 @@ vessel state:
 The gauges update live from a **`state` server-sent event (~4 Hz)** carried on the same stream as the
 raw `nmea` lines and the `health` events, so the display tracks the engine without polling.
 
-Every value is tagged **LIVE / SIM / OFF** using **both colour and text** (never colour alone,
-so the display stays colourblind-safe):
+Provenance is tagged **LIVE / SIM / OFF** using **both colour and text** (never colour alone, so
+the display stays colourblind-safe):
 
 - **green + "LIVE"** — sourced from a real sensor on a live input.
 - **amber + "SIM"** — synthesized from vessel state.
 - **grey + "OFF"** — the source channel is disabled.
+
+Today this tag is **per channel, not per value**: it is each channel's `source` badge, shown on the
+NMEA Streams panes and carried on the `health` event. The conning display itself shows the
+**time-source** label but does *not* yet badge each individual reading — so on the conning tab you
+cannot tell, value by value, which readings are real and which are simulated. Per-value tagging is
+planned ([RM-009](roadmap.md#rm-009), tracked as [ISSUE-027](issues.md#issue-027)); until it lands,
+use the Streams tab's per-channel badges to establish what is live.
 
 ### 2. NMEA Streams
 
@@ -300,11 +307,14 @@ profile). Reserve `full` for a capture you recorded yourself that already carrie
 
 ## Reading the Indicators
 
-Wherever a value or channel is shown, its provenance is labelled with **both colour and text**:
+Wherever a **channel** is shown, its provenance is labelled with **both colour and text**:
 
 - **green + "LIVE"** — a real sensor on a live input is the source.
-- **amber + "SIM"** — the value is simulated from vessel state.
-- **grey + "OFF"** — the source channel is disabled.
+- **amber + "SIM"** — the channel is generating from vessel state.
+- **grey + "OFF"** — the channel is disabled.
+
+Individual conning *values* are not yet badged this way — see the note in *The Conning Display*
+above, and [ISSUE-027](issues.md#issue-027).
 
 Colour is never the only signal, so the readout is colourblind-safe. The Conning tab also shows
 a **time-source label** reflecting the active Time Authority tier — GPS, SAT, NTP (local

@@ -373,6 +373,13 @@ time consumers without a dedicated sentence).
 **Decision** Tag every displayed value with its provenance — `LIVE` (green, real sensor), `SIM` (amber,
 simulated), `OFF` (grey) — using **both** colour and text, never colour alone.
 
+**Status: partly implemented.** The vocabulary, the colour+text pairing and the accessibility rule are
+shipped and binding — but only **per channel** (each channel's `source` badge on the `health` frame and
+the Streams panes). Tagging *every displayed value* is not built: the `state` event carries bare scalars
+and the conning display badges no individual reading. That half is [RM-009](roadmap.md#rm-009), tracked
+as [ISSUE-027](issues.md#issue-027). The decision below stands as the target; do not read it as a
+description of current behaviour.
+
 **Context** In Auto mode a single reading may be real one moment and simulated the next. An operator
 must be able to tell, at a glance, which values are genuine sensor data and which are synthetic —
 including operators with colour vision deficiency.

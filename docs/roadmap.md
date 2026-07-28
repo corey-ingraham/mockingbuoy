@@ -95,7 +95,22 @@ is already shaped for it.
 ### RM-009 — Per-value LIVE/SIM/OFF provenance on the state stream · planned · M
 
 **Goal:** tag each state field with its source. Safety-relevant, and `nmea_sim/state.py` is a single
-choke point. Also makes `docs/ref/architecture.md` true — it already describes this as shipped.
+choke point — every writer funnels through one locked `SharedState.update()`, so provenance can be
+recorded in one place rather than threaded through five call paths.
+
+Closes the doc gap filed as [ISSUE-027](issues.md#issue-027): the user guide and design register
+promise per-value tagging that does not exist. (An earlier note here claimed this would "make
+`architecture.md` true — it already describes this as shipped"; that is stale, architecture.md has
+since been corrected to state plainly that per-value provenance is *not* shipped.)
+
+**The hard part is expiry, not capture.** "Last writer wins" is wrong here and unsafe: auto mode
+requires `movement.mode: static`, so once a live source dies nothing rewrites `lat`/`lon` and the
+field holds its last live value indefinitely — a naive tag would keep reading `LIVE` on a frozen
+position forever, precisely the mistake the tag exists to prevent. Store `(source, timestamp)` per
+field and re-resolve at serialization against `Router.winner()`, which already tracks liveness.
+The per-input toggle makes this directly testable: mute a slot and assert the tag decays.
+
+**Open question:** what `OFF` means for a *value* (state fields are not 1:1 with channels).
 
 ### RM-008 — Scenario scripting · planned · M
 
