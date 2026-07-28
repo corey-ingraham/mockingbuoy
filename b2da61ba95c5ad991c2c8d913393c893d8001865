@@ -1,0 +1,19 @@
+Also contains an unrelated change: the conning off-course / off-track deviation-bar
+rescale. Two concurrent sessions were editing this tree; a broad `git add` swept the
+in-progress UI work into this feature commit, so the subject line does not describe it.
+
+Belonging to the bar rescale, NOT to the per-input On/Off toggle:
+
+  web/static/index.html   both `viewBox` attrs, 220x44 -> 360x28
+  web/static/app.js       AP_W/AP_H/AP_CX/AP_CY/AP_X0/AP_X1/AP_SPAN constants and every
+                          coordinate in buildLinearIndicator() + setLinearMarker()
+  web/static/app.css      the `.ap-ind svg` rule (dead 260px cap dropped, cap reordered to
+                          `min(96%, 620px * --ui-scale)`) and
+                          `.conn-col-right .p-autopilot` min-height 292px -> 304px
+
+Rationale and measurements: docs/changelog.md, entry
+"2026-07-28 - Conning: off-course / off-track bars rescaled (wide + flat, not just bigger)",
+committed separately as 67b240b. Related findings: ISSUE-025, ISSUE-026 (98dda10).
+
+History was left intact deliberately - this commit also carries another session's feature
+work, so splitting it was judged riskier than annotating it.
