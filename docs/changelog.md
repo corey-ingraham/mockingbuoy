@@ -4,6 +4,123 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-08-11 — Own-ship AIS identity is operator-settable [RM-032]
+
+Pulled forward from the roadmap and landed the same day it was filed, because the shipped default was
+about to go on a bench wire: MMSI `366000001` / `MOCKINGBUOY` sits in an **allocated** US MID, so it is
+not merely synthetic — it is plausibly a real vessel's, and it was reachable only by hand-editing JSON
+on the appliance.
+
+- **`web/app.py`** — new `AisIdentityDefault` allow-list on `POST /api/config/initial-state`, merging
+  onto the `role == "ais"` channel's `ais.own_ship`. All six `AisOwnShip` fields (`mmsi`, `class`,
+  `name`, `call_sign`, `ship_type`, `imo`) and nothing else: `extra="forbid"` keeps the traffic/type5
+  keys out, they have their own allow-list. Skip-on-None per field, so a one-field correction from the
+  UI cannot blank the rest. `class` uses a pydantic alias — it is a Python keyword.
+- **Bounds are not duplicated.** `validate._validate_ais_identity` stays the single gate and the merged
+  config is deep-validated before the write, so an out-of-range MMSI is a 400 quoting the real rule
+  rather than a second copy of the bound that can drift. Each rejected case is one pyais silently
+  corrupts on the wire (MMSI wraps at 30 bits, `ship_type` truncates, text clips).
+- **`index.html` / `app.js`** — an *Own-ship AIS identity* card with a `MID nnn` pill that warns while
+  typing when the MMSI falls in an allocated administration range (201-775), plus advice on the 9-digit
+  shape and the AIS 6-bit character set before the save round-trip.
+- **`ops/ais-bench-check.py`** (new) — a bench acceptance script that observes the *running* service
+  through its own instrumentation (aggregate tap + `input_nmea` SSE + `/healthz`) rather than opening
+  ports the engine already holds exclusively. Checks ports are genuinely open via `lsof` (the ISSUE-020
+  guard — `sinks[].down` cannot distinguish a dead port), that transparent relay is wired and stamps no
+  liveness, that arriving traffic verifies, that transparency holds sentence-body-wise, and that a mute
+  flips to SIM within 2 s rather than after `liveness_timeout_s`. Restores the mute state even on
+  failure.
+
+RM-032 items 3 (named-identity picker) and 4 (identity provenance on the AIS pane) remain open.
+
+Gate: `ruff`, `black`, `mypy` clean; **848 passed, 5 skipped** (9 new tests).
+
+---
+
+## 2026-08-11 — Background sims decoupled from `mode`; transparent relay; mutes act immediately
+
+Prep for landing an AIS transponder's talker pair *in series* through the program on a lab IBNS rig.
+Two behaviour changes plus two new registers entries. Both new config surfaces default **off/absent**,
+so an untouched config behaves exactly as before.
+
+### Background sims are gated per-field, not by mode (`nmea_sim/config.py`)
+
+All four `effective_*_sim` resolvers returned `None` whenever `mode != "simulate"`, so selecting `auto`
+for one channel froze depth, wind, rudder **and** heading rig-wide — pinned at `initial_state` and still
+streaming to the `instrument` channel and its TCP tap. On a rig whose purpose is raising IBNS fidelity
+that was a net fidelity *loss* traded for one channel's passthrough.
+
+The guard was over-broad rather than wrong: it was reaching for "don't fight a real writer", but keyed
+on the mode instead of on what actually writes the field. New `rx_fed_fields(cfg)` + `_sim_suppressed`
+key it on the config:
+
+- `simulate` — never suppressed (unchanged; no router, no passthrough).
+- `replay` — always suppressed (the capture file is the source of truth).
+- `auto` — suppressed only when something can really write the field: a channel that RX-feeds it, or,
+  for heading alone, a heading channel with `sources` (HDT/HDG are in `_STATE_FORMATTERS`).
+
+**Depth, wind and rudder therefore keep simulating in `auto`** — no input `function` exists for them and
+`rx.parse_line` supports no depth/wind/rudder sentence, so the conflict the guard prevented could not
+occur. Own-ship **motion** could not follow (`movement.mode` is config-time, position ownership is
+runtime) — filed as [RM-035](roadmap.md#rm-035).
+
+### Transparent relay: forward what the router does not model (`router.py`, `engine.py`, `config.py`)
+
+`classify.sentence_class` knows three classes, so every other sentence on an input wire — AIS
+`ALR`/`ALF`/`ALC`/`ABK`/`TXT`/`VER`, vendor `$P...`, query responses — classified as `None` and was
+**dropped**. In series on a real talker's wire that silently made this program a black hole for
+everything it does not model, including the bus's AIS alarm path.
+
+New `ChannelSpec.rx_transparent_relay` (default `false`, omitted from `to_dict` when false, mirroring
+`tap_only`). `Router.note_rx` now returns an `RxDecision` dataclass instead of a
+`tuple[str, str, str]`, because forwarding and liveness had to stop being one decision:
+
+- `arbitrated` — classified, input is in that channel's `sources`. Stamps liveness (as before).
+- `transparent` — anything the channel would otherwise drop, **including classified-but-unroutable**
+  lines. Forwarded **only while the channel is LIVE**, and **never** stamps liveness.
+
+Never stamping is the load-bearing part: if status chatter counted as a live signal, a talker emitting
+only alarms would hold the channel in passthrough and the rig would never simulate on signal loss. The
+LIVE gate reuses the same `any_live` predicate `_fire` uses, so the two are exact complements — on
+fallback the relayed chatter stops and the consumer sees a clean simulated picture.
+
+Two silent no-ops are rejected at validate time (the flag with empty `sources`, and the flag on an
+un-arbitrated role that can never be LIVE), as is an input relayed by more than one channel — which
+would otherwise resolve by config order.
+
+### Muting an input now acts immediately (`engine.py`, `router.py`)
+
+`set_input_enabled` was "a flag write and nothing more", so the stamps a slot had already made kept it
+winning until they aged out — a mute lagged by the slot's whole `liveness_timeout_s`. It now calls the
+new `Router.clear_liveness(input_id)` when muting, so the flip to SIM is instant and deterministic (and
+the transparent-relay window shuts at the same moment). Unmuting needs no counterpart; the next valid
+line re-stamps.
+
+This makes the mute the signal-loss test instrument instead of a timeout-tuning exercise:
+`liveness_timeout_s` now only governs genuinely unexpected loss, so it can be sized purely to avoid
+flapping on a sparse feed — AIS own-ship reports stretch toward minutes when moored, making the 3 s
+default far too short for an AIS input.
+
+### Docs and registers
+
+- **`ref/architecture.md`** — the three-category decision table, the per-field sim gating, immediate
+  mutes, and the checksum/TAG-block limits. Dropped a false claim that the channel RX reader "parses
+  via `pynmea2`/`pyais`": it is `pynmea2` only, only under `rx_feeds_state`, and **no `pyais` decode
+  runs on any serial RX path**. Also states plainly that a duplex channel's RX never reaches the router.
+- **`ref/serial-hardware.md`** — `direction: "both"` is not passthrough; an output channel and an input
+  slot may never share a device path; wire pairs are invisible to the software, but a pair carries one
+  talker, so in-series insertion means breaking the run.
+- **`ref/security.md`** — scoped "listen-only is the only supported way" to *input slots*, and recorded
+  the `targetable_slots` transmit hazard.
+- **`user-guide.md`** — Auto-mode relay behaviour, and prefer the mute over a cable pull.
+- New: [ISSUE-033](issues.md#issue-033) (TAG-block lines dropped at the checksum gate),
+  [ISSUE-034](issues.md#issue-034) (`function: "unused"` makes a slot a transmit target),
+  [RM-032](roadmap.md#rm-032) (operator-assigned own-ship MMSI), [RM-035](roadmap.md#rm-035).
+
+Gate: `ruff`, `black`, `mypy` clean; **839 passed, 5 skipped** (25 new tests).
+
+---
+
 ## 2026-07-28 — Docs no longer claim backups work; backup redesign gets a roadmap slot [RM-031, ISSUE-001]
 
 Docs-only. A review of the backup/DR state found the reference docs describing a subsystem that has

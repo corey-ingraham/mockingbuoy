@@ -117,6 +117,29 @@ correct output from a **per-output source-priority list**; if no live source sat
 output, that output simulates. Use Auto when you have real gear on the bench and want
 mockingbuoy to relay it, fill the gaps, and give you one unified live/sim picture.
 
+**Depth, wind and rudder keep simulating in Auto.** They have no possible live source, so only
+the channels that actually have one fall back to passthrough. Own ship, however, stays
+stationary in Auto (`movement.mode: static`) so dead-reckoning cannot fight a live GPS fix.
+
+#### Relaying sentences mockingbuoy does not model
+
+Auto only understands three sentence classes, so everything else on an input wire — AIS status and
+alarm sentences (`ALR`, `ALF`, `ALC`, `ABK`, `TXT`, `VER`), vendor `$P...` sentences, query
+responses — is **dropped by default**. Inserted *in series* on a real talker's wire, that makes
+mockingbuoy a black hole for those sentence types.
+
+Set **`rx_transparent_relay: true`** on a channel and it instead forwards them verbatim, **while
+that channel is LIVE**. Two consequences worth knowing:
+
+- Relayed status traffic **never** counts as a live signal. A talker emitting nothing but alarms
+  will not hold the channel in passthrough — it still falls back and simulates, which is the point.
+- On fallback the relayed chatter **stops**. So when the real source dies, the consumer sees a
+  clean simulated picture rather than alarms about a feed that is no longer there.
+
+Two caveats no setting changes: a sentence failing its **checksum** is dropped before routing (a
+plain wire would have passed the corrupt bytes on), and a **TAG-block** prefixed line (`\s:...\`)
+is dropped at the same gate — see ISSUE-033.
+
 ### Replay
 
 Re-inject a **captured NMEA file** so a recorded session drives the outputs and the web display exactly
@@ -181,22 +204,28 @@ Use it to rehearse a live feed dying and coming back without unplugging anything
 
 1. With a source live, the channel it feeds shows **LIVE:&lt;input&gt;** on its output pane badge.
 2. Switch the input **OFF**. Its pane goes silent and reads **input off**.
-3. Within the slot's `liveness_timeout_s` (default 3 s) the source ages out and the output pane's
-   badge flips to **SIM** — the channel has resumed generating.
-4. Switch the input back **ON**; the badge returns to **LIVE:&lt;input&gt;**.
+3. The badge flips to **SIM** **immediately** — the channel has resumed generating.
+4. Switch the input back **ON**; the badge returns to **LIVE:&lt;input&gt;** on the next valid line.
 
-Three things to expect, none of them faults:
+**Prefer the mute over pulling a cable.** Muting clears that slot's liveness the instant you flip it,
+so the changeover is immediate and repeatable. A real cable pull instead waits out the slot's
+`liveness_timeout_s`, because nothing tells the program the wire died — it can only notice the
+silence. That also means `liveness_timeout_s` should be sized purely to avoid *flapping* on a sparse
+feed (AIS own-ship reports stretch toward minutes when moored, so the 3 s default is far too short for
+an AIS input) without that choice lengthening every deliberate test.
 
-- **A brief silent gap.** Between the toggle and the badge flipping to SIM the channel emits
-  nothing at all — passthrough has stopped but generation is still suppressed until liveness ages
-  out. That gap is the `liveness_timeout_s` window, and it mirrors a real cable pull.
+Two things to expect, neither a fault:
+
 - **The ship stops moving but still reports way.** Auto mode requires `movement.mode: static`, so
   after fallback the generator resumes from the last values the live feed seeded and position never
   advances — a generated RMC can report several knots over a position that does not change. This is
-  pre-existing auto-mode behaviour; the toggle just makes it easy to reach.
+  pre-existing auto-mode behaviour; the toggle just makes it easy to reach. Tracked as RM-035.
 - **Diagnostics keep running.** The toggle gates the *simulator*, not the wire. Maintenance-tab
   port statistics keep updating and an armed raw capture **keeps recording** while the pane reads
   "input off" — deliberate, so you can still prove bytes are arriving.
+
+If the channel also has `rx_transparent_relay` set, muting closes that window at the same instant, so
+the relayed status/alarm traffic stops the moment the badge flips to SIM.
 
 The setting is **runtime-only**: an input toggled off returns to its configured default on restart.
 An input slot's `enabled` key in `config.json` sets that startup default (absent means on).

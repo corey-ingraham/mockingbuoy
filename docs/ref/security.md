@@ -163,8 +163,20 @@ DeviceAllow=/dev/nmea-in-2 rw
 Land each input on an **isolated, listen-only adapter** (opto/galvanically isolated, RX-only) so the tool
 can only *listen* on a live bus — it cannot drive or load the differential pair, and isolation keeps
 ground loops off the host. **Mind grounding:** tie signal ground per the talker's convention, never bond
-a floating shield to host ground through the adapter. A listen-only isolated tap is the only supported way
-to read a real bus.
+a floating shield to host ground through the adapter. For **input slots**, a listen-only isolated tap is
+the only supported way to read a real bus. (Output channels are the opposite role — they must drive their
+pair — and `direction: "both"` is a third thing again: a duplex channel's RX never reaches the router, so
+it is not a way to read a bus for passthrough. See serial-hardware.md.)
+
+**`function: "unused"` is NOT a safe marker for a wired port.** `engine.targetable_slots` makes a slot a
+legal **active-diagnostics transmit target** precisely when `function == "unused"` **and** no channel
+names it in `sources` — the rule is meant to confine bench actions to free ports. But the transmit path
+does not reuse the input's RX-guarded port object: `web.app._tx_probe` opens the slot's device path fresh
+with `direction="tx"`, so the `SerialPort.write_line` receive-only guard never fires. `POST
+/api/diag/send` and `/api/diag/loopback` will therefore drive bytes onto that wire (gated only by a
+confirm-token echo and a per-slot cooldown). If a slot is physically landed on equipment you must not
+transmit into, give it a real `function` — any non-`unused` value makes `port_is_operational` true and
+the endpoints refuse with 409. See ISSUE-034.
 
 ## Optional ADC voltage-sense add-on
 

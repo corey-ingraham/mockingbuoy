@@ -35,6 +35,7 @@ from nmea_sim.config import (
 from nmea_sim.engine import Engine
 from nmea_sim.gps_generator import GpsGenerator
 from nmea_sim.heading_generator import HeadingGenerator
+from nmea_sim.router import RxDecision
 from nmea_sim.state import VesselState
 from web.app import Broker, _render_frame
 
@@ -80,6 +81,8 @@ def _auto_engine(
     *,
     mode: str = "auto",
     inputs: list[InputSpec] | None = None,
+    transparent_relay: bool = False,
+    monitor: Any = None,
 ) -> Engine:
     """An engine wired exactly like production: one gps channel sourced by a single input reader.
 
@@ -95,6 +98,7 @@ def _auto_engine(
             talker="GP",
             emit=[EmitSpec("RMC", 20.0)],
             sources=["gps_in"],
+            rx_transparent_relay=transparent_relay,
         )
     ]
     if inputs is None:
@@ -108,7 +112,7 @@ def _auto_engine(
         inputs=inputs,
         mode=mode,
     )
-    return Engine(cfg, input_monitor=input_monitor, strict_budget=False)
+    return Engine(cfg, input_monitor=input_monitor, monitor=monitor, strict_budget=False)
 
 
 # --- one input_nmea frame per received line, real Broker frame shape -------------
@@ -379,7 +383,9 @@ def _forward(engine: Engine, line: str) -> None:
     pumped by hand — this is what actually seeds state, and therefore provenance.
     """
     engine._dispatch_rx("gps_in", line)
-    engine._worker_by_id["gps"]._on_passthrough(("gps_in", "gnss", line))
+    engine._worker_by_id["gps"]._on_passthrough(
+        RxDecision("arbitrated", "gps", "gnss", line, "gps_in")
+    )
 
 
 def test_passthrough_fields_resolve_live() -> None:
@@ -485,9 +491,13 @@ def test_conning_panel_field_groups_can_all_reach_live() -> None:
     rmc = _rmc(12.3)
     hdt = HeadingGenerator("HE").hdt(replace(_BASE, heading_true_deg=77.0))
     engine._dispatch_rx("gps_in", rmc)
-    engine._worker_by_id["gps"]._on_passthrough(("gps_in", "gnss", rmc))
+    engine._worker_by_id["gps"]._on_passthrough(
+        RxDecision("arbitrated", "gps", "gnss", rmc, "gps_in")
+    )
     engine._dispatch_rx("sat_in", hdt)
-    engine._worker_by_id["heading"]._on_passthrough(("sat_in", "heading", hdt))
+    engine._worker_by_id["heading"]._on_passthrough(
+        RxDecision("arbitrated", "heading", "heading", hdt, "sat_in")
+    )
 
     prov = engine.provenance()
     # Mirrors PILL_FIELDS in app.js — if these lists drift apart, a pill silently pins to SIM.
@@ -517,3 +527,115 @@ def test_utc_resolves_live_only_for_gnss_clock_tiers() -> None:
     for tier in ("ntp", "system", "simulated", "hold"):
         engine._shared.update(_sources={"utc": f"clock:{tier}"}, utc=utc)
         assert "utc" not in engine.provenance(), tier
+
+
+# --- transparent relay through the engine: LIVE forwards, SIM suppresses ----------
+
+# Unclassified on purpose: an ordinary "$" address whose formatter is in neither the gnss nor the
+# heading set, so classify returns None and the router would drop it without the relay flag.
+_ALR = "$AIALR,000000.00,001,A,V,AIS: general failure*04"
+
+
+def _relay_engine() -> tuple[Engine, list[tuple[str, str]]]:
+    """An auto engine whose channel transparently relays, plus the list of lines it emitted.
+
+    The worker thread is never started, so ``_dispatch_rx`` enqueues and the inbox is pumped by hand
+    — the documented cross-platform seam. ``monitor`` records everything ``_fan_out`` publishes.
+    """
+    emitted: list[tuple[str, str]] = []
+    engine = _auto_engine(
+        transparent_relay=True,
+        monitor=lambda channel_id, line: emitted.append((channel_id, line)),
+        inputs=[InputSpec(id="gps_in", path="none", liveness_timeout_s=30.0)],
+    )
+    return engine, emitted
+
+
+def _pump(engine: Engine, channel_id: str = "gps") -> None:
+    """Drain the worker's inbox through the real ``_on_passthrough``, without a worker thread."""
+    worker = engine._worker_by_id[channel_id]
+    while worker._inbox.qsize():
+        worker._on_passthrough(worker._inbox.get_nowait())
+
+
+def test_transparent_line_is_forwarded_while_the_channel_is_live() -> None:
+    """A status sentence reaches the consumer verbatim while a real source feeds the channel."""
+    engine, emitted = _relay_engine()
+    engine._dispatch_rx("gps_in", _rmc(5.0))  # makes gps_in the live winner for gnss
+    engine._dispatch_rx("gps_in", _ALR)
+    _pump(engine)
+    assert (("gps", _ALR)) in emitted
+
+
+def test_transparent_line_is_suppressed_once_the_channel_falls_back_to_sim() -> None:
+    """The requirement-3 assertion: once the source dies the real talker's alarm chatter stops, so
+    the consumer sees a clean simulated picture instead of alarms about a feed that is gone."""
+    engine, emitted = _relay_engine()
+    engine._dispatch_rx("gps_in", _rmc(5.0))
+    engine._router.clear_liveness("gps_in")  # source is now dead, same instant
+    engine._dispatch_rx("gps_in", _ALR)
+    _pump(engine)
+    assert not any(line == _ALR for _, line in emitted)
+
+
+def test_transparent_traffic_alone_never_makes_the_channel_live() -> None:
+    """Status chatter must not suppress generation: if it counted as liveness the rig would sit in
+    passthrough forever and never simulate on signal loss."""
+    engine, _ = _relay_engine()
+    for _ in range(10):
+        engine._dispatch_rx("gps_in", _ALR)
+    _pump(engine)
+    assert engine._router.any_live("gps", "gnss", time.monotonic()) is False
+    # And with no live source, generation is NOT suppressed -- _fire's gate is the same predicate.
+    worker = engine._worker_by_id["gps"]
+    assert (
+        worker._router.any_live(worker._spec.id, worker._channel_class, time.monotonic()) is False
+    )
+
+
+def test_generation_still_fires_while_only_transparent_traffic_arrives() -> None:
+    """End-to-end complement of the above: the generator actually emits while the only inbound
+    traffic is unclassified status chatter."""
+    engine, emitted = _relay_engine()
+    for _ in range(5):
+        engine._dispatch_rx("gps_in", _ALR)
+    _pump(engine)
+    worker = engine._worker_by_id["gps"]
+    worker._fire(worker._emitters[0])
+    assert any(line.startswith("$GPRMC") for _, line in emitted)
+
+
+def test_muting_an_input_suppresses_transparent_relay_immediately() -> None:
+    """One operator action closes both gates at once: the mute clears liveness, so generation
+    resumes AND the transparent window shuts in the same instant -- no liveness_timeout_s wait."""
+    engine, emitted = _relay_engine()
+    engine._dispatch_rx("gps_in", _rmc(5.0))
+    assert engine._router.any_live("gps", "gnss", time.monotonic()) is True
+
+    assert engine.set_input_enabled("gps_in", False) is True
+    assert engine._router.any_live("gps", "gnss", time.monotonic()) is False
+
+    emitted.clear()
+    engine._dispatch_rx("gps_in", _ALR)  # muted: dropped before the router even sees it
+    _pump(engine)
+    assert emitted == []
+
+
+def test_unmuting_an_input_restores_liveness_on_the_next_line() -> None:
+    engine, _ = _relay_engine()
+    engine._dispatch_rx("gps_in", _rmc(5.0))
+    engine.set_input_enabled("gps_in", False)
+    assert engine._router.any_live("gps", "gnss", time.monotonic()) is False
+    engine.set_input_enabled("gps_in", True)
+    engine._dispatch_rx("gps_in", _rmc(6.0))
+    assert engine._router.any_live("gps", "gnss", time.monotonic()) is True
+
+
+def test_transparent_relay_off_by_default_still_drops_unclassified_lines() -> None:
+    """The default path is unchanged: without the flag an unclassified line is swallowed."""
+    emitted: list[tuple[str, str]] = []
+    engine = _auto_engine(monitor=lambda c, ln: emitted.append((c, ln)))
+    engine._dispatch_rx("gps_in", _rmc(5.0))
+    engine._dispatch_rx("gps_in", _ALR)
+    _pump(engine)
+    assert not any(line == _ALR for _, line in emitted)

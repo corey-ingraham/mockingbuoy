@@ -880,3 +880,106 @@ def test_absent_device_paths_still_compare_by_string() -> None:
     a = _gps(id="a", path="/dev/serial/by-id/does-not-exist-1")
     b = _gps(id="b", path="/dev/serial/by-id/does-not-exist-2")
     assert not any("already used by" in p for p in validate(_config([a, b])))
+
+
+# --- rx_transparent_relay: at most one relaying channel per input ------------------
+
+
+def test_input_relayed_by_two_channels_is_rejected() -> None:
+    """The router maps input -> the ONE channel that relays it, so two claimants would resolve by
+    config order and silently send a status sentence to whichever was listed first."""
+    problems = validate(
+        _config(
+            [
+                _gps(sources=["shared_in"], rx_transparent_relay=True),
+                _ais(
+                    path="/dev/serial/by-id/unit-ais",
+                    sources=["shared_in"],
+                    rx_transparent_relay=True,
+                ),
+            ],
+            inputs=[_input(id="shared_in", path="/dev/serial/by-id/in-shared")],
+            mode="auto",
+            writer_backend="serial",
+        )
+    )
+    assert any("transparently relayed by more than one channel" in p for p in problems)
+
+
+def test_input_relayed_by_one_channel_is_accepted() -> None:
+    """The normal shape: only the AIS channel relays, so there is exactly one claimant."""
+    problems = validate(
+        _config(
+            [
+                _gps(sources=["gps_in"]),
+                _ais(
+                    path="/dev/serial/by-id/unit-ais",
+                    sources=["ais_in"],
+                    rx_transparent_relay=True,
+                ),
+            ],
+            inputs=[
+                _input(id="gps_in", path="/dev/serial/by-id/in-a"),
+                _input(id="ais_in", path="/dev/serial/by-id/in-ais", function="ais"),
+            ],
+            mode="auto",
+            writer_backend="serial",
+        )
+    )
+    assert not any("transparently relayed" in p for p in problems)
+
+
+def test_two_relaying_channels_on_distinct_inputs_are_accepted() -> None:
+    """The guard is per-INPUT, not a global cap: two relaying channels are fine so long as they do
+    not both claim the same wire."""
+    problems = validate(
+        _config(
+            [
+                _gps(sources=["gps_in"], rx_transparent_relay=True),
+                _ais(
+                    path="/dev/serial/by-id/unit-ais",
+                    sources=["ais_in"],
+                    rx_transparent_relay=True,
+                ),
+            ],
+            inputs=[
+                _input(id="gps_in", path="/dev/serial/by-id/in-a"),
+                _input(id="ais_in", path="/dev/serial/by-id/in-ais", function="ais"),
+            ],
+            mode="auto",
+            writer_backend="serial",
+        )
+    )
+    assert not any("transparently relayed" in p for p in problems)
+
+
+def test_transparent_relay_without_sources_is_rejected() -> None:
+    """The flag relays what this channel's declared inputs send, so with no sources it can never
+    fire — a set-and-save-and-nothing-happens key, which this repo treats as a defect."""
+    problems = validate(_config([_gps(rx_transparent_relay=True)]))
+    assert any("rx_transparent_relay is true but 'sources' is empty" in p for p in problems)
+
+
+def test_transparent_relay_on_an_unarbitrated_role_is_rejected() -> None:
+    """Relayed lines are gated on the channel being LIVE, and an instrument channel consumes no
+    sentence class (``router.channel_class`` is None) so it can never be live — the flag would be
+    permanently inert there."""
+    instrument = ChannelSpec(
+        id="instrument",
+        role="instrument",
+        path="/dev/serial/by-id/unit-inst",
+        baud=38400,
+        talker="II",
+        emit=[EmitSpec("VHW", 1.0)],
+        sources=["gps_in"],
+        rx_transparent_relay=True,
+    )
+    problems = validate(
+        _config(
+            [instrument],
+            inputs=[_input(id="gps_in", path="/dev/serial/by-id/in-a")],
+            mode="auto",
+            writer_backend="serial",
+        )
+    )
+    assert any("rx_transparent_relay needs an arbitrated role" in p for p in problems)

@@ -19,7 +19,8 @@ the worker threads reading them never see a torn value.
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from .classify import CLASS_TO_ROLE, sentence_class
 
@@ -29,6 +30,36 @@ if TYPE_CHECKING:
 # Inverse of CLASS_TO_ROLE: role -> the sentence class it consumes. Roles absent here (instrument)
 # consume no live class and so are never suppressed by a winning source.
 _CLASS_BY_ROLE: dict[str, str] = {role: cls for cls, role in CLASS_TO_ROLE.items()}
+
+
+@dataclass(frozen=True)
+class RxDecision:
+    """Where one received line goes, and whether it counts as proof the source is alive.
+
+    Splitting those two questions is the whole reason this type exists. ``note_rx`` used to return a
+    bare ``(channel_id, cls, line)`` tuple and stamp liveness for every line it routed, which
+    conflated "forward this" with "this source is live". Once unclassified traffic is forwarded too
+    (``ChannelSpec.rx_transparent_relay``), that conflation would let a talker's status/alarm
+    chatter hold a channel LIVE forever and suppress generation — the exact opposite of what a
+    simulate-on-signal-loss rig needs.
+
+    * ``kind == "arbitrated"`` — a classified line for a channel listing this input in ``sources``.
+      Liveness IS stamped (by ``note_rx``, before returning) and the worker re-checks it is still
+      the winner before forwarding, so a lower-priority source cannot talk over a live one.
+    * ``kind == "transparent"`` — a line the channel would otherwise drop. Liveness is NOT stamped.
+      The worker forwards it only while the channel is already LIVE, so it disappears on fallback.
+
+    ``cls`` is the sentence class for an arbitrated decision and ``None`` for a transparent one (an
+    unclassified line has no class at all) — which is why this cannot stay a 3-tuple of ``str``.
+    """
+
+    kind: Literal["arbitrated", "transparent"]
+    channel_id: str
+    cls: str | None
+    line: str
+    # The input this line arrived on. Carried here rather than alongside so the worker's inbox holds
+    # ONE self-describing object; the arbitrated path needs it to re-check it is still the winner.
+    input_id: str
 
 
 class Router:
@@ -53,6 +84,13 @@ class Router:
         self._sources_by_channel: dict[str, list[str]] = {
             ch.id: list(ch.sources) for ch in config.channels
         }
+        # input id -> the channel that transparently relays what it would otherwise drop. Built once
+        # here so the RX hot path stays a dict lookup instead of a scan over channels per line. Deep
+        # validation rejects an input listed by two transparent-relay channels (the target would be
+        # config-order dependent and silent), so at most one channel per input reaches here.
+        self._transparent_by_input: dict[str, str] = {
+            src: ch.id for ch in config.channels if ch.rx_transparent_relay for src in ch.sources
+        }
         # channel id -> the sentence class its role consumes (None for roles that consume none,
         # e.g. an instrument channel that is never suppressed by a live source).
         self._class_by_channel: dict[str, str | None] = {
@@ -64,27 +102,49 @@ class Router:
         self._lock = threading.Lock()
         self._liveness: dict[tuple[str, str], float] = {}
 
-    def note_rx(self, input_id: str, line: str, now: float) -> tuple[str, str, str] | None:
-        """Classify + route + stamp a line that arrived on ``input_id``.
+    def note_rx(self, input_id: str, line: str, now: float) -> RxDecision | None:
+        """Classify + route a line from ``input_id``, stamping liveness only when arbitrated.
 
-        Returns ``(target_channel_id, cls, line)`` when the line is a valid source for a real
-        channel, else ``None``. Drops (returns ``None``) in three cases: the line does not
-        classify (unknown/malformed formatter); no channel exists for the class's role; or this
-        input is not listed in that channel's sources (a stray class for this wire). Only a line
-        that survives all three checks stamps liveness — so a stray sentence can never make an
-        input look live for a channel it isn't a source for.
+        Returns an ``arbitrated`` :class:`RxDecision` — and stamps ``(input_id, cls)`` liveness —
+        when the line classifies, a channel owns that class's role, and this input is listed in that
+        channel's ``sources``. Only a line surviving all three checks stamps liveness, so a stray
+        sentence can never make an input look live for a channel it isn't a source for.
+
+        Otherwise, if some channel transparently relays this input, returns a ``transparent``
+        decision WITHOUT stamping liveness. That covers both an unclassified line (status/alarm,
+        vendor ``$P...``) and a classified-but-unroutable one (say a GNSS sentence arriving on an
+        AIS wire, whose role's channel does not list this input) — in both cases the channel would
+        otherwise have dropped it. Returning early on the arbitrated path is what stops one line
+        being delivered twice.
+
+        Returns ``None`` when neither applies: nothing to forward, nothing to stamp.
         """
         cls = sentence_class(line)
-        if cls is None:
-            return None
-        channel_id = self._channel_by_role.get(CLASS_TO_ROLE[cls])
-        if channel_id is None:
-            return None
-        if input_id not in self._sources_by_channel.get(channel_id, ()):
-            return None
+        if cls is not None:
+            channel_id = self._channel_by_role.get(CLASS_TO_ROLE[cls])
+            if channel_id is not None and input_id in self._sources_by_channel.get(channel_id, ()):
+                with self._lock:
+                    self._liveness[(input_id, cls)] = now
+                return RxDecision("arbitrated", channel_id, cls, line, input_id)
+        transparent_id = self._transparent_by_input.get(input_id)
+        if transparent_id is not None:
+            return RxDecision("transparent", transparent_id, None, line, input_id)
+        return None
+
+    def clear_liveness(self, input_id: str) -> None:
+        """Forget every liveness stamp for ``input_id``, so it counts as dead immediately.
+
+        Called when an input slot is MUTED (``Engine.set_input_enabled``). Muting already stops new
+        lines reaching the router, but the stamps it already made keep it winning until they age out
+        — so a mute used to take ``liveness_timeout_s`` to show up as a fallback. Dropping the
+        stamps here makes the transition immediate and deterministic, which is what makes the mute
+        usable as a signal-loss test instrument instead of a timeout-tuning exercise.
+
+        Unmuting needs no counterpart: the next valid line re-stamps liveness by itself.
+        """
         with self._lock:
-            self._liveness[(input_id, cls)] = now
-        return (channel_id, cls, line)
+            for key in [k for k in self._liveness if k[0] == input_id]:
+                del self._liveness[key]
 
     def winner(self, channel_id: str, cls: str, now: float) -> str | None:
         """Return the highest-priority input that is currently live for this channel+class.

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from nmea_sim.config import ChannelSpec, EmitSpec, EngineConfig, InputSpec
 from nmea_sim.gps_generator import GpsGenerator
 from nmea_sim.heading_generator import HeadingGenerator
-from nmea_sim.router import Router
+from nmea_sim.router import Router, RxDecision
 from nmea_sim.state import VesselState
 
 _STATE = VesselState(
@@ -70,13 +70,13 @@ def _router(channels: list[ChannelSpec], inputs: list[InputSpec]) -> Router:
 def test_note_rx_routes_gnss_to_gps_channel() -> None:
     router = _router([_gps_channel(["gps_in"])], [InputSpec(id="gps_in", path="none")])
     routed = router.note_rx("gps_in", _RMC, now=100.0)
-    assert routed == ("gps", "gnss", _RMC)
+    assert routed == RxDecision("arbitrated", "gps", "gnss", _RMC, "gps_in")
 
 
 def test_note_rx_routes_heading_to_heading_channel() -> None:
     router = _router([_heading_channel(["sat_in"])], [InputSpec(id="sat_in", path="none")])
     routed = router.note_rx("sat_in", _HDT, now=100.0)
-    assert routed == ("heading", "heading", _HDT)
+    assert routed == RxDecision("arbitrated", "heading", "heading", _HDT, "sat_in")
 
 
 def test_note_rx_returns_none_for_unclassifiable_line() -> None:
@@ -151,8 +151,12 @@ def test_sat_input_feeds_both_heading_and_gps_channels() -> None:
             InputSpec(id="sat_in", path="none", liveness_timeout_s=3.0),
         ],
     )
-    assert router.note_rx("sat_in", _HDT, now=10.0) == ("heading", "heading", _HDT)
-    assert router.note_rx("sat_in", _RMC, now=10.0) == ("gps", "gnss", _RMC)
+    assert router.note_rx("sat_in", _HDT, now=10.0) == RxDecision(
+        "arbitrated", "heading", "heading", _HDT, "sat_in"
+    )
+    assert router.note_rx("sat_in", _RMC, now=10.0) == RxDecision(
+        "arbitrated", "gps", "gnss", _RMC, "sat_in"
+    )
 
     # The sat is the sole live source for heading, but only the fallback for gps.
     assert router.winner("heading", "heading", now=10.0) == "sat_in"
@@ -196,3 +200,136 @@ def test_channel_class_maps_role_to_consumed_class() -> None:
     # An instrument channel consumes no live class, so it is never suppressed by a source.
     assert router.channel_class("instrument") is None
     assert router.channel_class("no-such-channel") is None
+
+
+# --- transparent relay: forward without stamping liveness -------------------------
+
+# An AIS status/alarm sentence: an ordinary "$" address whose formatter is in NEITHER the gnss nor
+# the heading set, so ``classify.sentence_class`` returns None and the router would drop it.
+_ALR = "$AIALR,000000.00,001,A,V,AIS: general failure*04"
+
+
+def _ais_channel(sources: list[str], *, transparent: bool = False) -> ChannelSpec:
+    return ChannelSpec(
+        id="ais",
+        role="ais",
+        path="none",
+        baud=38400,
+        emit=[EmitSpec("AIVDM", 0.2)],
+        sources=sources,
+        rx_transparent_relay=transparent,
+    )
+
+
+def test_unclassified_line_is_dropped_without_transparent_relay() -> None:
+    """The default: a status sentence has no class, no role and no channel, so it is swallowed."""
+    router = _router([_ais_channel(["ais_in"])], [InputSpec(id="ais_in", path="none")])
+    assert router.note_rx("ais_in", _ALR, now=100.0) is None
+
+
+def test_unclassified_line_is_relayed_transparently_when_enabled() -> None:
+    """With the flag set the same line is forwarded verbatim as a TRANSPARENT decision — and its
+    ``cls`` is None, which is precisely why the return type cannot be a 3-tuple of str."""
+    router = _router(
+        [_ais_channel(["ais_in"], transparent=True)], [InputSpec(id="ais_in", path="none")]
+    )
+    assert router.note_rx("ais_in", _ALR, now=100.0) == RxDecision(
+        "transparent", "ais", None, _ALR, "ais_in"
+    )
+
+
+def test_transparent_relay_never_stamps_liveness() -> None:
+    """THE load-bearing assertion. Status chatter must not make the channel look LIVE, or generation
+    stays suppressed (engine._fire gates on any_live) and the rig never simulates on signal loss."""
+    router = _router(
+        [_ais_channel(["ais_in"], transparent=True)], [InputSpec(id="ais_in", path="none")]
+    )
+    for _ in range(20):  # a torrent of alarms is still not a live AIS feed
+        router.note_rx("ais_in", _ALR, now=100.0)
+    assert router.winner("ais", "ais", now=100.0) is None
+    assert router.any_live("ais", "ais", now=100.0) is False
+
+
+def test_arbitrated_line_still_stamps_liveness_with_transparent_relay_on() -> None:
+    """Enabling the flag must not disturb the arbitrated path: a real AIS sentence still wins."""
+    ais_line = "!AIVDM,1,1,,A,13HOI:0P0000VOHLCnHQKwvL05Ip,0*23"
+    router = _router(
+        [_ais_channel(["ais_in"], transparent=True)], [InputSpec(id="ais_in", path="none")]
+    )
+    assert router.note_rx("ais_in", ais_line, now=100.0) == RxDecision(
+        "arbitrated", "ais", "ais", ais_line, "ais_in"
+    )
+    assert router.winner("ais", "ais", now=100.0) == "ais_in"
+
+
+def test_classified_but_unroutable_line_is_relayed_transparently() -> None:
+    """A GNSS sentence on the AIS wire classifies fine but the gps channel does not list ais_in, so
+    today it is dropped. Transparent relay forwards it instead — "don't swallow anything" has to
+    cover the classified-but-not-for-me case too, not just the unclassifiable one."""
+    channels = [_gps_channel(["gps_in"]), _ais_channel(["ais_in"], transparent=True)]
+    inputs = [InputSpec(id="gps_in", path="none"), InputSpec(id="ais_in", path="none")]
+    router = _router(channels, inputs)
+    assert router.note_rx("ais_in", _RMC, now=100.0) == RxDecision(
+        "transparent", "ais", None, _RMC, "ais_in"
+    )
+    # It routed to the AIS channel, and it did NOT make gps_in or the gps channel look live.
+    assert router.winner("gps", "gnss", now=100.0) is None
+    assert router.any_live("ais", "ais", now=100.0) is False
+
+
+def test_classified_but_unroutable_line_is_dropped_without_the_flag() -> None:
+    channels = [_gps_channel(["gps_in"]), _ais_channel(["ais_in"])]
+    inputs = [InputSpec(id="gps_in", path="none"), InputSpec(id="ais_in", path="none")]
+    assert _router(channels, inputs).note_rx("ais_in", _RMC, now=100.0) is None
+
+
+def test_transparent_relay_only_covers_its_own_channels_sources() -> None:
+    """The flag authorises relaying THIS channel's declared inputs, nothing else — an unrelated
+    input's unclassified traffic is still dropped."""
+    channels = [_gps_channel(["gps_in"]), _ais_channel(["ais_in"], transparent=True)]
+    inputs = [InputSpec(id="gps_in", path="none"), InputSpec(id="ais_in", path="none")]
+    router = _router(channels, inputs)
+    assert router.note_rx("gps_in", _ALR, now=100.0) is None
+
+
+# --- clear_liveness: a mute must take effect immediately --------------------------
+
+
+def test_clear_liveness_makes_an_input_dead_without_waiting_for_the_timeout() -> None:
+    """Muting a slot stops new lines reaching the router, but the stamps it already made would keep
+    it winning for a whole liveness_timeout_s. Clearing them is what makes the fallback immediate.
+    """
+    router = _router([_gps_channel(["gps_in"])], [InputSpec(id="gps_in", path="none")])
+    router.note_rx("gps_in", _RMC, now=100.0)
+    assert router.winner("gps", "gnss", now=100.0) == "gps_in"
+    router.clear_liveness("gps_in")
+    # Same instant -- no clock advance, no timeout waited.
+    assert router.winner("gps", "gnss", now=100.0) is None
+
+
+def test_clear_liveness_only_touches_the_named_input() -> None:
+    router = _router(
+        [_gps_channel(["gps_in", "sat_in"])],
+        [InputSpec(id="gps_in", path="none"), InputSpec(id="sat_in", path="none")],
+    )
+    router.note_rx("gps_in", _RMC, now=100.0)
+    router.note_rx("sat_in", _GGA, now=100.0)
+    router.clear_liveness("gps_in")
+    # sat_in keeps its stamp and inherits the win (it is next in the ordered sources list).
+    assert router.winner("gps", "gnss", now=100.0) == "sat_in"
+
+
+def test_clear_liveness_is_a_noop_for_an_unknown_input() -> None:
+    router = _router([_gps_channel(["gps_in"])], [InputSpec(id="gps_in", path="none")])
+    router.note_rx("gps_in", _RMC, now=100.0)
+    router.clear_liveness("no-such-input")
+    assert router.winner("gps", "gnss", now=100.0) == "gps_in"
+
+
+def test_liveness_returns_after_a_clear_when_the_source_talks_again() -> None:
+    """Unmuting needs no counterpart to clear_liveness: the next valid line re-stamps by itself."""
+    router = _router([_gps_channel(["gps_in"])], [InputSpec(id="gps_in", path="none")])
+    router.note_rx("gps_in", _RMC, now=100.0)
+    router.clear_liveness("gps_in")
+    router.note_rx("gps_in", _RMC, now=101.0)
+    assert router.winner("gps", "gnss", now=101.0) == "gps_in"

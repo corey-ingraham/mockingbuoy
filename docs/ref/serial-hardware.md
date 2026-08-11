@@ -15,6 +15,29 @@ config knobs: `baud`, `framing` (8N1), and `direction`.
 Switching simplex↔duplex is a config change, never a code change. If an adapter has a hardware
 mode/termination switch (RS-232/422/485), set it per the adapter's own manual; the software is unaware.
 
+### `direction: "both"` is NOT passthrough
+
+A duplex channel's own RX reaches the web monitor and — with `rx_feeds_state` — the `rx_accept`
+vessel-state whitelist. It **never** reaches the AUTO router, so it can neither win arbitration nor be
+forwarded. Passthrough requires an `inputs[]` slot named in a channel's `sources`.
+
+And an **output channel and an input slot may never share a device path**: outputs and inputs occupy
+one namespace keyed through `os.path.realpath` (so `by-id` and `/dev/nmea-*` aliases collide too), and
+sharing is a hard validation error. So one port cannot serve as both the input and the output leg — a
+bidirectional device needs two adapters, one on the output channel and one on the input slot.
+
+### Wire pairs are invisible to the software
+
+NMEA 0183 / IEC 61162 is **RS-422 differential**: one pair per direction, so a talker-plus-listener
+port is 4 signal wires plus a common, while a listener-only tap is 2 plus common. The pair count is a
+property of the adapter and cable — a channel is defined only by `baud`, `framing`, `direction`, and
+`path`, and nothing in the software counts wires.
+
+One consequence *does* matter: a pair carries **exactly one talker** and many listeners. To insert this
+program in series, break the run — land the upstream talker on the input adapter and drive the
+downstream listeners from the output adapter. Leaving the original talker connected to the same pair the
+output adapter drives puts two drivers on one pair, corrupting both feeds.
+
 ## Persistent device naming (critical)
 
 `/dev/ttyUSB*` enumeration order is **not stable** across reboots/replug when multiple adapters are

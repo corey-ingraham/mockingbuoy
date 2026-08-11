@@ -44,6 +44,54 @@ Bench findings from the 2026-07-27 `eemslab` session, carried over from that box
   gained the explanation of what `function` vs adapter means.
   *(Still open: the read-only Maintenance "attached adapters" table.)*
 
+### RM-032 — Operator-assigned own-ship MMSI (and AIS identity) · in-progress · M (2026-08-11)
+
+**Done 2026-08-11:** scope items 1 and 2 — the Config-tab identity form and MID-aware warning are
+live (`AisIdentityDefault` in `web/app.py`, the *Own-ship AIS identity* card in `index.html`,
+`loadAisIdentityIntoConfig`/`refreshAisIdentityAdvice` in `app.js`). Items 3 and 4 remain open.
+
+**Goal:** stop the simulator emitting an arbitrary hard-coded identity. Own-ship AIS identity is
+config-only today, shipping as `mmsi 366000001` / `MOCKINGBUOY` / `ship_type 37` (`config.json:71`) and
+reachable **only** by hand-editing JSON. `366` is an allocated US MID, so the default is not merely
+fake — it is plausibly *someone's*. On a rig whose whole purpose is fidelity, the identity has to be
+entered deliberately and match the vessel it stands in for.
+
+Scope:
+1. ~~**Config-tab entry for the AIS identity block**~~ **DONE 2026-08-11** — all six `AisOwnShip`
+   fields persist through a dedicated `ais_identity` allow-list (`extra="forbid"`, skip-on-None per
+   field so a partial save preserves the rest). Bounds are NOT duplicated in the web model:
+   `validate._validate_ais_identity` stays the single gate and the merged config is deep-validated
+   before the write, so an out-of-range value is a 400 quoting the real rule.
+2. ~~**MID-aware warning**~~ **DONE 2026-08-11** — the card shows a `MID nnn` pill and warns while
+   typing when the MMSI sits in an allocated administration range (201-775), plus advises on the
+   9-digit shape and the AIS 6-bit charset before the save round-trip.
+3. **Named-identity picker** so a rig can hold several known vessel identities and select one per test
+   run instead of re-typing.
+4. **Provenance on the AIS pane** — config / UI / default — so a fabricated identity is never mistaken
+   for a real one.
+
+**Note:** before this, `web/app.py` persisted only `ais_traffic` onto the `role == "ais"` channel —
+the identity block had no write path at all, which is what item 1 added. Cf.
+[ISSUE-002](issues.md#issue-002) — `ais_targets` and `channel_alternation` are parsed and persisted
+with zero readers; the identity seam deliberately does not repeat that (every field it accepts is read
+by `AisOwnShip` and reaches the wire).
+
+### RM-035 — Own-ship motion in `auto` (dead-reckoning resumes on fallback) · planned · M (2026-08-11)
+
+**Goal:** let own ship move in `auto` mode once no live GNSS owns position.
+
+`validate` hard-requires `movement.mode: static` in `auto` so dead-reckoning cannot fight a live GNSS
+fix — legitimate while a source is live, wrong after fallback. Today the post-fallback generator holds
+the last seeded position while still reporting the last SOG/COG, so a generated RMC reports several
+knots over a position that never advances.
+
+The background sims were decoupled from the global mode on 2026-08-11 (see
+[changelog](changelog.md)) — depth, wind and rudder now keep running in `auto` because nothing else can
+write them. Motion is the one case that could not follow: `movement.mode` is read once at config time
+whereas position ownership changes at runtime, so this needs the **physics tick** gated on
+`router.any_live(gps_channel, "gnss")` rather than a config-time switch. Prereq for a rig that wants a
+moving own ship while the AIS leg is in passthrough.
+
 ### RM-031 — Backup subsystem redesign + first proven restore · planned · M (2026-07-28)
 
 **Goal:** make the appliance actually recoverable. Today nothing backs up: the units ship, the timer

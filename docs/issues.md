@@ -16,6 +16,54 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-034 — `function: "unused"` makes a slot an active-diagnostics TRANSMIT target · planned (2026-08-11)
+
+`engine.targetable_slots` (`nmea_sim/engine.py`) whitelists a slot for send / loopback / baud-sweep
+exactly when `function == "unused"` **and** no channel names it in `sources`. The intent — read from
+its docstring — is that "everything carrying real traffic is excluded, so a bench action can never
+drive a wire the running config depends on". The hole is a wire the *config* does not depend on but
+the *world* does: a passive monitor tap landed on live equipment matches the whitelist exactly.
+
+The `SerialPort` receive-only guard does not save it. `write_line` early-returns for
+`direction == "rx"`, but the transmit path never touches the input's port object — `web.app._tx_probe`
+opens the slot's device path **fresh** with `direction="tx"`, so that guard is not on this path at all.
+
+**Failure:** `POST /api/diag/send` or `/api/diag/loopback` against such a slot writes bytes onto live
+equipment. Mitigating factors: a confirm-token echo (the slot id, typed back), a per-slot single-flight
+cooldown, and `_reject_non_target` refusing anything operational — so it is deliberate, not a stray
+click. It is still a transmit onto a wire the operator believed was read-only.
+
+**Workaround (documented in `ref/security.md`):** give any physically-landed slot a real `function`.
+Any non-`unused` value makes `port_is_operational` true and the endpoints refuse with 409.
+
+**Fix options:** (a) require an explicit per-slot `diag_target: true` opt-in rather than inferring
+"free" from `function == "unused"`; or (b) refuse when the slot's device path resolves to a device that
+exists, since a real node means something is plugged in. (a) is preferred — presence is not consent.
+
+---
+
+### ISSUE-033 — TAG-block prefixed sentences are dropped before routing · planned (2026-08-11)
+
+`checksum.split` requires the line to start with `$` or `!`; anything else raises and `verify` returns
+`False`. A sentence carrying an IEC 61162-1 **TAG block** (`\s:GP,c:1234*hh\$GPRMC,...`) starts with
+`\`, so it fails verification and is dropped at `serialport._handle_rx_line` — **before** classify, the
+router, or `rx_transparent_relay` ever see it. No config setting changes this.
+
+**Failure:** wired in series on a bus whose talkers emit TAG blocks, this program is a black hole for
+every tagged sentence, and the symptom is a rising `rx_bad_checksum` counter rather than anything
+naming TAG blocks. The failure mode is identical to a wrong baud, which is what it will be mistaken
+for.
+
+**Scope note:** the repo already knows about TAG blocks, but only as an offline aspiration —
+[RM-016](roadmap.md#rm-016) lists "TAG-block timestamp parsing" for the `aisprofile` distiller, which
+reads files, not wires. There is no live-path handling anywhere.
+
+**Fix:** strip a leading TAG block (and verify its own checksum separately) in
+`serialport._handle_rx_line` before the sentence checksum test, preserving the original bytes for
+verbatim forwarding. Worth doing only if a bench capture actually shows a leading `\`.
+
+---
+
 ### ISSUE-029 — Switching to `auto` may silently drop input slots and channel sources · planned (2026-07-28)
 
 **Not root-caused — observed on a deployed host, data restored, save path not yet traced.** Filed so

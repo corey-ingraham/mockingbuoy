@@ -58,10 +58,17 @@ One class serves any USB-serial device; behavior is capability config, not brand
 - Tolerant lazy `open()` — a missing device sets `present=false`, surfaces to the UI, and is retried
   (hotplug); it never crashes the process or blocks sibling channels. Opens with pyserial
   `exclusive=True`, `write_timeout=1.0`.
-- **RX is first-class** (not started for `tx` channels): a reader thread verifies checksum, parses via
-  `pynmea2`/`pyais`, then (a) always pushes the line to the web monitor ring buffer, and (b) feeds
-  `VesselState` ONLY when `rx_feeds_state` is set and the field is in the channel's `rx_accept`
-  whitelist — preventing loopback/rogue-talker corruption.
+- **RX is first-class** (not started for `tx` channels): a reader thread verifies checksum, then
+  (a) always pushes the line to the web monitor ring buffer, and (b) feeds `VesselState` ONLY when
+  `rx_feeds_state` is set and the field is in the channel's `rx_accept` whitelist — preventing
+  loopback/rogue-talker corruption. Parsing is `pynmea2` only (`rx.parse_line`), and only on the
+  `rx_feeds_state` path; **no `pyais` decode runs on any serial RX path.**
+- **A duplex channel's own RX never reaches the AUTO router.** Channels wire `on_rx` to
+  `_rx_monitor` -> `_feed_state` (tagged `rx:<channel_id>`); only INPUT slots wire it to
+  `_dispatch_rx` -> `router.note_rx`. So `direction: "both"` gives you the monitor and `rx_accept`
+  state — never passthrough arbitration. Passthrough needs an `inputs[]` slot plus `sources`, and an
+  output channel and an input slot may **never** share a device path (one `realpath`-keyed
+  namespace, rejected by `_validate_cross_channel`).
 
 ### Channel config shape
 
@@ -138,6 +145,29 @@ The engine runs in one of three modes (`mode` in the config / set via the contro
   live modes use, so a recorded session drives the outputs (and the web display) identically to a live
   source. No separate emit path — replay is just a different line source feeding the one writer.
 
+#### Background sims are gated per-field, NOT by mode
+
+The default-ON background sims (depth, wind, rudder, heading — `config.effective_*_sim`) exist so the
+hull is never unnaturally still. They must not fight a *real* writer of the same field, but the guard
+for that is **what is configured to write the field**, not the global mode:
+
+- **`simulate`** — never suppressed. No router, no passthrough, so nothing else writes state.
+- **`replay`** — always suppressed. The capture file is the source of truth.
+- **`auto`** — suppressed only when something can actually write that field: a channel that RX-feeds
+  it (`rx_feeds_state` + `rx_accept`, via `config.rx_fed_fields`), or — for heading alone — a heading
+  channel with `sources`, since HDT/HDG are in `_STATE_FORMATTERS` and so a live source seeds
+  `heading_*` through `_feed_passthrough_state`.
+
+**Depth, wind and rudder therefore keep simulating in `auto`.** No input `function` exists for them
+(`gps` / `sat` / `ais` / `unused`) and `rx.parse_line` supports no depth/wind/rudder sentence, so they
+have no possible live writer unless explicitly RX-fed. The previous blanket "not simulate" guard
+suppressed all four for a conflict that cannot occur, which froze the instrument picture rig-wide the
+moment `auto` was selected for one unrelated channel.
+
+Own-ship **motion** is not covered by this: `auto` still hard-requires `movement.mode: static` so
+dead-reckoning cannot fight live GNSS position. Resuming motion on fallback needs the physics gated on
+GNSS liveness at runtime — tracked as RM-035.
+
 ### Input slots and per-channel sources
 
 Auto/replay add a top-level `inputs` list — physical input adapters, decoupled from outputs:
@@ -175,10 +205,21 @@ Both gated seams are **engine-supplied closures** (`_make_input_line_feed`, `_ma
 feed at its end — a muted slot supplies no clock fix either.
 
 Everything downstream then falls out of existing behaviour, with no teardown logic anywhere:
-`Router.winner()` ages the source out after `liveness_timeout_s`, `_ChannelWorker._fire` stops being
-suppressed by `any_live` and resumes generating, `_feed_passthrough_state` has already seeded state so
-generation resumes from the last real values, and `TimeAuthority.advance` (which resolves its winner
-through the same router) demotes itself to the base clock.
+`_ChannelWorker._fire` stops being suppressed by `any_live` and resumes generating,
+`_feed_passthrough_state` has already seeded state so generation resumes from the last real values,
+and `TimeAuthority.advance` (which resolves its winner through the same router) demotes itself to the
+base clock.
+
+**A mute takes effect immediately.** Muting stops new lines reaching the router, but the stamps it
+already made would keep that input winning until they aged out — so a mute used to lag by the slot's
+whole `liveness_timeout_s`. `set_input_enabled` therefore calls `Router.clear_liveness(input_id)` on
+the way down, dropping that input's stamps so the flip to SIM is instant and deterministic. Unmuting
+needs no counterpart: the next valid line re-stamps by itself.
+
+That is what makes the mute the **signal-loss test instrument** rather than a timeout-tuning
+exercise: `liveness_timeout_s` then only governs genuinely *unexpected* loss, so it can be sized
+purely to avoid flapping on a sparse feed (AIS own-ship reports stretch toward minutes when moored)
+without also lengthening every deliberate test.
 
 The enable map is built **unconditionally** for every mode, deliberately unlike the adjacent
 auto-only `_diagnostics` dict: `input_status()` walks `config.inputs` in all modes, so a simulate
@@ -205,9 +246,48 @@ the web `health` event and the NMEA Streams pane. Per-FIELD provenance rides the
 separately; see *Per-field provenance* below.
 
 Failover is reachable **on demand** via the per-input RX mute above, which is how signal loss is
-rehearsed without unplugging a cable. Note the two windows this exposes: the channel emits nothing
-between the mute and liveness expiring, and because auto mode requires `movement.mode: static`, the
-post-fallback generator holds the last seeded position while still reporting the last SOG/COG.
+rehearsed without unplugging a cable — and since the mute clears liveness, the flip is immediate.
+One window remains: because auto mode requires `movement.mode: static`, the post-fallback generator
+holds the last seeded position while still reporting the last SOG/COG (see RM-035).
+
+### Transparent relay: forwarding what the router does not model
+
+`classify.sentence_class` knows exactly three classes (`gnss` / `heading` / `ais`). **Everything else
+returns `None` and is dropped** — AIS status and alarm sentences (`ALR`, `ALF`, `ALC`, `ABK`, `TXT`,
+`VER`), vendor `$P...` proprietary sentences, query responses. Wired *in series* on a real talker's
+wire, that silently makes this program a black hole for every sentence type it does not model.
+
+`ChannelSpec.rx_transparent_relay` (default **off**) fixes that, and `Router.note_rx` returns an
+`RxDecision` rather than a bare tuple so the two questions stay separate:
+
+| Decision | What lands here | Forwarded? | Stamps liveness? |
+|---|---|---|---|
+| `arbitrated` | a classified line for a channel that lists this input in `sources` | yes, if still the winner | **yes** |
+| `transparent` | anything that channel would otherwise drop — unclassified, or classified-but-unroutable | **only while the channel is LIVE** | **no** |
+| (`None`) | nothing claims it | no | no |
+
+**Never stamping liveness is the load-bearing part.** If status chatter counted as liveness, a talker
+emitting only alarms would hold the channel LIVE forever, `_fire` would stay suppressed by `any_live`,
+and the rig would never simulate on signal loss — the exact opposite of the point.
+
+The LIVE gate on transparent lines is the *same* `any_live` predicate `_fire` uses to suppress
+generation, so the two are exact complements: while a source feeds the channel the real talker's
+traffic flows and generation is silent; once it dies generation takes over **and the chatter stops**,
+so the consumer sees a clean simulated picture instead of alarms about a feed that is gone.
+
+The transparent branch also covers the *classified-but-unroutable* case — a GNSS sentence arriving on
+an AIS wire classifies fine, but the GPS channel does not list that input in `sources`, so it is
+dropped today. "Don't swallow anything" has to cover that too.
+
+Two shapes are rejected at validate time because they would be silent no-ops: the flag with empty
+`sources` (nothing to relay), and the flag on an un-arbitrated role such as `instrument` (whose
+`channel_class` is `None`, so it can never be LIVE). An input may also be relayed by **at most one**
+channel, or which channel received its unclassified lines would depend on config order.
+
+**Not covered:** a line failing `checksum.verify` is dropped before the router sees it
+(`serialport._handle_rx_line`), so this program is a checksum filter where a plain wire is not. Nor
+does it help TAG-block-prefixed lines — `checksum.split` requires a leading `$`/`!`, so a `\s:...\`
+prefix fails verification and dies at the same gate (see ISSUE-033).
 
 ### Per-field provenance (RM-009)
 

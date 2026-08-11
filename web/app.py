@@ -291,16 +291,17 @@ def _driven_fields(manager: EngineManager) -> list[str]:
     applies them (no hard refuse). Computed from the CONFIG (not the live tick) so it is stable and
     cheap. Frozen rules (tests + UI depend on exactly this):
 
-    * ``depth_m`` — present iff the EFFECTIVE depth-sim is enabled (default-ON in simulate mode via
-      ``effective_depth_sim``; an explicit ``{enabled:false}`` block or a non-simulate mode disables
-      it). Depth runs regardless of an active route.
+    * ``depth_m`` — present iff the EFFECTIVE depth-sim is enabled (default-ON via
+      ``effective_depth_sim``; an explicit ``{enabled:false}`` block, ``replay``, or a channel that
+      RX-feeds ``depth_m`` disables it). Depth runs regardless of an active route, and it keeps
+      running in ``auto`` — nothing else can write depth unless explicitly configured to.
     * ``rudder_angle_deg`` — present iff the EFFECTIVE rudder-sim is enabled AND no route driver
       exists (a route owns the helm; the sim yields to it).
     * ``heading_true_deg``/``heading_mag_deg`` — present iff the EFFECTIVE heading-sim is enabled
       AND no route driver exists (same yield-to-route rule as rudder).
     * ``wind_speed_kn``/``wind_dir_deg`` — present iff the EFFECTIVE wind-sim is enabled (default-ON
-      in simulate mode via ``effective_wind_sim``). Wind is not helm, so it runs regardless of a
-      route.
+      via ``effective_wind_sim``). Wind is not helm, so it runs regardless of a route, and like
+      depth it keeps running in ``auto``.
     * ``cog_deg``/``sog_kn`` — present iff a route driver exists (``route_status()`` is not None; it
       returns None with no driver), i.e. simulate route mode.
     * In ``auto`` mode, every ``rx_accept`` field of each channel whose ``rx_feeds_state`` is set
@@ -313,8 +314,10 @@ def _driven_fields(manager: EngineManager) -> list[str]:
     """
     driven: set[str] = set()
     cfg = manager.config
-    # ``effective_*`` resolve the default-ON mechanism (absent block => enabled in simulate mode)
-    # and return None outside simulate, so auto RX / replay report no sim-driven fields. The depth
+    # ``effective_*`` resolve the default-ON mechanism (absent block => enabled) and return None
+    # only when something else actually writes the field: ``replay`` always, or ``auto`` with that
+    # field RX-fed (heading also yields to a sourced heading channel). So in auto, depth/wind/rudder
+    # DO report as driven -- they keep simulating because nothing else can write them. The depth
     # seed only affects a DEFAULT block's base, never the enabled flag, so a cheap fallback is fine.
     initial_depth = float(cfg.initial_state_raw.get("depth_m", 10.0))
     route_active = manager.route_status() is not None
@@ -791,6 +794,42 @@ class AisTrafficDefault(BaseModel):
     target_count: int | None = None
 
 
+class AisIdentityDefault(BaseModel):
+    """Own-ship AIS identity in a persist request (RM-032).
+
+    Before this existed the identity was config-only: the shipped default (MMSI ``366000001``,
+    name ``MOCKINGBUOY``) could be changed only by hand-editing JSON on the appliance, so in
+    practice every rig transmitted the same fabricated identity. ``366`` is an ALLOCATED US MID, so
+    that default is not merely synthetic — it is plausibly a real vessel's. On a rig whose purpose
+    is fidelity the identity has to be a deliberate, visible choice.
+
+    All six ``AisOwnShip`` fields are reachable and nothing else; extras are forbidden so no other
+    ``AisSpec`` key (``traffic``, ``include_type5``, ``type5_period_s``) can be smuggled in through
+    this seam — ``traffic`` has its own allow-list in :class:`AisTrafficDefault`.
+
+    Every field is ``| None`` and skip-on-None, so a partial save leaves the rest untouched. Bounds
+    are NOT re-implemented here: ``validate._validate_ais_identity`` owns them (MMSI 1..999_999_999,
+    ship_type 0..99, name <= 20, call_sign <= 7, and the AIS 6-bit charset), and the merged config
+    is deep-validated before the write — so an out-of-range value is a 400 naming the real rule
+    rather than a duplicated bound that can drift. Values outside those ranges are silently
+    corrupted by pyais on the wire (MMSI wraps at 30 bits, over-long text is clipped), so they
+    are hard errors and not warnings.
+
+    ``ship_class`` carries the JSON key ``class`` (a Python keyword), matching
+    ``AisOwnShip.from_dict``. It selects the message type on the wire: Class A -> Type 1 position
+    reports + Type 5 static, Class B -> Type 18 + Type 24.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    mmsi: int | None = None
+    ship_class: str | None = Field(default=None, alias="class")
+    name: str | None = None
+    call_sign: str | None = None
+    ship_type: int | None = None
+    imo: int | None = None
+
+
 class InputDefault(BaseModel):
     """One per-slot input assignment in a persist request.
 
@@ -926,6 +965,8 @@ class InitialStateRequest(BaseModel):
     route: RouteDefault | None = None
     replay: ReplayDefault | None = None
     ais_traffic: AisTrafficDefault | None = None
+    # RM-032: own-ship AIS identity. Skip-on-None per field, so a partial save is safe.
+    ais_identity: AisIdentityDefault | None = None
 
 
 # --- diagnostics request models ---------------------------------------------------
@@ -1950,6 +1991,42 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     traffic["target_count"] = body.ais_traffic.target_count
                 ais_block["traffic"] = traffic
                 channel["ais"] = ais_block
+
+            if body.ais_identity is not None:
+                # RM-032: merge own-ship identity onto the ais channel's ais.own_ship. Same explicit
+                # role resolution as ais_traffic above — 0 or >1 role-'ais' channels is an ambiguous
+                # config we refuse to guess at. Skip-on-None per field so a partial save preserves
+                # the rest; bounds are enforced by validate_or_raise below, never duplicated here.
+                ident_channels = [c for c in merged["channels"] if c.get("role") == "ais"]
+                if len(ident_channels) != 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"expected exactly one channel with role 'ais', "
+                        f"found {len(ident_channels)}",
+                    )
+                ident_channel = ident_channels[0]
+                ident_ais = ident_channel.get("ais")
+                if ident_ais is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"channel {ident_channel.get('id')!r} has role 'ais' "
+                        "but no ais block",
+                    )
+                own = dict(ident_ais.get("own_ship") or {})
+                ident = body.ais_identity
+                # JSON key is "class" (a Python keyword), matching AisOwnShip.from_dict.
+                for key, value in (
+                    ("mmsi", ident.mmsi),
+                    ("class", ident.ship_class),
+                    ("name", ident.name),
+                    ("call_sign", ident.call_sign),
+                    ("ship_type", ident.ship_type),
+                    ("imo", ident.imo),
+                ):
+                    if value is not None:
+                        own[key] = value
+                ident_ais["own_ship"] = own
+                ident_channel["ais"] = ident_ais
 
             if body.inputs is not None:
                 by_id = {i["id"]: i for i in merged["inputs"]}
