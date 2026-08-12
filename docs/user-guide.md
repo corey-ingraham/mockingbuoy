@@ -395,6 +395,22 @@ one yields clean, checksum-valid framing.
 Click any captured sentence to expand it into its **decoded field map** — talker, sentence type,
 and each field's meaning — without leaving the monitor.
 
+**It is a single-line decoder**, so a **multi-fragment AIS message will not decode here** — that means
+every AIS **static** report: Type 5 (Class A) and Type 24 (Class B). You get
+`"single line only — multi-fragment AIVDM needs the full fragment list"` instead. Single-fragment
+position reports (Type 1 / Type 18) decode normally. The same limit applies to
+`nmea_sim.cli_monitor --decode`, since both call `diagnostics.decode_line`.
+
+To decode a static report, capture it and hand the fragments to `pyais` together:
+
+```bash
+nc <host> <tap_port> | grep -m40 '^!AIV' > /tmp/ais.nmea
+python -c "
+from pyais.stream import FileReaderStream
+for m in FileReaderStream('/tmp/ais.nmea'): print(m.decode())
+"
+```
+
 ### Cheat-sheets
 
 Built-in reference panels for quick bench work:

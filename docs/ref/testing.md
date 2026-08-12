@@ -132,11 +132,16 @@ python main.py --backend null --duration 5
 python main.py --backend log --no-strict-budget
 ```
 
-**Virtual serial port (`pty`, UNIX host).** `--backend pty` opens a pseudo-terminal per channel and
-prints each slave device path; point a reader at it:
+**Virtual serial port (`pty`, UNIX host).** `--backend pty` opens a pseudo-terminal per channel.
+
+> **It does not print the slave paths.** `PtyWriter.slave_name` exists but has no production reader —
+> neither `main.py` nor `engine.py` calls it — so there is currently no way to learn which `/dev/pts/N`
+> belongs to which channel. Corrected 2026-08-11; this doc previously claimed it printed them.
+> Use `--backend log` or a TCP tap for a no-hardware readout, or find the pts with
+> `ls -l /proc/$(pgrep -f "backend pty")/fd | grep ptmx` and match by trial.
 
 ```bash
-python main.py --backend pty          # prints e.g. gps -> /dev/pts/N per channel
+python main.py --backend pty
 ```
 
 ```python

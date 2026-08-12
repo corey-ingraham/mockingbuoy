@@ -133,6 +133,32 @@ area-neutral. Synthetic MMSIs are generated and never reference a real registere
 extra sentences count against the channel's baud budget as normal (AIS at 38400 baud has ample
 headroom for a sane contact count).
 
+**Contacts are placed at ABSOLUTE profile coordinates — never relative to own ship.** The spawner
+takes no `VesselState`, so a profile whose region does not bracket own ship yields a plot with nothing
+near own ship, while every counter still looks healthy. See [ISSUE-037](../issues.md#issue-037).
+
+Traffic config is read **once**, in `_AisSource.__init__`, so any change needs an engine restart, and
+the fleet (its MMSIs, classes and ship types) is then fixed for the process lifetime — targets reflect
+off the region boundary and are never respawned.
+
+### The AIS `emit` list is not what it looks like
+
+`emitters_for` treats an `ais` channel unlike every other role. There are exactly two emission
+*kinds*, `AIS_POSITION` and `AIS_STATIC`, and **they are not sentence names**:
+
+- **`emit[].sentence` is never read on an AIS channel.** `AIVDM` and `AIVDO` are both legal
+  (`validate._AIS_SENTENCES`) and produce identical output — own-ship VDO plus target VDM. The string
+  is decorative.
+- **Only the first *enabled* entry's `rate_hz` is used**, as the position period. A second emit entry
+  is ignored except that its `enabled` flag counts toward whether any entry is enabled at all.
+- **`AIS_STATIC` is derived, not configured.** Its period is `ais.type5_period_s` in *seconds*, gated
+  on `include_type5`; there is no way to schedule static from `emit`. The two emitters are staggered,
+  so the first static burst lands at `type5_period_s / 2`.
+- Disabling *every* emit entry silences position **and** static (`emitters_for` returns `[]`).
+
+Own-ship dynamic fields come from the state snapshot, but `nav_status` and `rot` do not — they are
+hard-wired to the "not defined"/"not available" sentinels. See [ISSUE-036](../issues.md#issue-036).
+
 ## Operating modes: `simulate` / `auto` / `replay`
 
 The engine runs in one of three modes (`mode` in the config / set via the control endpoint):

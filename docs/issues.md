@@ -16,6 +16,58 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-037 — Synthetic AIS contacts are region-absolute, so a moving own ship leaves an empty plot · planned (2026-08-11)
+
+`TargetSpawner` draws each contact's position with `rng.uniform` **inside the profile's region**
+(`nmea_sim/realism.py:197-202`) and never reads own-ship state — nothing in `realism.py` takes a
+`VesselState`. So contacts appear wherever the profile's bbox is, regardless of where own ship is.
+
+**Failure:** enabling traffic *looks* like it worked — `!AIVDM` lines flow at the right rate and the
+`emitted` counter climbs — while every contact sits thousands of miles from own ship and the plot
+around own ship stays empty. Two things make this the default outcome:
+
+1. `RealismProfile.default()`'s region is **±0.5° around 0°/0°** (`realism.py:70-78`), and the shipped
+   `profiles/example.json` is **±1.0° around 0°/0°** — both Null Island.
+2. In `auto` mode with a live GNSS source, own ship moves to wherever the real fix is while the
+   contacts stay put, so even a correct profile goes stale the moment the rig relocates.
+
+Observed 2026-08-11: with a region-correct local profile the same config produced 32 contacts at a
+median 13.5 nm from own ship, all inside the box — so the mechanism is sound; only the placement
+model is wrong.
+
+**Workaround:** distil a profile whose region brackets the intended own-ship position, and re-distil
+when the rig moves. Note a local profile matching `profiles/*.local.json` is git-ignored
+(`.gitignore:43`), so it must be copied to the appliance by hand — it will never arrive by redeploy.
+
+**Fix:** an opt-in `region_mode: "own_ship"` on `RealismProfile` (default `"absolute"` so existing
+profiles are untouched) that centres the region's *extent* on own ship. Spawn currently happens in
+`_AisSource.__init__`, before any fix exists, so this also requires spawning lazily on the first
+position build when a state snapshot is available.
+
+---
+
+### ISSUE-036 — Own-ship AIS nav status and rate-of-turn are hard-wired to "not available" · planned (2026-08-11)
+
+`AisGenerator.own_ship` (`nmea_sim/ais_generator.py:87-95`) builds a transient `AisTarget` from
+`VesselState` and sets neither `nav_status` nor `rot`, so the dataclass defaults reach the wire on
+every own-ship Type 1: **nav status `15`** ("not defined") and **ROT `-128`** ("not available").
+
+- `nav_status` has exactly one producer (the `state.py:76` default) and one consumer
+  (`ais_generator.py:72`). There is no config key, no UI field and no engine write anywhere.
+- `rot` is worse than missing: `VesselState.rot_dpm` exists **and is actively simulated** by the
+  steering sim, so a real value is available every tick and is simply not passed through.
+
+**Failure:** a real Class A reports 0 (under way using engine), 1 (at anchor), 5 (moored) or 8 (under
+way sailing); some ECDIS flag or oddly render 15. ROT is one of the few dynamic own-ship values a
+display uses for heading prediction, so suppressing it degrades the simulated picture for no reason.
+Verified on the wire 2026-08-11: `status NavigationStatus.Undefined (15)`, `turn -128`.
+
+**Fix:** add `nav_status` to `AisOwnShip` (default 15, validated `0..15`), expose it on the identity
+card as a labelled dropdown, and pass `state.rot_dpm` through in `own_ship()` — keeping `-128` when
+the value is not finite so "not available" stays reachable.
+
+---
+
 ### ISSUE-034 — `function: "unused"` makes a slot an active-diagnostics TRANSMIT target · planned (2026-08-11)
 
 `engine.targetable_slots` (`nmea_sim/engine.py`) whitelists a slot for send / loopback / baud-sweep
@@ -472,12 +524,25 @@ unchanged; `None` is pyserial's win32-correct value.
 through load/save but **no code anywhere reads either** — verified by repo-wide grep excluding
 `config.py` and tests.
 
+**Amended 2026-08-11 — a third dead key: `AisSpec.mode`.** Parsed and persisted
+(`config.py:305,316`), shipped as `"ownship"` in `config.json`, and read by nothing: the only `.mode`
+readers in the tree are `MovementSpec.mode`, `TimeSourceSpec.mode` and `EngineConfig.mode`. It is also
+**validated against no enum**, so `"mode": "targets_only"` saves clean and changes nothing — worse than
+`channel_alternation`, which at least only accepts a bool.
+
+Related, same failure class but via typos rather than shipped keys: **unknown keys inside the `ais`
+block are silently dropped.** `_reject_unknown_keys` covers the top level (`config.py:957`) and the
+small specs via `_spec_from_mapping` (`:70-81`), but `AisSpec.from_dict`, `AisOwnShip.from_dict` and
+`AisTrafficSpec.from_dict` all use bare `data.get(...)`. So `include_type_5: false` or `type5_period:
+60` validates clean, saves clean, and does nothing.
+
 **Failure:** an operator sets `channel_alternation: false`, `validate()` passes, save succeeds, and
 nothing changes on the wire. Silent no-op — the opposite of the project's fail-loud posture.
 
-**Fix:** either delete both keys (and drop them from `config.json`) or wire them up. If `ais_targets`
-is being held for [RM-013](roadmap.md#rm-013), keep it but reject a non-empty value in `validate()`
-with "not yet implemented" rather than accepting and ignoring it.
+**Fix:** either delete all three keys (and drop them from `config.json`) or wire them up. If
+`ais_targets` is being held for [RM-013](roadmap.md#rm-013), keep it but reject a non-empty value in
+`validate()` with "not yet implemented" rather than accepting and ignoring it. Separately, extend
+unknown-key rejection to the three AIS `from_dict`s so a typo fails loudly.
 
 ---
 

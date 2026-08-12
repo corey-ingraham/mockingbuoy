@@ -4,6 +4,38 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-08-11 — AIS simulator review: findings recorded [ISSUE-036, ISSUE-037]
+
+Docs and registers only; no runtime change. A review of the AIS *generation* path ahead of a bench
+session, with every claim checked against a live appliance rather than inferred. The simulator itself
+was found working — a 400 s capture gave 80 Type 1 own-ship reports at exactly the configured 0.2 Hz
+plus one Type 5 static burst, decoding to the configured MMSI, with radio channel alternating A/B.
+What was wrong was placement, two suppressed fields, and several docs.
+
+- **[ISSUE-037](issues.md#issue-037)** — synthetic contacts are placed at **absolute** profile
+  coordinates; `TargetSpawner` never reads own-ship state. Both the built-in default and the shipped
+  `example.json` region sit on Null Island, so enabling traffic looks healthy (lines flow, counters
+  climb) while nothing appears near own ship. Worse in `auto`, where a live GNSS fix moves own ship but
+  not the contacts. Verified both ways: a region-correct profile put 32 contacts at a median 13.5 nm.
+- **[ISSUE-036](issues.md#issue-036)** — own-ship `nav_status` and `rot` are hard-wired to the
+  "not defined"/"not available" sentinels. `nav_status` has no config key at all; `rot` is a straight
+  wiring miss, since `VesselState.rot_dpm` is actively simulated and simply never passed through.
+- **[ISSUE-002](issues.md#issue-002) amended** — `AisSpec.mode` is a **third** dead config key
+  (shipped as `"ownship"`, zero readers, validated against no enum). Also recorded that unknown keys
+  inside the `ais` block are silently dropped, unlike the top level — so `include_type_5` (typo)
+  validates clean and does nothing.
+- **`ref/architecture.md`** — documented that the AIS `emit` list is largely decorative: the
+  `sentence` string is never read, only the first enabled entry's `rate_hz` is used, and `AIS_STATIC`
+  is derived from `type5_period_s` rather than schedulable from `emit`. This is the most likely
+  operator misunderstanding on the channel and was previously undocumented.
+- **`user-guide.md`** — click-to-decode is a single-line decoder, so **no AIS static report (Type 5 or
+  Type 24) will decode there**; added the `pyais` fragment-pair command that does work.
+- **`ref/testing.md`** — corrected: `--backend pty` does **not** print its slave device paths.
+  `PtyWriter.slave_name` has no production reader, so the documented `gps -> /dev/pts/N` output has
+  never existed.
+
+---
+
 ## 2026-08-11 — Own-ship AIS identity is operator-settable [RM-032]
 
 Pulled forward from the roadmap and landed the same day it was filed, because the shipped default was
