@@ -363,8 +363,9 @@ height cap is declared *after* the resets — the regression that would silently
 
 Note the file already contained the winning pattern once (`.ins-panel.p-primary` in the one-screen
 section, beating the same base rule by raising specificity). The trap is not obscure here; it had been
-hit, solved in one place, and missed in four others. **`@media` adds no specificity** is the lesson,
-now in `CLAUDE.md`.
+hit, solved in one place, and missed in four others. **`@media` adds no specificity** — a later
+equal-specificity rule wins regardless of the query — is the lesson, now recorded in the repo
+assistant notes.
 
 ---
 
