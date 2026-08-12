@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import shutil
 import threading
 from collections.abc import Iterator
@@ -1741,6 +1742,181 @@ def test_app_js_gates_ais_traffic_on_ais_channel() -> None:
     js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert 'role || "").toLowerCase() === "ais"' in js
     assert "if (aisCh) {" in js
+
+
+# --- conning display density (--ui-scale): client contract ---------------------------
+#
+# The conning layout fails SILENTLY when it does not fit: panels clip under `overflow: auto` and a
+# column's last panel hangs outside the column box with no scrollbar worth noticing. Every guard
+# below exists because some version of that failure shipped unnoticed. None of these can replace a
+# rendered-layout measurement — that is what ops/conning-fit-probe.js is for — but each pins an
+# invariant that a plausible-looking refactor would quietly break.
+
+
+def test_app_js_auto_density_removes_the_property_rather_than_pinning_one() -> None:
+    """Auto must REMOVE the inline ``--ui-scale`` so the CSS height tiers govern again.
+
+    Setting it to ``1`` instead looks identical on a tall screen and is wrong everywhere else: it
+    pins full density and defeats the tiers on a short one. Manual 1.00 and auto-resolving-to-1 are
+    different states, and this is the distinction a refactor is most likely to flatten.
+    """
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'removeProperty("--ui-scale")' in js
+    assert 'setProperty("--ui-scale"' in js
+
+
+def test_app_js_display_prefs_are_browser_local_and_fullscreen_is_not_persisted() -> None:
+    """Density persists per browser (the right scale differs per display); fullscreen must not.
+
+    Fullscreen cannot be re-entered on load without a user gesture, so a stored ``true`` would
+    guarantee a UI claiming a state it is not in.
+    """
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "mb.uiScale" in js
+    assert "mb.fullscreen" not in js
+
+
+def test_app_js_applies_display_prefs_outside_init() -> None:
+    """The density must be applied at module scope, not from ``init()``.
+
+    ``init()`` returns early when ``GET /api/config`` fails, so anything hung off it is missing on
+    exactly the loads where the operator may need the display control to recover. Asserting the call
+    sits after the last function definition and before the bootstrap ``init();`` pins the call SITE,
+    not merely the presence of the name — a bare "appears before init" check passes when the call is
+    hidden inside some earlier-defined function, which is the regression this guards.
+    """
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    apply_at = js.index("  applyUiScale();\n  scheduleAutoFit(")
+    init_def = js.index("async function init()")
+    bootstrap = js.rindex("\n  init();")
+    assert apply_at < init_def, "display prefs must be applied before init() is even defined"
+    assert apply_at < bootstrap
+
+
+def test_app_js_fit_metric_measures_columns_not_just_panels() -> None:
+    """The fit check must look at columns and each column's last panel, not only panel overflow.
+
+    Measured counter-example: at 1920x830 no panel overflowed while the Alerts panel hung 169px
+    below its column. A panel-only check reports a green tick over a visibly broken display.
+    """
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert ".conn-col-left" in js and ".conn-col-right" in js
+    assert "lastElementChild" in js  # the tail-panel-vs-column-bottom delta
+
+
+def test_app_js_autofit_does_not_use_request_animation_frame() -> None:
+    """The auto-fit loop must not sequence on rAF: it does not fire in a backgrounded tab, so the
+    loop would hang instead of returning. Reading ``scrollHeight`` forces layout synchronously."""
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    start = js.index("function autoFitScale()")
+    end = js.index("function scheduleAutoFit(", start)
+    assert "requestAnimationFrame" not in js[start:end]
+
+
+def test_index_display_card_has_no_server_field_attributes() -> None:
+    """The Display card is browser-local. A ``data-field``/``data-override`` attribute there would
+    sweep it into the config POST and, worse, into ``applyDrivenFields()``' disable loop — letting
+    the engine disable the operator's scale slider."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    start = html.index('id="cfg-display-card"')
+    end = html.index('<div id="cfg-mode-settings">', start)
+    card = html[start:end]
+    assert "data-field" not in card
+    assert "data-override" not in card
+
+
+def test_index_declares_display_control_ids() -> None:
+    """Each control is looked up with a guarded ``$()`` that degrades to silently doing nothing, so
+    a renamed id produces a dead control and no error — the failure an operator cannot diagnose."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for element_id in (
+        "cfg-display-card",
+        "cfg-ui-scale-auto",
+        "cfg-ui-scale",
+        "cfg-ui-scale-val",
+        "cfg-fullscreen-btn",
+        "cfg-display-diag",
+        "cfg-diag-copy",
+        "cfg-fit-pill",
+    ):
+        assert f'id="{element_id}"' in html, element_id
+
+
+def test_app_css_scroll_tier_resets_come_after_the_rules_they_override() -> None:
+    """Structural guard for the cascade-order bug class that produced ISSUE-025.
+
+    ``@media`` adds no specificity, so an equal-specificity declaration LATER in the file wins
+    regardless of the query. Four resets were dead this way: the gauge ``max-height`` reset, and
+    ``.ins-panel { overflow: visible }`` in both scroll tiers. They now live in one block that must
+    stay last in the conning section — if someone moves it, or adds a per-gauge cap below it, this
+    fails instead of the layout silently clipping again.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    # Strip comments FIRST: this file documents the hazard in prose, and the section banner itself
+    # sits inside a comment, so scanning raw text matches the explanation instead of the code.
+    code = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), css, flags=re.S)
+    # Anchor on the combined scroll-tier query — the resets' actual rule, not a comment about it.
+    reset = code.index("@media (max-width: 1100px), (max-height: 920px)")
+    tail = code[reset:]
+    # The resets re-state the higher-specificity offenders, which source order alone cannot beat.
+    assert ".p-propulsion .prop-tach" in tail
+    assert ".ins-panel.p-primary" in tail
+    # The real regression is a NEW capping rule added BELOW the resets, which would silently win
+    # again. Nothing may cap a height after them except the resets' own `none`.
+    # `(?<!\()` skips media-query CONDITIONS like `(max-height: 920px)`, which are not declarations.
+    offenders = [
+        m.group(0).strip()
+        for m in re.finditer(r"(?<!\()max-height:\s*([^;}]+)", tail)
+        if m.group(1).strip() != "none"
+    ]
+    assert (
+        not offenders
+    ), f"these cap a height after the scroll-tier resets, so the resets lose again: {offenders}"
+
+
+def test_app_css_left_column_floors_scale_with_density() -> None:
+    """The left-column floors must be functions of ``--ui-scale``, not fixed pixels.
+
+    Fixed floors cannot serve two tiers at once: sized for a 1080-tall viewport at density 1 they
+    push a 940-tall viewport's column over by 59px; sized for 940 they clip at 1080. Measured.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for selector in (".p-coords", ".p-time", ".p-env"):
+        needle = f".conn-col-left {selector} "
+        line = next(ln for ln in css.splitlines() if needle in ln and "min-height" in ln)
+        assert "var(--ui-scale" in line, f"{selector} floor must scale: {line.strip()}"
+
+
+def test_app_css_dvh_declarations_are_paired_with_vh() -> None:
+    """``dvh`` needs Chromium 108+. An engine without it DROPS the declaration, and since this
+    is the app shell's only height source the whole one-screen layout collapses. Every ``dvh``
+    therefore needs a plain ``vh`` fallback immediately above it. Nothing enforced this before."""
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    # Strip /* ... */ comments first — this file explains the dvh hazard in prose, and a naive scan
+    # flags the explanation instead of the declaration.
+    stripped = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), css, flags=re.S)
+    lines = stripped.splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        if "dvh" not in line:
+            continue
+        found = True
+        assert (
+            i > 0 and "vh" in lines[i - 1] and "dvh" not in lines[i - 1]
+        ), f"unpaired dvh at app.css:{i + 1}: {line.strip()}"
+    assert found, "expected at least one dvh declaration to guard"
+
+
+def test_index_asset_cache_busters_match() -> None:
+    """Both assets carry the same ``?v=``. Bumping one and not the other ships new HTML against a
+    cached script, which degrades to guarded no-ops rather than a visible error."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    css_v = re.search(r"/static/app\.css\?v=(\d+)", html)
+    js_v = re.search(r"/static/app\.js\?v=(\d+)", html)
+    assert css_v and js_v, "both assets must carry a ?v= cache-buster"
+    assert css_v.group(1) == js_v.group(
+        1
+    ), f"cache-busters differ: css v={css_v.group(1)}, js v={js_v.group(1)}"
 
 
 # --- H5: production entrypoint deep-validates the config ----------------------------

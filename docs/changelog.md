@@ -4,6 +4,69 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-08-11 — Conning display: the one-screen layout actually fits now [ISSUE-025, ISSUE-026, RM-023]
+
+The display looked wrong on the lab monitor and there was **no way to fix it in the field**. Measured
+with a new rig (`ops/conning-fit-probe.js`: a same-origin iframe sized to exact CSS pixels, so the
+media-query tier is whatever you ask for) rather than by resizing a window — a real 1080p window has
+`innerHeight ≈ 940`, which is how the original work measured the 0.74 tier and concluded the 1.0 tier
+was clean.
+
+| viewport | density | before | after |
+|---|---|---|---|
+| 1920×1080 | 1 | coords 10, time 10, **env 33** | clean |
+| 1920×1000 | 0.82 | env 14 | clean |
+| 1920×940 | 0.74 | clean | clean |
+| 2560×1440 | 1 | clean | clean |
+| 1280×1024 | 1 | coords 6, time 6, **env 36** | clean |
+| 1920×921 | 0.74 | unfittable band | clean |
+| 1920×900 / 885 | 0.74 | silently clipped | clean (scrolling) |
+| 1100×900 | 0.74 | p-primary 129, p-ship 33 | clean (scrolling) |
+
+- **The floors were the root cause, and they had to become scale-relative.** They were fixed pixels
+  while everything around them scaled, so no single set can serve 1080p at density 1 *and* 940 at 0.74:
+  raising them to fit 1080 pushes 940's column over by 59px — the "floors that oversubscribe would
+  merely relocate the clipping" failure the CSS comment warned about while committing it. A plain
+  `Npx * scale` overshoots the other way (env clips 17px at 0.74) because part of each panel is
+  scale-*invariant*: `.coord-label` is a hard 15px and the dials are `vh`-capped. Each floor is now an
+  **affine** function of `--ui-scale` fitted through measured-good points across the whole usable
+  density range. **1080p therefore keeps full-size gauges** — an auto-fit search alone would have
+  driven it to 0.76 to satisfy one panel, which *is* the "everything too small" complaint.
+- **ISSUE-025 was a bug class with four instances.** Besides the documented `max-height: none` reset,
+  `.ins-panel { overflow: visible }` was dead in *both* scroll tiers, and `.ins-panel.p-primary
+  { overflow: hidden }` at (0,2,0) still beat the reset on specificity. All consolidated into one
+  SCROLL-TIER RESETS block that must stay last in the conning section. `@media` adds no specificity;
+  a later equal-specificity rule wins regardless of the query.
+- **The 820px scroll threshold was wrong** — derived from a floor sum that had already changed. The
+  layout cannot fit at any density at or below ~905px tall (885 fails by 20px, 900 by 5px, 910 clean;
+  sweeping 0.74→0.66 shows overflow *plateau* near 17px, the residual being scale-invariant). Raised to
+  920 so the unfittable band scrolls instead of clipping, with margin for a different engine's fonts.
+- **Config → Display card** (per-browser, never sent to the appliance): an Auto toggle, a density
+  slider, a fullscreen button, a fit badge that reads LIVE only when nothing is clipped, and a Copy
+  diagnostics button. Auto **removes** the inline property so the CSS tiers govern; it must never set
+  `1`, which pins full density and looks identical on a tall screen while breaking every short one.
+- **`autoFitScale()` refines, it does not replace, the tiers** — the tiers work with no JS and are
+  already correct before first paint. It steps density down only when the baseline does not fit, skips
+  the scroll tiers, and **reverts rather than pinning the minimum** when nothing fits.
+
+Two traps found the hard way and now encoded in the rig, the tests and the comments:
+
+- **Per-panel overflow is not a sufficient fit metric.** At 1920×830 no panel overflowed *and* the
+  Alerts panel hung 169px below its column. Columns and each column's last-panel delta must be
+  measured too, or the check prints a green tick over a visibly broken display.
+- **`requestAnimationFrame` does not fire in a backgrounded tab**, so an rAF-sequenced measurement
+  hangs instead of returning. Reading `scrollHeight` forces layout synchronously and works even when
+  hidden — which is also why the auto-fit is *not* gated on `visibilityState`: that gate stopped it
+  running in a background tab, so a page loaded out of focus stayed clipped.
+
+Also corrected: this changelog's own claim that hiding the app chrome recovers "~15-20% of vertical
+budget" (2026-07-28 entry). The header is ~85px — about **8%** at 1080p, roughly one density step.
+
+Ten new client-contract tests, including two structural guards that fail if the cascade-order bug is
+reintroduced or a `dvh` is left unpaired. Gate: ruff, black, mypy clean; full suite green.
+
+---
+
 ## 2026-08-11 — AIS simulator review: findings recorded [ISSUE-036, ISSUE-037]
 
 Docs and registers only; no runtime change. A review of the AIS *generation* path ahead of a bench
@@ -341,8 +404,10 @@ Measured at a 1920×1080 shell: depth SVG 10–25px → **222px**; attitude dial
 zero panels overflowing. Verified clean at kiosk-1080, windowed-940, 1440p, and both scale overrides.
 
 Recommended alongside: run the bridge display on Chromium/Firefox in kiosk mode rather than
-Konqueror — it unblocks modern CSS, is chromeless (recovering ~15–20% of vertical budget), and
-matches the browser the UI is developed against.
+Konqueror — it unblocks modern CSS, is chromeless, and matches the browser the UI is developed
+against. *(Corrected 2026-08-11: this originally claimed chromeless recovers "~15–20% of vertical
+budget". The header is ~85px — about **8%** at 1080p, roughly one density step. Do not plan against
+the larger figure.)*
 
 ---
 

@@ -472,13 +472,31 @@
      so they took their full natural height first (~613px of a ~796px budget) and depth --
      already `1 1 auto` -- absorbed the entire shortfall, shrinking to ~60px and squashing
      its SVG to a ~40x20 postage stamp. That was the "tiny depth chart".
-     Floors are chosen so the SUM fits the budget (100+100+150+140+90 = 580 + 24 gaps =
-     604 < ~796); floors that oversubscribe would merely relocate the clipping.
      Coords/time sit at ~their natural height so they yield only under real pressure --
-     they carry the position readout and must never clip. */
-  .conn-col-left .p-coords { flex: 0 1 auto; min-height: 112px; }
-  .conn-col-left .p-time   { flex: 0 1 auto; min-height: 112px; }
-  .conn-col-left .p-env    { flex: 0 1 auto; min-height: 274px; }
+     they carry the position readout and must never clip.
+
+     FLOORS ARE SCALE-RELATIVE, and deliberately affine rather than a plain multiply.
+     A fixed-px floor cannot serve two tiers at once: the content these panels hold shrinks
+     with --ui-scale, so a floor sized for a 1080-tall viewport at scale 1 oversubscribes a
+     940-tall one at 0.74 and pushes the COLUMN over (measured: +59px, with Alerts hanging
+     outside the column box) -- the "floors that oversubscribe merely relocate the clipping"
+     failure this comment used to warn about while committing it. A plain `274px * scale`
+     overshoots the other way and clips env by 17px at 0.74, because part of each panel is
+     scale-INVARIANT: `.coord-label` is a fixed 15px, and the dials are vh-capped.
+     So each floor is a line through MEASURED points. env is fitted across the FULL usable range
+     (0.66 to 1.0), not just 0.74 to 1.0: a line through only the upper two undershoots below 0.74,
+     because the scale-invariant part of the content stops shrinking while the floor keeps falling,
+     and env then clips WORSE the further the density drops -- which silently defeats the auto-fit
+     search, since stepping down can never reach a fit.
+       env        ~264 @0.66 -> 340 @1.0  =>  117 + 223*s
+       coords/time  112 @0.74 -> 126 @1.0 =>   72 +  54*s  (adequate down to 0.66 as measured)
+     Verified fitting at 1920x1080, 1920x1000, 1920x940, 2560x1440 and 1280x1024 on every
+     metric (per panel, per column, and each column's last panel vs the column bottom).
+     Do NOT re-tune these by eye -- re-measure with `ops/conning-fit-probe.js`, which checks
+     the column-level metrics that per-panel overflow alone reports as clean. */
+  .conn-col-left .p-coords { flex: 0 1 auto; min-height: calc(72px + 54px * var(--ui-scale, 1)); }
+  .conn-col-left .p-time   { flex: 0 1 auto; min-height: calc(72px + 54px * var(--ui-scale, 1)); }
+  .conn-col-left .p-env    { flex: 0 1 auto; min-height: calc(117px + 223px * var(--ui-scale, 1)); }
   .conn-col-left .p-depth  { flex: 1 1 auto; min-height: 140px; }
   .conn-col-left .p-alerts { flex: 1 1 auto; min-height: 90px; }
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
@@ -520,21 +538,28 @@
       gap: 6px;
     }
     .conn-col-left, .conn-col-right { flex: none; }
-    .ins-panel { overflow: visible; }
-    .ins-panel svg, .env-dial svg, .incl-dial svg,
-    #cog-arc, #ship-schem, #rudder-arc, #depth-graph, .p-ship #compass.repeater, #rot { max-height: none; }
+    /* the panel/gauge resets this tier needs live in SCROLL-TIER RESETS at the end of this
+       section -- they cannot work from here, see the comment there. */
   }
   /* SHORT screens: there was no height breakpoint at all, which is why a 1920x1080 monitor
      got the one-screen lock purely for being WIDE, regardless of whether it was tall enough.
-     Threshold is derived, not picked: the left column's floors sum to 580px + 24px of gaps
-     = 604px, and the chrome around .conn-ins (header ~85, view padding 14, grid gap 6,
-     status strip ~32) costs ~137px -- so one-screen stops being satisfiable below a ~741px
-     inner viewport. 760px leaves a small margin.
+     Threshold is MEASURED, not derived from a floor sum -- the previous derivation (floors
+     580 + 24 gaps = 604, chrome ~137, "unsatisfiable below ~741") was arithmetic against
+     floors that had already changed, and it landed on 820 while the layout in fact cannot
+     fit anywhere at or below ~905px tall. Measured boundary, complete metric: 885 fails by
+     20px, 900 by 5px, 910/920/930/960 are clean. Below the boundary no --ui-scale value
+     rescues it -- sweeping 0.74 down to 0.66 shows overflow PLATEAU around 17px because the
+     residual is scale-INVARIANT content -- so a one-screen lock there only clips silently.
+     920 hands the whole unfittable band to the scrolling layout, where nothing is hidden,
+     and keeps ~2 tier-steps of margin above the 905 boundary: the bridge display runs a
+     different engine with different font metrics, and 900 failing by only 5px is exactly the
+     kind of edge that flips when the font does.
      NOTE this is deliberately NOT the ~1200px the plan first specified: that figure came
      from NATURAL content height (~1145px), which the .ap-ind cap and the flex floors above
      have already superseded. A 1200px tier would abandon the one-screen layout on virtually
-     every monitor including 1080p -- the opposite of the goal. */
-  @media (max-height: 820px) {
+     every monitor including 1080p -- the opposite of the goal.
+     Re-measure with `ops/conning-fit-probe.js` before moving this number. */
+  @media (max-height: 920px) {
     #view-conning.active { overflow: auto; }
     .conn-ins {
       height: auto;
@@ -543,7 +568,7 @@
       gap: 6px;
     }
     .conn-col-left, .conn-col-right { flex: none; }
-    .ins-panel { overflow: visible; }
+    /* ditto -- see SCROLL-TIER RESETS at the end of this section. */
   }
   .ins-panel {
     background: var(--panel);
@@ -858,6 +883,42 @@
     pointer-events: none;
   }
   #view-conning.stale .stale-overlay { display: flex; }
+
+  /* ================= SCROLL-TIER RESETS =================
+     MUST STAY LAST IN THE CONNING SECTION. These declarations were previously written inside
+     the two scroll-tier media blocks themselves, where every one of them was DEAD:
+     @media adds no specificity, so an equal-specificity rule declared LATER in the file wins
+     regardless of the media query. `.ins-panel { overflow: visible }` lost to the base
+     `.ins-panel { overflow: auto }`, and the whole `max-height: none` gauge reset lost to the
+     per-gauge `max-height: Nvh` rules below it. Net effect: in the scrolling tiers panels
+     clipped their content instead of growing (measured: p-primary cut by 129px, p-ship by 33px)
+     and gauges letterboxed instead of filling the now-full-width column -- the exact opposite
+     of what those blocks were written to do, and invisible because a scrolling single column
+     still looks basically usable.
+     Note the file already contained the fix pattern once, at `.ins-panel.p-primary` in the
+     one-screen section, which beats the same base rule by raising specificity instead. Adding
+     rules here rather than there keeps all the tier behaviour in one readable place.
+     If you add a per-gauge `max-height` above, add it to the reset list below too. */
+  @media (max-width: 1100px), (max-height: 920px) {
+    /* Let panels size to their content. `min-height: auto` matters for .p-primary and .p-ship:
+       they are direct flex children of .conn-ins with no column floor of their own, so the base
+       `min-height: 0` let them shrink below their content and clip. The column floors
+       (.conn-col-left .p-env etc.) are more specific and still apply -- harmless here, since a
+       floor is a minimum and content is free to exceed it once nothing is clipping. */
+    .ins-panel { overflow: visible; min-height: auto; }
+    /* Four panels are pinned to `overflow: hidden` in the one-screen section to kill stray
+       scrollbars. That rule is (0,2,0), so it outranks `.ins-panel` above no matter the order
+       and would keep clipping here (measured: p-primary cut by 129px). Re-stated at matching
+       specificity, later in the file, so this tier actually wins. */
+    .ins-panel.p-primary, .ins-panel.p-coords,
+    .ins-panel.p-time, .ins-panel.p-propulsion { overflow: visible; }
+    /* Uncap every gauge so it grows into the full-width column instead of letterboxing.
+       `.p-propulsion .prop-tach` is named explicitly because it is (0,2,0) and would beat
+       `.ins-panel svg` (0,1,1) on specificity no matter where this block sits. */
+    .ins-panel svg, .env-dial svg, .incl-dial svg,
+    #cog-arc, #ship-schem, #rudder-arc, #depth-graph, .p-ship #compass.repeater, #rot,
+    .p-propulsion .prop-tach { max-height: none; }
+  }
   #view-conning.stale > :not(.stale-overlay) { opacity: .45; }
 
   /* ================= MAINTENANCE / DIAG ================= */

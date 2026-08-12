@@ -152,6 +152,46 @@ rebuild the venv offline from the wheelhouse (above) and `systemctl restart mock
 `systemctl enable --now mockingbuoy caddy` makes both come up on boot. No desktop session is involved;
 the engine runs headless whether or not a browser is connected.
 
+## Client display / browser
+
+The appliance has no browser and no desktop session — the UI is viewed from a separate workstation.
+That machine's browser matters more than it looks like it should:
+
+- **Engine floor: Chromium 84 or newer** (or the matching Firefox/WebKit). What the conning layout
+  actually needs: CSS custom properties (49), `grid-template-areas` (57), `min()`/`clamp()` (79) and
+  `gap` on a **flex** container (84 — much later than grid `gap`, which is 66). `dvh` wants 108 but is
+  already paired with a `100vh` fallback, and `:has()` is not used. Any reasonably current build
+  clears this; a long-lived embedded browser on an appliance-style console may not.
+- **Prefer a kiosk-mode Chromium or Firefox** (`--kiosk` / `--kiosk`) over an embedded browser. It is
+  chromeless, so the conning view gets the full screen height, and it is what the UI is developed
+  against. Recovering the app header is worth ~85px — about 8% at 1080p, roughly one density step, not
+  the "15-20%" an older changelog entry claimed.
+- **Trust the TLS root first, before switching to kiosk mode.** Caddy serves with an internal CA whose
+  root must be distributed to clients (see [security.md](security.md)); with `Strict-Transport-Security`
+  set, a click-through exception is not a workaround worth having. A browser installed from a snap or
+  flatpak uses its **own** certificate store and does not inherit the system one, so importing into the
+  system store is not enough. Verify with an ordinary windowed page load showing a clean padlock, then
+  switch to `--kiosk` — a kiosk window has nowhere to display a certificate interstitial.
+- **Sizing the display is an operator setting, not a deployment one.** Config → Display, or the
+  browser's own zoom. See [user-guide.md](../user-guide.md).
+
+### Two deploy gotchas for the static assets
+
+- **Bump `?v=` on both `app.css` and `app.js` in `index.html` whenever either changes.** The HTML is
+  served `Cache-Control: no-store` so it always refetches, but the assets are not versioned any other
+  way — ship new HTML against a cached script and the new controls degrade to doing nothing, with no
+  error. A test asserts the two values match, so they cannot drift apart.
+- **Normalise line endings when copying from a Windows working tree.** The repo stores LF (enforced by
+  `.gitattributes`), but a tar built on Windows can carry CRLF onto the appliance. Harmless for
+  JS/HTML/Python, and `*.sh` is protected by attribute — but it defeats hash-based deploy verification,
+  so compare against the committed blob rather than the local file:
+  ```bash
+  git show HEAD:web/static/app.js | ssh <host> 'diff - /opt/mockingbuoy/web/static/app.js'
+  ```
+- A static-only change needs **no service restart**: `index.html`, `app.css` and `app.js` are read from
+  disk per request. Restarting stops every `PeriodicSender` and puts a real gap on the NMEA outputs, so
+  do not do it for a CSS fix.
+
 ## Dry run (no hardware, no web)
 
 Exercise the engine straight from the venv before wiring adapters:

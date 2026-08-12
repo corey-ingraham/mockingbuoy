@@ -73,6 +73,8 @@ each with its own **Input: ON / OFF** switch in the same position as an output p
 Where you drive the simulation.
 
 - **Operating-mode selector:** Simulate / Auto / Replay (see *Operating Modes* below).
+- **Display card** — how the conning display is sized on *this* browser. See below; it is the second
+  card, directly under Operating Mode, because it is what you reach for when the display looks wrong.
 - **Grouped manual vessel inputs:** position, SOG, COG, heading (true / mag), variation, STW,
   depth, rate-of-turn, true wind speed / direction, the **sea-state selector (0–9)**, and GPS
   detail (altitude, fix quality, satellites, HDOP).
@@ -81,6 +83,36 @@ Where you drive the simulation.
   to its role.
 - **Buttons:** Apply (live), Save as defaults, Load current (see *Setting and Saving Vessel
   Parameters*).
+
+#### Sizing the conning display (the Display card)
+
+The conning tab is a **one-screen layout**: it is designed to fill the display exactly, with no page
+scrolling. When it does not fit, it fails *quietly* — a panel clips its own content, or a column's last
+panel sits just outside the visible box. There is no error and the scrollbars are easy to miss. The
+Display card exists so you are not guessing.
+
+- **Fit badge** — the only signal that the layout is intact. **FITS** means nothing is clipped
+  anywhere; **CLIPPED** names the worst offender and by how many pixels. It reads *NOT MEASURED* until
+  you have opened the Conning tab once, because a hidden tab genuinely cannot be measured.
+- **Auto** (default) sizes the display from the screen height and, if that still would not fit, steps
+  the density down until it does. If *nothing* fits — some window heights cannot be satisfied at any
+  density — it goes back to the standard sizing and the badge tells you, rather than shrinking
+  everything for no benefit.
+- **Density slider** — turn Auto off to pin a density by hand, roughly 66% to 120%. Above 100% is for a
+  large display where the default reads too small from a distance.
+- **Fullscreen** — needs a click, because browsers refuse fullscreen without one; `Esc` leaves it. If
+  the display runs a kiosk browser it is already fullscreen and this button is redundant. Some embedded
+  browsers refuse the request outright; the button label only ever reflects what actually happened.
+- **Copy diagnostics** — puts the browser identification, screen geometry, density and fit numbers on
+  the clipboard as one block. Paste it into a bug report instead of describing the symptom.
+
+These settings live **in this browser only**. They are deliberately not part of *Save as defaults*: the
+right density for a bridge monitor is not the right density for a laptop, and one appliance serves both.
+That also means the appliance never needs to know, and a different browser starts from Auto.
+
+**Your browser's own zoom is an equally good escape hatch** and needs nothing from this app:
+`Ctrl` + `−` to shrink, `Ctrl` + `0` to reset. Chromium and Firefox remember it per site, so a display
+you zoom once stays zoomed across restarts.
 
 ### 4. Maintenance
 

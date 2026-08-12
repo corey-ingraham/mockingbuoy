@@ -8,6 +8,20 @@
   // Client-side conning temperature unit (display-only; temps never touch NMEA). Persisted to localStorage.
   let TEMP_UNIT = "C";
   try { const u = (window.localStorage && localStorage.getItem("mb.tempUnit")); if (u === "F" || u === "C") TEMP_UNIT = u; } catch (e) {}
+  // Client-side conning display density (display-only; never sent to the server). "auto" follows the
+  // CSS height tiers and lets autoFitScale() refine them; a number pins --ui-scale on #view-conning.
+  // Read at PARSE time, and applied at module scope below -- deliberately NOT from init(), which
+  // returns early when /api/config fails, so a server hiccup must not revert the operator's display.
+  const UI_SCALE_MIN = 0.66, UI_SCALE_MAX = 1.20, UI_SCALE_STEP = 0.02, FIT_TOL_PX = 2;
+  let UI_SCALE = "auto";
+  try {
+    const s = (window.localStorage && localStorage.getItem("mb.uiScale"));
+    if (s !== null && s !== "auto") {
+      const n = Number(s);
+      // Out-of-range or junk falls back to auto rather than pinning an unreadable scale.
+      if (Number.isFinite(n) && n >= UI_SCALE_MIN && n <= UI_SCALE_MAX) UI_SCALE = clampScale(n);
+    }
+  } catch (e) {}
 
   // Manual-field range table mirroring the server's _UPDATE_RANGES (client-side pre-check only).
   const RANGES = {
@@ -158,9 +172,268 @@
     stopDiagPoll(); stopSecPoll();
     if (view === "maintenance") startDiagPoll();
     if (view === "streams") { updateInputSection(); }
-    if (view === "config") { refreshInputs(); }
+    if (view === "config") { refreshInputs(); loadDisplayPrefsIntoConfig(); }
     if (view === "security") { startSecPoll(); }
+    if (view === "conning") scheduleAutoFit();
   }
+
+  /* =====================================================================
+   *  DISPLAY DENSITY  (--ui-scale: CSS tiers + a measured refinement + a manual override)
+   *
+   *  The conning view is a one-screen lock that fails SILENTLY when it does not fit: panels clip
+   *  under `overflow: auto` and a column's last panel simply hangs outside the column box. The CSS
+   *  height tiers are the declarative baseline and are measured correct at every viewport we test
+   *  (see ops/conning-fit-probe.js). autoFitScale() only REFINES them -- it steps the scale down
+   *  when the baseline does not fit an off-tier geometry, and otherwise leaves the CSS alone. Two
+   *  reasons not to compute the scale from scratch: the tiers work without JS, and they are already
+   *  correct before first paint, so there is no flash.
+   * ===================================================================== */
+
+  function clampScale(n) {
+    const v = Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, Number(n)));
+    return Math.round(v * 100) / 100;
+  }
+
+  /* The ONLY writer of --ui-scale. "auto" REMOVES the inline property so the CSS tiers govern
+     again -- it must never set 1, which would pin full density and defeat the tiers on a short
+     screen. Manual 1.00 and auto-resolving-to-1 are genuinely different states. */
+  function applyUiScale() {
+    const view = document.getElementById("view-conning");
+    if (!view) return;
+    if (UI_SCALE === "auto") view.style.removeProperty("--ui-scale");
+    else view.style.setProperty("--ui-scale", String(UI_SCALE));
+  }
+
+  /* Complete fit metric. Per-panel overflow ALONE IS NOT ENOUGH: measured at 1920x830, no panel
+     overflowed while the Alerts panel hung 169px below its column. So this also measures each
+     column's own overflow and how far each column's last child falls past the column bottom.
+     A check that walks only panels prints a green tick over a visibly broken display. */
+  function measureConningFit() {
+    const view = document.getElementById("view-conning");
+    if (!view || !view.classList.contains("active")) {
+      return { ok: false, reason: "conning view not shown" };
+    }
+    const cs = getComputedStyle(view);
+    const colL = document.querySelector(".conn-col-left");
+    const colR = document.querySelector(".conn-col-right");
+    void view.offsetHeight;   // force layout once, then read only
+    const over = (el) => (el ? el.scrollHeight - el.clientHeight : 0);
+    const tailCut = (col) => {
+      if (!col || !col.lastElementChild) return 0;
+      return Math.round(
+        col.lastElementChild.getBoundingClientRect().bottom - col.getBoundingClientRect().bottom
+      );
+    };
+    const clipped = [];
+    for (const el of view.querySelectorAll(".ins-panel")) {
+      const oy = el.scrollHeight - el.clientHeight;
+      const ox = el.scrollWidth - el.clientWidth;
+      if (oy > FIT_TOL_PX || ox > FIT_TOL_PX) {
+        clipped.push({ cls: (el.className.match(/p-[a-z]+/) || ["?"])[0], oy: oy, ox: ox });
+      }
+    }
+    const m = {
+      ok: true,
+      // In a scroll tier the VIEW is meant to scroll; that is not a defect. Clipped panels and
+      // overflowing columns still are, which is why they are measured in both tiers.
+      scrolling: cs.overflowY === "auto",
+      scale: cs.getPropertyValue("--ui-scale").trim(),
+      pinned: view.style.getPropertyValue("--ui-scale").trim() || null,
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      clipped: clipped,
+    };
+    m.worst = Math.max(
+      0, over(colL), over(colR), tailCut(colL), tailCut(colR),
+      ...clipped.map((c) => Math.max(c.oy, c.ox))
+    );
+    m.fits = m.worst <= FIT_TOL_PX;
+    return m;
+  }
+
+  /* Step the density down until the layout fits. Deliberately shrink-only: the CSS baseline is the
+     designed density, so Auto never makes the display BIGGER than intended without being asked --
+     use the Config slider (which goes to 1.20) for a large monitor.
+     No requestAnimationFrame anywhere: rAF does not fire in a backgrounded tab, so an rAF-sequenced
+     loop hangs instead of returning. Reading scrollHeight forces layout synchronously, which is all
+     this needs -- and, verified, works in a hidden tab too. Deliberately NOT gated on
+     document.visibilityState: that gate stopped the fit from ever running in a background tab, so a
+     page loaded out of focus stayed clipped even after being brought forward. The `.active` check
+     below is the guard that actually matters, because a display:none view measures as all zeros. */
+  function autoFitScale() {
+    if (UI_SCALE !== "auto") return;                       // a manual pin wins outright
+    const view = document.getElementById("view-conning");
+    if (!view || !view.classList.contains("active")) return;
+    view.style.removeProperty("--ui-scale");               // always judge the CSS tier first
+    let m = measureConningFit();
+    if (!m.ok || m.fits) return;
+    // A scroll tier is already the "does not have to fit one screen" answer; shrinking there just
+    // makes a scrolling page smaller for no benefit.
+    if (m.scrolling) return;
+    let s = Number(m.scale) || 1;
+    const steps = Math.ceil((s - UI_SCALE_MIN) / UI_SCALE_STEP);
+    for (let i = 0; i < steps; i++) {
+      s = Math.round((s - UI_SCALE_STEP) * 100) / 100;
+      if (s < UI_SCALE_MIN) break;
+      view.style.setProperty("--ui-scale", String(s));
+      m = measureConningFit();
+      if (m.fits) return;
+    }
+    // Unfittable at any density -- the residual is scale-invariant content. Revert rather than
+    // leave the display pinned at minimum density with the clipping still there.
+    view.style.removeProperty("--ui-scale");
+  }
+
+  let _autoFitTimer = null;
+  function scheduleAutoFit(delay) {
+    if (_autoFitTimer) clearTimeout(_autoFitTimer);
+    _autoFitTimer = setTimeout(() => {
+      _autoFitTimer = null;
+      autoFitScale();
+      renderDisplayDiag();
+    }, delay === undefined ? 60 : delay);
+  }
+
+  function setUiScale(v) {
+    UI_SCALE = (v === "auto") ? "auto" : clampScale(v);
+    try { localStorage.setItem("mb.uiScale", String(UI_SCALE)); } catch (e) {}
+    applyUiScale();
+    if (UI_SCALE === "auto") scheduleAutoFit();
+    else renderDisplayDiag();
+  }
+
+  /* Render the fit badge + one diagnostic line. Reads the LAST measurement rather than claiming a
+     fresh one when the conning view is hidden: an inactive view measures as all zeros, and showing
+     that as "fits" is a lie in the shape of a green tick. */
+  let _lastFit = null;
+  function renderDisplayDiag() {
+    const pill = $("cfg-fit-pill"), out = $("cfg-display-diag"), val = $("cfg-ui-scale-val");
+    const m = measureConningFit();
+    if (m.ok) _lastFit = m;
+    const cur = m.ok ? m : _lastFit;
+    if (val) {
+      // textContent only — never innerHTML. The <b> wrapper lives in index.html.
+      const slot = val.querySelector("b") || val;
+      slot.textContent = cur
+        ? (UI_SCALE === "auto" ? "Auto → " + (cur.scale || "?") : "Manual " + Number(UI_SCALE).toFixed(2))
+        : "—";
+    }
+    if (pill) {
+      pill.className = "src " + (!cur ? "src-off" : cur.fits ? "src-live" : "src-sim");
+      pill.textContent = !cur ? "NOT MEASURED" : cur.fits ? "FITS" : "CLIPPED";
+    }
+    if (out) {
+      if (!cur) {
+        out.textContent = "Open the Conning tab once to measure — a hidden tab cannot be measured.";
+      } else {
+        const bits = [
+          "viewport " + cur.vw + "×" + cur.vh,
+          "density " + (cur.scale || "?") + (cur.pinned ? " (pinned)" : " (from screen height)"),
+          cur.scrolling ? "scrolling layout" : "one-screen layout",
+        ];
+        bits.push(cur.fits ? "nothing clipped" : "worst overflow " + cur.worst + "px" +
+          (cur.clipped.length ? " — " + cur.clipped.map((c) => c.cls.replace("p-", "")).join(", ") : " (a column, not a panel)"));
+        if (!m.ok) bits.push("[last measured; conning tab not shown]");
+        out.textContent = bits.join(" · ");
+      }
+    }
+  }
+
+  /* Fullscreen. The label is written ONLY from the observed state (document.fullscreenElement) via
+     the fullscreenchange event -- never optimistically from the call, which can be silently refused
+     by an embedding application (QtWebEngine requires the host app to opt in and accept the
+     request). Not persisted: it cannot be re-entered on load without a user gesture, so a stored
+     "true" would guarantee a UI claiming a state it is not in. */
+  function syncFullscreenUi() {
+    const btn = $("cfg-fullscreen-btn");
+    if (!btn) return;
+    btn.textContent = document.fullscreenElement ? "Leave fullscreen" : "Fullscreen";
+  }
+
+  function toggleFullscreen() {
+    const msg = $("cfg-display-msg");
+    const say = (t) => { if (msg) msg.textContent = t; };
+    try {
+      if (document.fullscreenElement) {
+        if (document.exitFullscreen) document.exitFullscreen();
+        return;
+      }
+      // documentElement, not #view-conning: body's 100vh/100dvh is the shell's only height
+      // declaration and every 1fr row in the conning grid resolves against it. Making the view
+      // itself the fullscreen root would need extra :fullscreen height CSS.
+      const root = document.documentElement;
+      if (!root.requestFullscreen) {
+        say("This browser has no Fullscreen API — use your browser's own fullscreen (F11 / Ctrl+Shift+F).");
+        return;
+      }
+      const p = root.requestFullscreen();
+      say("");
+      if (p && p.catch) p.catch((e) => say("Fullscreen refused: " + (e && e.message ? e.message : e)));
+    } catch (e) {
+      say("Fullscreen failed: " + (e && e.message ? e.message : e));
+    }
+  }
+
+  function loadDisplayPrefsIntoConfig() {
+    const auto = $("cfg-ui-scale-auto"), sl = $("cfg-ui-scale");
+    if (auto) auto.checked = (UI_SCALE === "auto");
+    if (sl) {
+      sl.disabled = (UI_SCALE === "auto");
+      // With Auto on, park the slider at whatever density is actually in effect so switching to
+      // manual starts from what the operator is looking at rather than jumping.
+      const m = measureConningFit();
+      const eff = (UI_SCALE === "auto") ? Number((m.ok && m.scale) || 1) : Number(UI_SCALE);
+      sl.value = String(clampScale(Number.isFinite(eff) ? eff : 1));
+    }
+    syncFullscreenUi();
+    renderDisplayDiag();
+  }
+
+  /* Applied AND wired at module scope. Both matter: init() returns early when /api/config fails,
+     so anything hung off it is missing on exactly the loads where the operator may need it —
+     including the display control they would use to recover. The Config tab's markup is static, so
+     these elements exist at parse time and need no build step. */
+  applyUiScale();
+  scheduleAutoFit(150);
+  window.addEventListener("resize", () => scheduleAutoFit(250));
+  document.addEventListener("fullscreenchange", () => { syncFullscreenUi(); scheduleAutoFit(250); });
+  // Re-check when the page comes to the front: a kiosk browser can finish loading while the window
+  // is still behind something, and font metrics/scrollbars can settle differently by then.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) scheduleAutoFit(250);
+  });
+  (function wireDisplayCard() {
+    const auto = $("cfg-ui-scale-auto"), sl = $("cfg-ui-scale");
+    if (auto) auto.addEventListener("change", () => {
+      if (auto.checked) { setUiScale("auto"); if (sl) sl.disabled = true; }
+      else { if (sl) sl.disabled = false; setUiScale(sl ? sl.value : 1); }
+    });
+    // `input`, not `change`: dragging should move the display live — that is the point of a slider.
+    if (sl) sl.addEventListener("input", () => {
+      if (auto && auto.checked) { auto.checked = false; sl.disabled = false; }
+      setUiScale(sl.value);
+    });
+    const fb = $("cfg-fullscreen-btn");
+    if (fb) fb.addEventListener("click", toggleFullscreen);
+    const cp = $("cfg-diag-copy");
+    if (cp) cp.addEventListener("click", () => {
+      const m = _lastFit || measureConningFit();
+      const lines = [
+        "mockingbuoy display diagnostics",
+        "user agent: " + navigator.userAgent,
+        "viewport: " + window.innerWidth + "x" + window.innerHeight +
+          "  screen: " + (screen ? screen.width + "x" + screen.height : "?") +
+          "  dpr: " + (window.devicePixelRatio || "?"),
+        "density: " + (m && m.ok ? m.scale : "?") + (UI_SCALE === "auto" ? " (auto)" : " (manual " + UI_SCALE + ")"),
+        "layout: " + (m && m.ok ? (m.scrolling ? "scrolling" : "one-screen") : "not measured"),
+        "worst overflow: " + (m && m.ok ? m.worst + "px" : "not measured"),
+        "clipped: " + (m && m.ok && m.clipped.length ? m.clipped.map((c) => c.cls + " y" + c.oy + " x" + c.ox).join(", ") : "none"),
+      ];
+      copyText(lines.join("\n"));
+      const msg = $("cfg-display-msg");
+      if (msg) { msg.textContent = "Diagnostics copied."; setTimeout(() => { msg.textContent = ""; }, 2500); }
+    });
+  })();
 
   /* =====================================================================
    *  CONNING (state SSE driven, rAF-throttled)
@@ -2705,6 +2978,7 @@
     loadDepthSimIntoConfig();              // A6
     await loadAisTrafficIntoConfig();
     loadAisIdentityIntoConfig();           // RM-032
+    loadDisplayPrefsIntoConfig();          // idempotent; also re-seeded on each Config-tab entry
     setMode(cfg.mode || "simulate");
     connectStream();
   }

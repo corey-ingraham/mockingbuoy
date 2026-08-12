@@ -24,10 +24,18 @@ Bench findings from the 2026-07-27 `eemslab` session, carried over from that box
   **Caveat:** per [ISSUE-020](issues.md#issue-020), `down: false` does **not** mean the port opened —
   fix that first or the pills will confidently show green on a dead port.
 - **GPS IN and OUT don't scroll** in the NMEA Stream pane.
-- **Full-screen mode** for the conning display (Fullscreen API). *(Still open — demoted: once the
-  bridge runs a kiosk browser it is already chromeless, so this is a workstation convenience.)*
-- ~~Monitor-resolution auto-scaling.~~ **DONE 2026-07-28** — container-aware floors + `--ui-scale`
-  tiers; see [changelog](changelog.md).
+- ~~**Full-screen mode** for the conning display (Fullscreen API).~~ **DONE 2026-08-11** — a button on
+  the Config-tab *Display* card, requesting fullscreen on `documentElement`. Its label is written only
+  from the observed `document.fullscreenElement` via `fullscreenchange`, never optimistically, because
+  an embedding application can silently refuse the request; and the state is deliberately **not**
+  persisted (it cannot be re-entered on load without a user gesture). Still a workstation convenience:
+  a kiosk browser is already fullscreen and chromeless.
+- ~~Monitor-resolution auto-scaling.~~ **DONE 2026-07-28**, but it was **not actually finished** —
+  the `--ui-scale` tiers shipped while three viewports still clipped silently, and this line saying
+  DONE is part of why that went unnoticed for a fortnight. Genuinely closed **2026-08-11** with
+  scale-relative floors, a measured scroll threshold, an operator density control, and a measurement
+  rig (`ops/conning-fit-probe.js`) — see [ISSUE-026](issues.md#issue-026) and
+  [ISSUE-025](issues.md#issue-025).
 
 **Config tab** — `web/static/index.html`
 - ~~Lat/Long entry has no E/W or N/S control.~~ **DONE 2026-07-28** — magnitude + hemisphere select

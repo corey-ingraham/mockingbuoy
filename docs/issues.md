@@ -16,6 +16,32 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-038 — Four conning CSS selectors match no element · planned (2026-08-11)
+
+Found while fixing [ISSUE-025](#issue-025). These selectors carry live rules in `app.css` but match
+nothing in `index.html`:
+
+| selector | rule it still carries |
+|---|---|
+| `#cog-arc` | `max-height: 24vh` |
+| `#rudder-arc` | `max-height: 15vh` |
+| `#rot` | `max-height: 10vh` |
+| `.p-ship #compass.repeater` | `display: none` |
+
+`#cog-arc` and `#rudder-arc` were already noted as orphaned in ISSUE-025; `#rot` and
+`.p-ship #compass.repeater` were not. Grep confirms no matching `id=` in `index.html` or `app.js` —
+only `rot-val` and `compass-card`, which are different elements.
+
+**Deliberately not deleted.** Dead CSS and parked work-in-progress are indistinguishable from the
+outside, and `#rot` in particular reads like a rate-of-turn gauge that may be intended to return
+(there *is* a live `rot-val` readout). They cost nothing at runtime beyond four unmatched selectors.
+
+**Decision needed:** confirm each is genuinely abandoned, then delete the rule and drop the selector
+from the SCROLL-TIER RESETS list. If any is parked WIP, say so here so the next person does not
+re-file this.
+
+---
+
 ### ISSUE-037 — Synthetic AIS contacts are region-absolute, so a moving own ship leaves an empty plot · planned (2026-08-11)
 
 `TargetSpawner` draws each contact's position with `rng.uniform` **inside the profile's region**
@@ -226,7 +252,7 @@ this commit, so the register entry stands only for the missing *feature*, not th
 
 ---
 
-### ISSUE-026 — Left conning column overflows silently at `--ui-scale: 1` · planned (2026-07-28)
+### ISSUE-026 — Left conning column overflows silently at `--ui-scale: 1` · done (2026-08-11)
 
 Found while measuring the [ISSUE-025](#issue-025) sibling; **pre-existing and unrelated to that
 change** — confirmed by A/B, the numbers are byte-identical with the off-course/off-track edit
@@ -251,14 +277,41 @@ one case not covered.
 This is the exact failure mode `74a2c50` set out to fix (silent clipping, deliberately not masked
 with `overflow: hidden`), so it should not be left standing.
 
-**Fix:** re-measure the left column at `--ui-scale: 1` and raise `.p-env` / `.p-coords` / `.p-time`
-floors (`app.css:476-480`) to their real content heights, the same way `.p-autopilot` was corrected
-to 304px. Confirm on the bridge display, not only in a desktop browser — `74a2c50`'s own lesson is
-that the tier you measure at determines whether you see the bug.
+**Resolved 2026-08-11 — and the diagnosis above was incomplete in two ways.**
+
+Re-measured with `ops/conning-fit-probe.js` (an exact-CSS-pixel iframe, so the tier is whatever you
+ask for). The defect reproduced but the numbers had moved — coords 10, time 10, env 33 at 1080p — and
+**1280×1024 was also broken** (coords 6, time 6, env 36) despite `74a2c50` claiming it verified clean.
+Only 1920×940 and 2560×1440 ever were.
+
+The fix this entry proposed — raise the floors — **does not work**, and measuring proved it: floors
+raised to fit 1080p at density 1 push a 940-tall viewport's column over by 59px, with the Alerts
+panel hanging outside the column box. That is the "floors that oversubscribe would merely relocate
+the clipping" failure the CSS comment warned about while committing it. A plain `Npx * scale`
+overshoots the other way, clipping env by 17px at 0.74, because part of each panel is
+scale-**invariant** (`.coord-label` is a fixed 15px, dials are `vh`-capped).
+
+Actual fix: the floors are now **affine functions of `--ui-scale`**, each fitted through measured-good
+points across the whole usable density range (`app.css`, `.conn-col-left .p-coords/.p-time/.p-env`).
+Verified clean at 1920×1080, 1920×1000, 1920×940, 1920×921, 2560×1440 and 1280×1024 — at full
+density, so 1080p keeps full-size gauges. Guarded by
+`test_app_css_left_column_floors_scale_with_density`.
+
+Two things this cost, worth remembering:
+
+- **Per-panel overflow is not a sufficient metric.** At 1920×830 no panel overflowed *and* the Alerts
+  panel hung 169px below its column. A check that walks only panels prints a green tick over a
+  visibly broken display. The probe and the in-app fit badge both measure columns and each column's
+  last-panel-vs-column-bottom delta.
+- **The `max-height: 820px` scroll threshold was wrong**, derived from a floor sum that had already
+  changed. The layout cannot fit at *any* density at or below ~905px tall (measured: 885 fails by 20,
+  900 by 5, 910 clean; sweeping density 0.74→0.66 shows overflow *plateau* around 17px because the
+  residual is scale-invariant). Threshold raised to 920 so the whole unfittable band gets the
+  scrolling layout, where nothing is hidden, with margin for a different engine's font metrics.
 
 ---
 
-### ISSUE-025 — The narrow-screen `max-height: none` reset never takes effect · planned (2026-07-28)
+### ISSUE-025 — The narrow-screen `max-height: none` reset never takes effect · done (2026-08-11)
 
 `app.css:515-516`, inside `@media (max-width: 1100px)`, intends to uncap every gauge's height when
 the layout abandons the one-screen lock and scrolls as a single column:
@@ -289,9 +342,29 @@ layout is still *usable*, just under-sized.
 **Consequence already absorbed:** `.ap-ind svg` deliberately carries **no** `max-height` precisely
 so it cannot join this club — see the comment at `app.css:740`.
 
-**Fix:** move the reset block after the per-gauge rules (simplest), or raise its specificity, or
-fold `max-height` into the per-gauge rules as a custom property the media query overrides. Whichever
-is chosen, verify by measuring a gauge below 1100px — the current block gives no signal either way.
+**Resolved 2026-08-11 — this is a bug CLASS with four instances, not one dead block.**
+
+The same cascade-order trap had also killed **`.ins-panel { overflow: visible }` in *both* scroll
+tiers** (it lost to the base `.ins-panel { overflow: auto }`, declared later at equal specificity), and
+after fixing those, **`.ins-panel.p-primary { overflow: hidden }` at (0,2,0)** still beat the reset on
+specificity. Measured consequence in the scrolling tier: `p-primary` clipped by 129px and `p-ship` by
+33px — panels clipping their content instead of growing, the exact opposite of the block's intent, and
+invisible because a scrolling single column still looks usable.
+
+Fix: all of it consolidated into one **SCROLL-TIER RESETS** block that must stay last in the conning
+section, covering `@media (max-width: 1100px), (max-height: 920px)`. It restates the
+higher-specificity offenders (`.ins-panel.p-primary` and friends, `.p-propulsion .prop-tach`) because
+source order alone cannot beat them, and adds `min-height: auto` so `.p-primary` / `.p-ship` — direct
+flex children of `.conn-ins` with no column floor — stop shrinking below their content.
+
+Verified: 1920×900, 1920×885 and 1100×900 all clean on the complete metric. Guarded by
+`test_app_css_scroll_tier_resets_come_after_the_rules_they_override`, which fails if any new
+height cap is declared *after* the resets — the regression that would silently restore this bug.
+
+Note the file already contained the winning pattern once (`.ins-panel.p-primary` in the one-screen
+section, beating the same base rule by raising specificity). The trap is not obscure here; it had been
+hit, solved in one place, and missed in four others. **`@media` adds no specificity** is the lesson,
+now in `CLAUDE.md`.
 
 ---
 

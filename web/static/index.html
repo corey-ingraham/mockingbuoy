@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mockingbuoy Monitor</title>
-<link rel="stylesheet" href="/static/app.css?v=50">
+<link rel="stylesheet" href="/static/app.css?v=51">
 </head>
 <body>
 
@@ -463,6 +463,44 @@
       <label class="switch"><input type="checkbox" id="cfg-replay-loop"> Loop</label>
     </div>
     <p class="hint" style="margin:6px 0 0;">Replay file must exist when Replay is the mode (checked on Save / Start). Persisted via Save as defaults.</p>
+  </div>
+
+  <!-- Display: per-BROWSER conning density + fullscreen. Deliberately placed second, right under
+       Operating Mode: this is the card you reach for when the display looks wrong, and burying it
+       below the value editors means scrolling past nine cards while standing at the console.
+       NOTE none of these controls carry data-field or data-override. That keeps them out of
+       allCfgInputs() and, more importantly, out of applyDrivenFields()' disable loop — a stray
+       attribute here would let the engine disable the scale slider. Nothing here touches the
+       server, so the card has no Save button by design. -->
+  <div class="card" id="cfg-display-card">
+    <h2>Display <span class="hint">(this browser only · not saved to the appliance)</span>
+      <span id="cfg-fit-pill" class="src src-off">NOT MEASURED</span></h2>
+    <div class="ctl-row" style="align-items:center;">
+      <label class="switch"><input type="checkbox" id="cfg-ui-scale-auto" checked> <b>Auto</b> fit to screen</label>
+      <div class="field" style="flex:1;min-width:240px;">
+        <label for="cfg-ui-scale">Conning density</label>
+        <input id="cfg-ui-scale" type="range" min="0.66" max="1.20" step="0.02" style="width:100%;">
+      </div>
+      <div class="field" style="min-width:120px;">
+        <label>In effect</label>
+        <span id="cfg-ui-scale-val" class="kv"><b>—</b></span>
+      </div>
+      <button id="cfg-fullscreen-btn" class="small">Fullscreen</button>
+    </div>
+    <p class="hint" id="cfg-display-diag" style="margin:6px 0 0;">—</p>
+    <div class="ctl-row" style="margin-top:6px;">
+      <button id="cfg-diag-copy" class="small">Copy diagnostics</button>
+      <span id="cfg-display-msg" class="msg"></span>
+    </div>
+    <p class="hint" style="margin:6px 0 0;">
+      <b>Auto</b> follows the screen height and steps the density down if the layout would not fit.
+      Turn it off to pin a density by hand. The conning display clips <em>silently</em> when it does
+      not fit, so the badge above is the only signal — it reads LIVE only when nothing is clipped.
+      Your browser's own zoom (<code>Ctrl</code>+<code>−</code> / <code>Ctrl</code>+<code>0</code>)
+      is an equally good field escape hatch and is remembered per site. Fullscreen needs a click
+      (browsers refuse it otherwise) and <code>Esc</code> leaves it; in a kiosk browser the display
+      is already fullscreen and this button is redundant.
+    </p>
   </div>
 
   <!-- A1: mode-context cards moved directly under Operating Mode. setMode() still toggles
@@ -952,6 +990,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/static/app.js?v=50"></script>
+<script src="/static/app.js?v=51"></script>
 </body>
 </html>
