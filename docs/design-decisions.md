@@ -9,6 +9,107 @@ never rewrite history. Each entry states a **Decision**, its **Context**, the **
 
 ---
 
+## Transparent relay forwards without stamping liveness
+
+**Decision** A channel with `rx_transparent_relay` forwards the lines it would otherwise drop, but
+such a line **never** stamps liveness, and it is forwarded **only while the channel is already LIVE**.
+
+**Context** `classify.sentence_class` models three sentence classes (`gnss` / `heading` / `ais`).
+Everything else — AIS `ALR`/`ALF`/`ALC`/`ABK`/`TXT`/`VER`, vendor `$P...`, query responses — returned
+`None` and was dropped. Inserted *in series* on a real talker's wire, that made the program a black
+hole for every sentence type it does not model, including the bus's AIS alarm path.
+
+**Why** The obvious fix — add the status formatters to the `ais` class — is a trap. `note_rx` stamped
+liveness for every line it routed, so status sentences would have counted as a live AIS feed. A
+transponder emitting nothing but alarms would then hold the channel LIVE, `_fire` would stay suppressed
+by `any_live`, and the rig would **never** simulate on signal loss — defeating the entire purpose of a
+simulate-on-loss appliance. Forwarding and liveness had to become separate decisions, which is why
+`note_rx` returns an `RxDecision` instead of a tuple.
+
+Gating transparent lines on the channel being LIVE (the *same* `any_live` predicate that suppresses
+generation) makes the two exact complements: while a source feeds the channel the real talker's traffic
+flows and generation is silent; once it dies generation takes over and the chatter stops. A consumer
+being fed a simulated picture is not also told the vanished source has failed.
+
+**Alternatives rejected**
+- *Enumerate the status formatters into a new class* — whack-a-mole. It misses every vendor sentence and
+  every `$P...` proprietary sentence (which `classify` excludes by design), and each miss is silent.
+- *Forward transparent lines unconditionally* — honest, but the consumer then sees alarms about a source
+  that is no longer feeding it while simultaneously receiving healthy synthetic data. On a fidelity rig
+  the clean picture is the point.
+- *Content-aware AIS liveness* (decode inbound `AIVDO`, treat a not-available position as dead) — built
+  and then cut. The per-input mute already delivers the same outcome deterministically, and the
+  operator inducing the failure already knows it happened, so the inference was redundant. It was also
+  subtly wrong as first specified: keying on `msg_type in (1,2,3,18,19)` matches *any* vessel's position
+  report, so a received target with a good fix would have held the channel LIVE. If ever revived it must
+  key on own ship (`!AIVDO`, or a matching own-ship MMSI) — and note Type 27 is a position report too.
+
+**Date** 2026-08-11
+
+---
+
+## Muting an input clears its liveness
+
+**Decision** `set_input_enabled(..., False)` calls `Router.clear_liveness(input_id)`, so a mute drops
+the channel to SIM immediately rather than after `liveness_timeout_s`.
+
+**Context** `winner()` expires an input purely on elapsed time since its last valid line, with no
+hysteresis. Muting stopped new lines reaching the router but left the stamps already made, so the
+fallback lagged every deliberate test by the slot's whole timeout.
+
+**Why** The timeout has two jobs in tension. It must exceed the longest *healthy* gap or the channel
+flaps — AIS own-ship reports stretch toward minutes when moored, so a correct anti-flap value is large.
+But it also bounded how long a deliberate signal-loss test took, and (with transparent relay) how long
+a dead source's alarm chatter kept reaching the consumer. Those pull in opposite directions and no
+single number satisfies both.
+
+Clearing liveness on mute separates them. The mute becomes the test instrument — instant and
+deterministic — and the timeout is left to govern only genuinely *unexpected* loss, where a large
+anti-flap value is exactly right. Unmuting needs no counterpart: the next valid line re-stamps.
+
+**Alternatives rejected**
+- *Add hysteresis to the router* (N missed intervals to enter SIM, minimum dwell before returning to
+  LIVE) — the right answer for automatic detection on a sparse feed, but far more machinery than a
+  bench that induces its own failures needs. Still open if automatic detection is ever required.
+- *Just document a shorter timeout for tests* — makes the channel flap in normal operation, and the
+  flapping reads as working during commissioning.
+
+**Date** 2026-08-11
+
+---
+
+## The AUTO router relays one direction only; a duplex channel's RX is not passthrough
+
+**Decision** Passthrough requires an `inputs[]` slot named in a channel's `sources`. A channel's own
+`direction: "both"` RX is **not** a passthrough path, and relaying a second position/heading direction
+(e.g. into an AIS transponder's listener pair) is out of scope.
+
+**Context** A full-duplex device tempts you to land both its pairs on the program and relay both ways.
+
+**Why** Three structural reasons, none of them cosmetic:
+- Channels wire `on_rx` to `_rx_monitor` → `_feed_state` (tagged `rx:<channel_id>`); only input slots
+  wire it to `_dispatch_rx` → `router.note_rx`. A duplex channel's RX therefore reaches the monitor and
+  the `rx_accept` whitelist and **never** the router, so it cannot win arbitration or be forwarded.
+- Routing is class → role → *the one channel owning that role*, and `_ARBITRATED_ROLES` permits at most
+  one channel per role. A second `gps`-role output is a hard validation error, so a second position path
+  is unrepresentable. `role: "instrument"` allows duplicates but consumes no class (`channel_class` is
+  `None`), so it never suppresses and always simulates — it cannot relay.
+- An output channel and an input slot may never share a device path (one `realpath`-keyed namespace), so
+  one port cannot be both legs regardless.
+
+**Alternatives rejected**
+- *Lift the one-channel-per-arbitrated-role limit* — the limit exists because the router inverts
+  role → channel and other consumers take the first match; two claimants make them disagree on the
+  winner and silently strand the loser. Lifting it needs a per-input destination model, not a flag.
+- *Relay the listener pair in series anyway* — its traffic is mostly sentences the classifier drops
+  (`SSD`, `VSD`, `ABM`/`BBM`, `ACK`, `AIR`, `ACA`, `LRI`), so the program would swallow the ECDIS's
+  configuration and safety-message path. Even with transparent relay it is the wrong shape: those
+  sentences would be gated on a LIVE state that means nothing for that direction.
+
+**Date** 2026-08-11
+
+---
+
 ## Native systemd, no Docker
 
 **Decision** Run as a native systemd service in a Python venv, not a container.

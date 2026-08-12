@@ -66,6 +66,7 @@
       "rx_feeds_state": false,
       "rx_accept": [],
       "sources": ["ais_in"],
+      "$rx_transparent_relay": "set true when this leg is wired IN SERIES on a transponder's talker pair: forwards the status/alarm sentences the router does not classify (ALR/ALF/ABK/TXT/VER) while LIVE, without ever stamping liveness. Leave off for a parallel tap.",
       "ais": {
         "mode": "ownship",
         "own_ship": { "mmsi": 366000001, "class": "A", "name": "MOCKINGBUOY", "call_sign": "MB1", "ship_type": 37 },

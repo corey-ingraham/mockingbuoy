@@ -60,7 +60,7 @@ from .instrument_generator import InstrumentGenerator
 from .navigation import dead_reckon, knots_to_mps
 from .ntpsync import NtpSync
 from .realism import RealismProfile, TargetSpawner
-from .router import Router
+from .router import Router, RxDecision
 from .seastate import sea_state_motion
 from .serialport import SerialPort
 from .state import AisTarget, SharedState, VesselState
@@ -962,8 +962,8 @@ class _ChannelWorker(threading.Thread):
                         em.next_fire = advance_next_fire(em.next_fire, em.period, now)
             elif isinstance(msg, _ReplayLine):  # replay mode: inject a captured line verbatim
                 self._on_replay(msg.line)
-            else:  # a classified passthrough tuple (input_id, cls, line)
-                self._on_passthrough(cast("tuple[str, str, str]", msg))
+            else:  # a routed passthrough decision from the AUTO router
+                self._on_passthrough(cast("RxDecision", msg))
 
     # -- emission -----------------------------------------------------------
     def _fire(self, em: _Emitter) -> None:
@@ -996,7 +996,7 @@ class _ChannelWorker(threading.Thread):
 
     # -- passthrough (auto mode) -------------------------------------------
     def enqueue(self, msg: object) -> None:
-        """Hand a classified passthrough tuple (or ``_STOP``) to this worker's inbox.
+        """Hand a routed :class:`RxDecision` (or ``_STOP``/``_ReplayLine``) to this worker's inbox.
 
         Called from the engine's RX-dispatch thread (single producer per message kind). On a full
         inbox the line is DROPPED with a best-effort ``inbox_full`` status — a logged gap, never a
@@ -1007,22 +1007,36 @@ class _ChannelWorker(threading.Thread):
         except queue.Full:
             self._emit_status("inbox_full", self._spec.id)
 
-    def _on_passthrough(self, msg: tuple[str, str, str]) -> None:
+    def _on_passthrough(self, decision: RxDecision) -> None:
         # Single-writer per channel: only this worker thread ever calls ``_fan_out`` for this
-        # channel, so the winner check + forward is atomic with respect to generation.
-        input_id, cls, line = msg
+        # channel, so the gate check + forward is atomic with respect to generation.
         # OFF beats everything, including live passthrough (R9/R55): a disabled channel is silent.
-        if not self._enabled.is_set():
+        if not self._enabled.is_set() or self._router is None:
             return
         now = time.monotonic()
-        if self._router is not None and input_id == self._router.winner(self._spec.id, cls, now):
+        line = decision.line
+        if decision.kind == "transparent":
+            # A line the channel would otherwise drop (status/alarm, vendor, unroutable). It never
+            # stamped liveness, so there is no winner to compare against — gate it on the channel
+            # being LIVE at all, the SAME predicate ``_fire`` uses to suppress generation. The two
+            # are therefore exact complements: while a source is live the real talker's traffic
+            # flows and generation is silent; once it dies generation takes over and this chatter
+            # stops, so the consumer sees a clean simulated picture instead of alarms about a source
+            # that is no longer feeding it. Never seeds state: an unclassified line has no fields.
+            if self._channel_class is not None and self._router.any_live(
+                self._spec.id, self._channel_class, now
+            ):
+                self._inject(line)
+            return
+        cls = decision.cls
+        if cls is not None and decision.input_id == self._router.winner(self._spec.id, cls, now):
             self._inject(line)
-            self._feed_passthrough_state(line, input_id, cls)
+            self._feed_passthrough_state(line, decision.input_id, cls)
             # Single-source ZDA carve-out (GPS channel only): if the winning source sent an RMC but
             # no ZDA, synthesize one from the RMC's exact time and inject it here on the WORKER
             # thread, so time and position never split and the single-writer invariant holds.
             if self._zda_carveout is not None:
-                for synth in self._zda_carveout.on_forward(input_id, line, now):
+                for synth in self._zda_carveout.on_forward(decision.input_id, line, now):
                     self._inject(synth)
         # else: a higher-priority source is currently live -> drop this line.
 
@@ -1601,10 +1615,9 @@ class Engine:
         now = time.monotonic()
         routed = self._router.note_rx(input_id, line, now)
         if routed is not None:
-            target_id, cls, routed_line = routed
-            worker = self._worker_by_id.get(target_id)
+            worker = self._worker_by_id.get(routed.channel_id)
             if worker is not None:
-                worker.enqueue((input_id, cls, routed_line))
+                worker.enqueue(routed)
         # ALSO feed the single-source Time Authority: parse the wall-clock instant off a
         # time-bearing GNSS sentence (RMC/ZDA) and stamp a fix. Gate on the cheap formatter
         # slice so a full pynmea2 parse is skipped on every non-time line (every high-rate
@@ -1982,11 +1995,20 @@ class Engine:
     def set_input_enabled(self, input_id: str, enabled: bool) -> bool:
         """Mute/unmute one INPUT slot at runtime; False when no input has that id.
 
-        The RX mirror of :meth:`set_channel_enabled`, and deliberately just as cheap: a flag write
-        and nothing more. No reader is started, stopped or reopened and the serial port stays open,
-        so a toggle is safe to serve straight from a request handler and cannot fail the way a
-        close/reopen cycle can. Muting drops received lines before the router sees them; the
-        channel falls back to SIM by itself once liveness ages out.
+        The RX mirror of :meth:`set_channel_enabled`, and nearly as cheap: a flag write plus, when
+        muting, dropping this input's liveness stamps. No reader is started, stopped or reopened and
+        the serial port stays open, so a toggle is safe to serve straight from a request handler and
+        cannot fail the way a close/reopen cycle can.
+
+        Muting stops received lines reaching the router, but the stamps already made would keep this
+        input winning until they aged out — so the fallback used to lag a mute by the slot's
+        ``liveness_timeout_s``. Clearing them makes the flip to SIM immediate and deterministic,
+        which is what lets the mute serve as the signal-loss test instrument: the timeout then only
+        governs genuinely unexpected loss, so it can be sized purely to avoid flapping on a sparse
+        feed. It also closes the transparent-relay window at the same instant (that gate is
+        ``router.any_live``), so a muted source's status/alarm chatter stops immediately too.
+
+        Unmuting needs no counterpart: the next valid line re-stamps liveness by itself.
         """
         gate = self._input_enabled.get(input_id)
         if gate is None:
@@ -1995,6 +2017,8 @@ class Engine:
             gate.set()
         else:
             gate.clear()
+            if self._router is not None:
+                self._router.clear_liveness(input_id)
         return True
 
     def route_control(self, op: str) -> bool:

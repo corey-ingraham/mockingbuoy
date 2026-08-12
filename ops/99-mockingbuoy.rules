@@ -27,6 +27,33 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{ser
 SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<AIS_SERIAL>", \
     SYMLINK+="nmea-ais", GROUP="dialout", MODE="0660", TAG+="systemd"
 
+# --- DUAL-PORT adapters (one chip, two interfaces) ---------------------------
+# An FT2232-class adapter (e.g. VID 0403 / PID 6010) presents ONE serial number and TWO ttys, so
+# ATTRS{serial} alone matches both and cannot tell them apart -- both rules would fire on both
+# ports and the symlinks would land arbitrarily. Disambiguate on the USB interface number:
+#   ENV{ID_USB_INTERFACE_NUM}=="00"  -> the first port  (usually silkscreened SW1 / port A)
+#   ENV{ID_USB_INTERFACE_NUM}=="01"  -> the second port (SW2 / port B)
+# Verify the silkscreen-to-interface mapping on YOUR unit before trusting it -- SW1==if00 is a
+# convention, not a guarantee, and it is not discoverable from software.
+#
+# Adapt the SYMLINK names to the legs you are wiring. A two-port adapter is a natural fit for the
+# two halves of one relay leg (e.g. an AIS input + an AIS output), which is allowed: they are
+# separate device paths, so the "an output channel and an input slot may never share a device path"
+# rule is satisfied.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<DUAL_SERIAL>", \
+    ENV{ID_USB_INTERFACE_NUM}=="00", SYMLINK+="nmea-<leg-a>", GROUP="dialout", MODE="0660", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", ATTRS{serial}=="<DUAL_SERIAL>", \
+    ENV{ID_USB_INTERFACE_NUM}=="01", SYMLINK+="nmea-<leg-b>", GROUP="dialout", MODE="0660", TAG+="systemd"
+#
+# WARNING: two dual-port adapters of the same model differ only in their serial, and vendor serials
+# from one batch commonly differ by a single trailing character. Transposing them silently swaps two
+# legs, which presents as "the wrong data on the wrong wire", never as an error. Read the serial back
+# with `udevadm info -q property -n /dev/ttyUSBn | grep ID_SERIAL_SHORT` before wiring, and label the
+# physical adapters to match.
+#
+# Two rules must never claim the same SYMLINK. If you retire an adapter, comment out its rule rather
+# than leaving it to collide with whatever now owns that name on the next replug.
+
 # --- INPUT / diagnostic slots (LISTEN-ONLY, RX) ------------------------------
 # The three symlinks above are TX OUTPUT adapters — the app writes generated
 # NMEA/AIS sentences OUT to them. The six slots below are the RX INPUT side:

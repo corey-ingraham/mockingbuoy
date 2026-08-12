@@ -591,14 +591,64 @@ class WindSimSpec:
         }
 
 
-def effective_depth_sim(cfg: EngineConfig, initial_depth_m: float) -> DepthSimSpec | None:
-    """Simulate-only resolved depth-sim spec (default-ON mechanism; NOT a config-layer change).
+def rx_fed_fields(cfg: EngineConfig) -> frozenset[str]:
+    """Every ``VesselState`` field some channel is configured to feed from its OWN duplex RX.
 
-    None outside simulate mode (protects auto RX / replay). In simulate: an explicit block is used
-    as-is (tuned ``base_depth_m`` preserved); an ABSENT block becomes an enabled default whose
-    ``base_depth_m`` is SEEDED from the initial depth so depth oscillates around where she started.
+    A channel with ``rx_feeds_state`` writes the fields in its ``rx_accept`` whitelist into shared
+    state from its own RX reader (``Engine._feed_state``), so a field in this set has a real writer
+    other than the physics thread and a simulator for it would fight that writer. A field NOT in
+    this set has no possible live writer at all — the arbitrated auto passthrough only ever seeds
+    ``engine._STATE_FORMATTERS`` (RMC/GGA/VTG/HDT/HDG) and ``rx.parse_line`` supports no
+    depth/wind/rudder sentence — so its simulator is safe to run in ``auto`` too.
+
+    This is why the resolvers below gate on *what is actually configured to feed a field* rather
+    than on ``cfg.mode``: a blanket "not simulate" guard disabled depth/wind/rudder for a conflict
+    that cannot occur, which froze them rig-wide the moment ``auto`` was selected for an unrelated
+    channel.
     """
-    if cfg.mode != "simulate":
+    return frozenset(field for ch in cfg.channels if ch.rx_feeds_state for field in ch.rx_accept)
+
+
+def _sim_suppressed(cfg: EngineConfig, fields: frozenset[str], live_role: str = "") -> bool:
+    """Whether a simulator writing ``fields`` must stay inert, so it never fights a real writer.
+
+    Three regimes, and the distinction is the point:
+
+    * ``simulate`` — never suppressed. There is no router and no passthrough, so nothing else
+      writes shared state; this keeps simulate behaviour exactly as it was.
+    * ``replay`` — always suppressed. The capture file is the source of truth and a background sim
+      write would contaminate a deterministic replay.
+    * ``auto`` — suppressed only when something can ACTUALLY write these fields: a channel
+      configured to RX-feed one of them, or (for heading) a live arbitrated source. Depth, wind and
+      rudder have no possible live writer unless explicitly RX-fed, so they keep simulating in auto.
+      A blanket "not simulate" guard suppressed them for a conflict that cannot occur, which froze
+      them rig-wide the moment ``auto`` was selected for an unrelated channel.
+
+    ``live_role`` names the channel role whose ``sources`` also feed these fields via the arbitrated
+    path. Only heading needs it: HDT/HDG are in ``engine._STATE_FORMATTERS``, so a live heading
+    source seeds ``heading_*`` via ``_feed_passthrough_state``, and only the heading-role channel
+    receives heading-class lines (``router.note_rx`` maps class -> role -> channel). Position is
+    not covered here — own-ship motion is governed by ``movement.mode``, which auto pins ``static``.
+    """
+    if cfg.mode == "simulate":
+        return False
+    if cfg.mode != "auto":  # replay (and any future non-auto mode): stay inert
+        return True
+    if rx_fed_fields(cfg) & fields:
+        return True
+    return bool(live_role) and any(ch.role == live_role and ch.sources for ch in cfg.channels)
+
+
+def effective_depth_sim(cfg: EngineConfig, initial_depth_m: float) -> DepthSimSpec | None:
+    """Resolved depth-sim spec (default-ON mechanism; NOT a config-layer change).
+
+    None when :func:`_sim_suppressed` says something else writes depth — i.e. in ``replay``, or in
+    ``auto`` when a channel RX-feeds ``depth_m``. Otherwise — including plain ``auto`` — an explicit
+    block is used as-is (tuned ``base_depth_m`` preserved) and an ABSENT block becomes an enabled
+    default whose ``base_depth_m`` is SEEDED from the initial depth so depth oscillates around
+    where she started.
+    """
+    if _sim_suppressed(cfg, frozenset({"depth_m"})):
         return None
     if cfg.depth_sim is not None:
         return cfg.depth_sim
@@ -606,12 +656,13 @@ def effective_depth_sim(cfg: EngineConfig, initial_depth_m: float) -> DepthSimSp
 
 
 def effective_rudder_sim(cfg: EngineConfig) -> RudderSimSpec | None:
-    """Simulate-only resolved rudder-sim spec (default-ON; NOT a config-layer change).
+    """Resolved rudder-sim spec (default-ON; NOT a config-layer change).
 
-    None outside simulate mode (protects auto RX / replay). In simulate: an explicit block is used
-    as-is; an ABSENT block becomes an enabled default.
+    None per :func:`_sim_suppressed` — ``replay``, or ``auto`` with ``rudder_angle_deg`` RX-fed.
+    Otherwise — including plain ``auto`` — an explicit block is used as-is; an ABSENT block becomes
+    an enabled default.
     """
-    if cfg.mode != "simulate":
+    if _sim_suppressed(cfg, frozenset({"rudder_angle_deg"})):
         return None
     if cfg.rudder_sim is not None:
         return cfg.rudder_sim
@@ -619,12 +670,16 @@ def effective_rudder_sim(cfg: EngineConfig) -> RudderSimSpec | None:
 
 
 def effective_heading_sim(cfg: EngineConfig) -> HeadingSimSpec | None:
-    """Simulate-only resolved heading-sim spec (default-ON; NOT a config-layer change).
+    """Resolved heading-sim spec (default-ON; NOT a config-layer change).
 
-    None outside simulate mode (protects auto RX / replay). In simulate: an explicit block is used
-    as-is; an ABSENT block becomes an enabled default.
+    None per :func:`_sim_suppressed` — ``replay``, or ``auto`` with a ``heading_*`` field RX-fed OR
+    a heading channel that has ``sources``. Heading is the one sim whose field the arbitrated AUTO
+    passthrough can also write, hence the ``live_role`` argument. Otherwise an explicit block is
+    used as-is; an ABSENT block becomes an enabled default.
     """
-    if cfg.mode != "simulate":
+    if _sim_suppressed(
+        cfg, frozenset({"heading_true_deg", "heading_mag_deg"}), live_role="heading"
+    ):
         return None
     if cfg.heading_sim is not None:
         return cfg.heading_sim
@@ -634,15 +689,16 @@ def effective_heading_sim(cfg: EngineConfig) -> HeadingSimSpec | None:
 def effective_wind_sim(
     cfg: EngineConfig, initial_speed_kn: float, initial_dir_deg: float
 ) -> WindSimSpec | None:
-    """Simulate-only resolved wind-sim spec (default-ON; NOT a config-layer change).
+    """Resolved wind-sim spec (default-ON; NOT a config-layer change).
 
-    None outside simulate mode (protects auto RX / replay live wind). In simulate the base speed/
-    direction ALWAYS track the configured initial wind: the persist seam carries only ``enabled``,
-    so a saved ``{enabled: ...}`` block has no meaningful base of its own — reseeding it here keeps
-    the drift centred on the wind actually set (and makes any garbage base in a hand-edited block
-    inert). Any tuned gust/veer params on an explicit block are preserved.
+    None per :func:`_sim_suppressed` — ``replay``, or ``auto`` with a wind field RX-fed. Otherwise —
+    including plain ``auto`` — the base speed/direction ALWAYS track the configured initial wind:
+    the persist seam carries only ``enabled``, so a saved ``{enabled: ...}`` block has no meaningful
+    base of its own — reseeding it here keeps the drift centred on the wind actually set (and makes
+    any garbage base in a hand-edited block inert). Any tuned gust/veer params on an explicit block
+    are preserved.
     """
-    if cfg.mode != "simulate":
+    if _sim_suppressed(cfg, frozenset({"wind_speed_kn", "wind_dir_deg"})):
         return None
     if cfg.wind_sim is not None:
         return replace(cfg.wind_sim, base_speed_kn=initial_speed_kn, base_dir_deg=initial_dir_deg)
@@ -745,6 +801,21 @@ class ChannelSpec:
     # opening a port it hasn't got — which would otherwise mark the channel down and flip /healthz
     # to 503. Its ``path`` is unused. Validation requires an enabled ``tcp_tap`` when this is set.
     tap_only: bool = False
+    # Forward lines this channel would otherwise NOT consume, verbatim, while it is LIVE.
+    #
+    # The router only classifies gnss/heading/ais (``classify.CLASS_TO_ROLE``); everything else —
+    # AIS status and alarm sentences (ALR/ALF/ALC/ABK/TXT/VER), vendor ``$P...`` proprietary
+    # sentences, query responses — classifies as ``None`` and is DROPPED. In series on a real
+    # talker's wire that makes this program a black hole for the traffic it does not model.
+    #
+    # With this set, such a line is forwarded as a TRANSPARENT decision (see
+    # ``router.RxDecision``): emitted verbatim but NEVER stamping liveness, so status chatter can
+    # never make a channel look LIVE and suppress generation. Transparent lines are gated on the
+    # channel being LIVE, so once the source dies and the channel falls back to simulating, the real
+    # talker's alarm chatter stops reaching the consumer and it sees a clean simulated picture.
+    #
+    # Default off: every existing config keeps dropping unclassified lines exactly as before.
+    rx_transparent_relay: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChannelSpec:
@@ -777,6 +848,7 @@ class ChannelSpec:
             ais=AisSpec.from_dict(ais_data) if ais_data else None,
             tcp_tap=TcpTapSpec.from_dict(tap_data) if tap_data else None,
             tap_only=bool(data.get("tap_only", False)),
+            rx_transparent_relay=bool(data.get("rx_transparent_relay", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -803,6 +875,11 @@ class ChannelSpec:
             out["tcp_tap"] = self.tcp_tap.to_dict()
         if self.tap_only:
             out["tap_only"] = True
+        # Omit-when-false, mirroring ``tap_only``: an additive boolean must not appear in the
+        # emitted dict for a config that never set it, or every exhaustive round-trip assertion
+        # (and every persisted file) gains a key it did not have.
+        if self.rx_transparent_relay:
+            out["rx_transparent_relay"] = True
         return out
 
 

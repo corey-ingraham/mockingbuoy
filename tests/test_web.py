@@ -1873,13 +1873,27 @@ def test_driven_fields_default_on_sims_for_plain_simulate_config() -> None:
     }
 
 
-def test_driven_fields_empty_outside_simulate_mode() -> None:
-    """Outside simulate mode the background sims are inert (``effective_*`` return None), so a
-    plain auto config with no RX-fed channels reports nothing driven."""
+def test_driven_fields_in_auto_keeps_depth_rudder_wind_but_not_heading() -> None:
+    """In auto with no RX-fed channels, depth/rudder/wind still simulate — nothing else can write
+    them — so they stay driven. Heading does NOT: the baseline heading channel has ``sources``, so a
+    live arbitrated source can seed ``heading_*`` and the sim stands down."""
     from nmea_sim.config import EngineConfig
 
     raw = json.loads(CONFIG_PATH.read_text())
     raw["mode"] = "auto"
+    for ch in raw.get("channels", []):
+        ch["rx_feeds_state"] = False
+    driven = _driven_fields(_FakeManager(EngineConfig.from_dict(raw)))
+    assert set(driven) == {"depth_m", "rudder_angle_deg", "wind_speed_kn", "wind_dir_deg"}
+
+
+def test_driven_fields_empty_in_replay() -> None:
+    """In replay the capture file owns everything, so every background sim is inert and a config
+    with no RX-fed channels reports nothing driven."""
+    from nmea_sim.config import EngineConfig
+
+    raw = json.loads(CONFIG_PATH.read_text())
+    raw["mode"] = "replay"
     for ch in raw.get("channels", []):
         ch["rx_feeds_state"] = False
     assert _driven_fields(_FakeManager(EngineConfig.from_dict(raw))) == []
@@ -1908,6 +1922,9 @@ def test_driven_fields_route_owns_cog_and_sog() -> None:
 
 
 def test_driven_fields_auto_mode_rx_feeds_state() -> None:
+    """An RX-fed channel's ``rx_accept`` fields are driven by that feed, and they join the
+    background sims that are still running in auto. ``heading_true_deg`` here is driven by the RX
+    feed, not by the heading sim — which stood down precisely because the field is RX-fed."""
     from nmea_sim.config import EngineConfig
 
     raw = json.loads(CONFIG_PATH.read_text())
@@ -1915,7 +1932,17 @@ def test_driven_fields_auto_mode_rx_feeds_state() -> None:
     raw["channels"][0]["rx_feeds_state"] = True
     raw["channels"][0]["rx_accept"] = ["heading_true_deg", "sog_kn"]
     driven = _driven_fields(_FakeManager(EngineConfig.from_dict(raw)))
-    assert set(driven) == {"heading_true_deg", "sog_kn"}
+    assert set(driven) == {
+        "heading_true_deg",
+        "sog_kn",
+        "depth_m",
+        "rudder_angle_deg",
+        "wind_speed_kn",
+        "wind_dir_deg",
+    }
+    # The heading SIM is off (field is RX-fed), so heading_mag_deg is not driven -- only the
+    # explicitly RX-accepted heading_true_deg is.
+    assert "heading_mag_deg" not in driven
 
 
 def test_state_endpoint_carries_driven_fields(client: TestClient) -> None:
@@ -2326,13 +2353,115 @@ def test_provenance_never_leaks_a_device_path(client: TestClient) -> None:
 
 def test_provenance_resolves_live_fields_to_the_wire_vocabulary() -> None:
     """Unit-level: the engine resolves to the same LIVE token the UI compares against."""
+    from nmea_sim.router import RxDecision
     from tests.test_input_feed import _auto_engine, _rmc
 
     engine = _auto_engine(None)
     line = _rmc(12.3)
     engine._dispatch_rx("gps_in", line)
-    engine._worker_by_id["gps"]._on_passthrough(("gps_in", "gnss", line))
+    engine._worker_by_id["gps"]._on_passthrough(
+        RxDecision("arbitrated", "gps", "gnss", line, "gps_in")
+    )
 
     prov = engine.provenance()
     assert prov["lat"] == "LIVE"
     assert all(v == "LIVE" for v in prov.values())  # only LIVE is ever emitted; SIM is omitted
+
+
+# --- RM-032: own-ship AIS identity persist ------------------------------------------
+
+
+def test_persist_ais_identity_round_trips(tmp_config: Path) -> None:
+    """Every AisOwnShip field reachable through the seam persists onto the role=='ais' channel's
+    ``ais.own_ship`` and reloads verbatim. ``class`` is the JSON key for the vessel class (a Python
+    keyword), so it exercises the pydantic alias as well."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={
+                "ais_identity": {
+                    "mmsi": 232004321,
+                    "class": "B",
+                    "name": "MB TESTRIG",
+                    "call_sign": "MBT1",
+                    "ship_type": 52,
+                    "imo": 9074729,
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["saved"] is True
+
+    own = next(ch for ch in EngineConfig.load(str(tmp_config)).channels if ch.role == "ais").ais
+    assert own is not None
+    assert own.own_ship.mmsi == 232004321
+    assert own.own_ship.klass == "B"
+    assert own.own_ship.name == "MB TESTRIG"
+    assert own.own_ship.call_sign == "MBT1"
+    assert own.own_ship.ship_type == 52
+    assert own.own_ship.imo == 9074729
+
+
+def test_persist_ais_identity_partial_save_preserves_the_rest(tmp_config: Path) -> None:
+    """Skip-on-None per field: sending only the MMSI must not blank the name/call sign, or a
+    one-field correction from the UI would silently wipe the rest of the identity."""
+    from nmea_sim.config import EngineConfig
+
+    before = next(ch for ch in EngineConfig.load(str(tmp_config)).channels if ch.role == "ais").ais
+    assert before is not None
+    original_name = before.own_ship.name
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post("/api/config/initial-state", json={"ais_identity": {"mmsi": 232004321}})
+        assert resp.status_code == 200, resp.text
+
+    after = next(ch for ch in EngineConfig.load(str(tmp_config)).channels if ch.role == "ais").ais
+    assert after is not None
+    assert after.own_ship.mmsi == 232004321  # changed
+    assert after.own_ship.name == original_name  # preserved
+
+
+def test_persist_ais_identity_rejects_unknown_key(tmp_config: Path) -> None:
+    """``extra="forbid"``: a real AisSpec field left OUT of the allow-list is a 422, so the identity
+    seam can never be used to smuggle in traffic/type5 settings that have their own allow-list."""
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/api/config/initial-state",
+            json={"ais_identity": {"mmsi": 232004321, "include_type5": False}},
+        )
+        assert resp.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("mmsi", 0),  # must be > 0
+        ("mmsi", 1_000_000_000),  # wraps at 30 bits on the wire
+        ("ship_type", 100),  # truncates to 0 on the wire
+        ("name", "TOO LONG A VESSEL NAME HERE"),  # > 20 chars, clipped on the wire
+        ("call_sign", "ABCDEFGH"),  # > 7 chars
+        ("name", "lower case"),  # outside the AIS 6-bit charset
+    ],
+)
+def test_persist_ais_identity_out_of_range_is_bad_request(
+    tmp_config: Path, field: str, value: object
+) -> None:
+    """The engine's own bounds are the gate, surfaced as a 400 rather than duplicated in the web
+    model. Each of these is silently corrupted by pyais if it ever reaches the wire, which is why
+    they must fail the save instead of being clipped."""
+    from nmea_sim.config import EngineConfig
+
+    app = create_app(str(tmp_config))
+    with TestClient(app) as c:
+        resp = c.post("/api/config/initial-state", json={"ais_identity": {field: value}})
+        assert resp.status_code == 400, resp.text
+
+    # And nothing was written: the config still loads and still validates.
+    from nmea_sim.validate import validate
+
+    assert validate(EngineConfig.load(str(tmp_config))) == []

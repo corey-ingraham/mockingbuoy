@@ -1784,6 +1784,68 @@
     await loadProfiles(t ? baseName(t.profile_path) : "");
   }
 
+  // --- Own-ship AIS identity (RM-032) ---------------------------------------------
+  // The engine owns the bounds (validate._validate_ais_identity); this only advises, so an
+  // out-of-range value still gets a clear 400 naming the real rule rather than being silently
+  // clipped by pyais on the wire.
+  const AIS_SIXBIT = /^[@A-Z[\\\]^_ !"#$%&'()*+,\-./0-9:;<=>?]*$/;
+  // Maritime Identification Digits actually allocated to an administration. Not the full ITU table
+  // -- just enough to answer "is this plausibly a real vessel's MMSI?", which is the question that
+  // matters. 970/972/974 are SAR/AIS-SART/EPIRB device ranges, also real. 8/9 lead
+  // diver/aid-to-navigation and craft-associated IDs. 0 leads coast/group station IDs.
+  function midIsAllocated(mmsi) {
+    const s = String(mmsi || "");
+    if (s.length !== 9) return false;
+    const mid = Number(s.slice(0, 3));
+    return mid >= 201 && mid <= 775;
+  }
+  function ownShipFromCfg() {
+    const ch = (cfg && Array.isArray(cfg.channels))
+      ? cfg.channels.find((c) => String(c.role || "").toLowerCase() === "ais") : null;
+    return (ch && ch.ais && ch.ais.own_ship) ? ch.ais.own_ship : null;
+  }
+  function refreshAisIdentityAdvice() {
+    const pill = $("cfg-ais-mid");
+    const warn = $("cfg-ais-ident-warn");
+    if (!pill || !warn) return;
+    const mmsi = String(($("cfg-ais-mmsi") || {}).value || "").trim();
+    const problems = [];
+    if (mmsi && !/^\d{9}$/.test(mmsi)) problems.push("MMSI should be exactly 9 digits.");
+    const allocated = midIsAllocated(mmsi);
+    pill.textContent = mmsi.length === 9 ? ("MID " + mmsi.slice(0, 3)) : "MID —";
+    pill.className = "src " + (mmsi.length !== 9 ? "src-off" : (allocated ? "src-live" : "src-sim"));
+    if (allocated) {
+      problems.push(
+        "MID " + mmsi.slice(0, 3) + " is allocated to a real administration, so this MMSI may " +
+        "belong to an actual vessel. Confirm it is this rig's own ship."
+      );
+    }
+    for (const [id, label, max] of [
+      ["cfg-ais-name", "Vessel name", 20], ["cfg-ais-callsign", "Call sign", 7],
+    ]) {
+      const v = String(($(id) || {}).value || "");
+      if (v.length > max) problems.push(label + " is over " + max + " characters.");
+      if (v && !AIS_SIXBIT.test(v.toUpperCase())) {
+        problems.push(label + " has characters outside the AIS 6-bit set; save will reject it.");
+      }
+    }
+    warn.textContent = problems.join(" ");
+    warn.style.display = problems.length ? "" : "none";
+  }
+  function loadAisIdentityIntoConfig() {
+    const o = ownShipFromCfg() || {};
+    const set = (id, v) => { const el = $(id); if (el) el.value = (v == null ? "" : v); };
+    set("cfg-ais-mmsi", o.mmsi);
+    set("cfg-ais-name", o.name);
+    set("cfg-ais-callsign", o.call_sign);
+    set("cfg-ais-shiptype", o.ship_type);
+    set("cfg-ais-imo", o.imo);
+    const cls = $("cfg-ais-class");
+    // AisOwnShip serialises the vessel class under the JSON key "class" (a Python keyword).
+    if (cls) cls.value = String(o["class"] || "A").toUpperCase() === "B" ? "B" : "A";
+    refreshAisIdentityAdvice();
+  }
+
   function parseWaypoints() {
     const wpts = [];
     for (const line of String($("cfg-route-wpts").value).split(/\r?\n/)) {
@@ -2203,6 +2265,25 @@
         if (countRaw !== "" && Number.isFinite(Number(countRaw))) at.target_count = Number(countRaw);
         body.ais_traffic = at;
       }
+      // RM-032: own-ship identity. Every field is skip-if-blank so a partial edit leaves the rest
+      // untouched; the server merges onto ais.own_ship and deep-validates before writing.
+      const ident = {};
+      const num = (id, key) => {
+        const raw = String(($(id) || {}).value || "").trim();
+        if (raw !== "" && Number.isFinite(Number(raw))) ident[key] = Number(raw);
+      };
+      const txt = (id, key) => {
+        const el = $(id);
+        if (el && String(el.value).trim() !== "") ident[key] = String(el.value).trim();
+      };
+      num("cfg-ais-mmsi", "mmsi");
+      num("cfg-ais-shiptype", "ship_type");
+      num("cfg-ais-imo", "imo");
+      txt("cfg-ais-name", "name");
+      txt("cfg-ais-callsign", "call_sign");
+      const clsEl = $("cfg-ais-class");
+      if (clsEl && clsEl.value) ident["class"] = clsEl.value;
+      if (Object.keys(ident).length) body.ais_identity = ident;
     }
     const r = await postJson("/api/config/initial-state", body);
     if (r.ok) setCfgMsg("Saved mode / channels / route / replay / AIS defaults.", "ok");
@@ -2235,6 +2316,11 @@
     }
     const cl = $("cfg-load"); if (cl) cl.addEventListener("click", loadConfigCurrent);
     const cs = $("cfg-save"); if (cs) cs.addEventListener("click", saveConfigLevel);
+    // RM-032: live advice on the own-ship identity fields, so a MID clash or an out-of-charset
+    // name is visible while typing rather than only as a 400 on save.
+    for (const id of ["cfg-ais-mmsi", "cfg-ais-name", "cfg-ais-callsign"]) {
+      const el = $(id); if (el) el.addEventListener("input", refreshAisIdentityAdvice);
+    }
   }
 
   async function loadConfigCurrent() {
@@ -2253,6 +2339,7 @@
       loadDepthSimIntoConfig();              // A6
       applyDrivenFields(s && s.driven_fields); // A3b: grey out engine-driven inputs
       await loadAisTrafficIntoConfig();
+      loadAisIdentityIntoConfig();           // RM-032
       await refreshInputs();
       setCfgMsg((s && s.running !== false) ? "Loaded current state + config." : "Loaded config (engine stopped — no live state).", "ok");
     } catch (e) { setCfgMsg("Load failed: " + e.message, "err"); }
@@ -2617,6 +2704,7 @@
     loadDisplayOverridesIntoConfig();      // A4
     loadDepthSimIntoConfig();              // A6
     await loadAisTrafficIntoConfig();
+    loadAisIdentityIntoConfig();           // RM-032
     setMode(cfg.mode || "simulate");
     connectStream();
   }

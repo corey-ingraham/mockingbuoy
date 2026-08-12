@@ -272,6 +272,21 @@ def _validate_channel(spec: ChannelSpec, errors: list[str]) -> None:
     if spec.role == "ais" and spec.ais is None:
         errors.append(f"{where}: role 'ais' requires an 'ais' block")
 
+    # rx_transparent_relay would be a SILENT NO-OP in two shapes, so reject both rather than ship a
+    # flag an operator can set, save, and see nothing change from (the ISSUE-002 failure mode).
+    if spec.rx_transparent_relay:
+        if not spec.sources:
+            errors.append(
+                f"{where}: rx_transparent_relay is true but 'sources' is empty — the flag relays "
+                "what this channel's declared inputs send, so with no sources it can never fire"
+            )
+        if spec.role not in _ARBITRATED_ROLES:
+            errors.append(
+                f"{where}: rx_transparent_relay needs an arbitrated role "
+                f"{list(_ARBITRATED_ROLES)}, got {spec.role!r} — relayed lines are gated on the "
+                "channel being LIVE, and a role the router does not arbitrate can never be live"
+            )
+
     _validate_ais_identity(spec, errors)
     _validate_ais_traffic(spec, errors)
 
@@ -427,6 +442,23 @@ def _validate_sources(config: EngineConfig, errors: list[str]) -> None:
                 "mode — both would feed shared vessel state from the same wire and race; the "
                 "top-level 'inputs' registry supersedes the per-channel rx_feeds_state path, so "
                 "drop rx_feeds_state on this channel"
+            )
+
+    # An input may be transparently relayed by at most ONE channel. The router maps input -> that
+    # channel, so two claimants would silently resolve by config order and send a status sentence to
+    # whichever channel happened to be listed first. Reject it instead of documenting the ambiguity.
+    relay_claims: dict[str, list[str]] = {}
+    for spec in config.channels:
+        if spec.rx_transparent_relay:
+            for sid in spec.sources:
+                relay_claims.setdefault(sid, []).append(spec.id)
+    for sid, claimants in relay_claims.items():
+        if len(claimants) > 1:
+            errors.append(
+                f"input {sid!r}: transparently relayed by more than one channel {claimants} — an "
+                "input may appear in the 'sources' of at most one channel with "
+                "rx_transparent_relay=true, or which channel receives its unclassified lines would "
+                "depend on config order"
             )
 
 

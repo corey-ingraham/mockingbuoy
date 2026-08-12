@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from nmea_sim.config import (
     effective_heading_sim,
     effective_rudder_sim,
     effective_wind_sim,
+    rx_fed_fields,
 )
 from nmea_sim.validate import validate
 
@@ -654,17 +656,94 @@ def test_effective_sims_default_on_in_simulate() -> None:
     assert wnd.base_dir_deg == pytest.approx(220.0)
 
 
-def test_effective_sims_are_inert_outside_simulate() -> None:
-    """Outside simulate mode every effective helper returns None, so auto RX / replay data is never
-    overwritten by a background sim write."""
-    for mode in ("auto", "replay"):
-        raw = _baseline_raw()
-        raw["mode"] = mode
-        cfg = EngineConfig.from_dict(raw)
-        assert effective_depth_sim(cfg, 10.0) is None
-        assert effective_rudder_sim(cfg) is None
-        assert effective_heading_sim(cfg) is None
-        assert effective_wind_sim(cfg, 8.0, 45.0) is None
+def test_effective_sims_are_inert_in_replay() -> None:
+    """In replay the capture file is the source of truth, so every sim stays inert — a background
+    sim write would contaminate a deterministic replay."""
+    raw = _baseline_raw()
+    raw["mode"] = "replay"
+    cfg = EngineConfig.from_dict(raw)
+    assert effective_depth_sim(cfg, 10.0) is None
+    assert effective_rudder_sim(cfg) is None
+    assert effective_heading_sim(cfg) is None
+    assert effective_wind_sim(cfg, 8.0, 45.0) is None
+
+
+def test_effective_sims_survive_auto_when_nothing_can_feed_them() -> None:
+    """In AUTO, depth/wind/rudder keep simulating: no input function or RX-parsed sentence can ever
+    supply them, so the old blanket "not simulate" guard froze them for a conflict that cannot
+    occur. Heading is the exception — the baseline heading channel has ``sources``, so a live
+    arbitrated source can seed ``heading_*`` and its sim must stand down."""
+    raw = _baseline_raw()
+    raw["mode"] = "auto"
+    cfg = EngineConfig.from_dict(raw)
+
+    dep = effective_depth_sim(cfg, 123.0)
+    assert dep is not None and dep.enabled is True
+    assert dep.base_depth_m == pytest.approx(123.0)
+
+    rud = effective_rudder_sim(cfg)
+    assert rud is not None and rud.enabled is True
+
+    wnd = effective_wind_sim(cfg, 15.0, 220.0)
+    assert wnd is not None and wnd.enabled is True
+    assert wnd.base_speed_kn == pytest.approx(15.0)
+
+    assert effective_heading_sim(cfg) is None  # heading channel has sources
+
+
+def test_effective_heading_sim_survives_auto_without_a_heading_source() -> None:
+    """Strip ``sources`` off the heading channel and its sim comes back in auto: nothing can feed
+    heading any more, so there is nothing for the sim to fight."""
+    raw = _baseline_raw()
+    raw["mode"] = "auto"
+    for channel in raw["channels"]:  # type: ignore[attr-defined]
+        if channel["role"] == "heading":
+            channel["sources"] = []
+    cfg = EngineConfig.from_dict(raw)
+    hdg = effective_heading_sim(cfg)
+    assert hdg is not None and hdg.enabled is True
+
+
+@pytest.mark.parametrize(
+    ("field", "resolver"),
+    [
+        ("depth_m", lambda cfg: effective_depth_sim(cfg, 10.0)),
+        ("rudder_angle_deg", effective_rudder_sim),
+        ("wind_speed_kn", lambda cfg: effective_wind_sim(cfg, 8.0, 45.0)),
+        ("wind_dir_deg", lambda cfg: effective_wind_sim(cfg, 8.0, 45.0)),
+        ("heading_true_deg", effective_heading_sim),
+    ],
+)
+def test_effective_sim_stands_down_in_auto_when_its_field_is_rx_fed(
+    field: str, resolver: Callable[[EngineConfig], object]
+) -> None:
+    """A duplex channel with ``rx_feeds_state`` is a REAL writer of its ``rx_accept`` fields, so the
+    matching sim must stay inert in auto or the two fight over shared state. This is the conflict
+    the old mode guard was reaching for — now keyed on the actual config instead of the mode."""
+    raw = _baseline_raw()
+    raw["mode"] = "auto"
+    for channel in raw["channels"]:  # type: ignore[attr-defined]
+        if channel["role"] == "heading":
+            channel["sources"] = []  # isolate the rx_accept effect from the sources effect
+        if channel["role"] == "instrument":
+            channel["direction"] = "both"
+            channel["rx_feeds_state"] = True
+            channel["rx_accept"] = [field]
+    cfg = EngineConfig.from_dict(raw)
+    assert field in rx_fed_fields(cfg)
+    assert resolver(cfg) is None
+
+
+def test_rx_fed_fields_ignores_channels_without_rx_feeds_state() -> None:
+    """``rx_accept`` alone is inert — the engine only feeds state when ``rx_feeds_state`` is set, so
+    the helper must not count a stale whitelist left on a channel that does not feed."""
+    raw = _baseline_raw()
+    for channel in raw["channels"]:  # type: ignore[attr-defined]
+        if channel["role"] == "instrument":
+            channel["rx_accept"] = ["depth_m"]
+            channel["rx_feeds_state"] = False
+    cfg = EngineConfig.from_dict(raw)
+    assert rx_fed_fields(cfg) == frozenset()
 
 
 def test_effective_sims_respect_explicit_disabled_block_in_simulate() -> None:
@@ -718,3 +797,43 @@ def test_validate_flags_nonfinite_wind_sim_base() -> None:
 
     raw["wind_sim"] = {"enabled": True, "gust_period_s": 0.0}
     assert any("wind_sim.gust_period_s" in p for p in validate(EngineConfig.from_dict(raw)))
+
+
+def test_rx_transparent_relay_round_trips_and_is_omitted_when_false() -> None:
+    """Additive boolean, same contract as ``tap_only``: it must survive a full round-trip when set
+    and be ABSENT from ``to_dict`` when not. An unconditional key would appear in every persisted
+    config and break every exhaustive round-trip assertion."""
+    raw: dict[str, object] = {
+        "id": "ais",
+        "role": "ais",
+        "path": "/dev/serial/by-id/unit-ais",
+        "baud": 38400,
+        "sources": ["ais_in"],
+        "rx_transparent_relay": True,
+    }
+    ch = ChannelSpec.from_dict(raw)
+    assert ch.rx_transparent_relay is True
+    restored = ChannelSpec.from_dict(ch.to_dict())
+    assert restored.rx_transparent_relay is True
+    assert restored == ch  # full fidelity through the dict, not just this one key
+
+    normal = ChannelSpec.from_dict({**raw, "rx_transparent_relay": False})
+    assert normal.rx_transparent_relay is False
+    assert "rx_transparent_relay" not in normal.to_dict()
+    # And an absent key reads as False, so every pre-existing config is untouched.
+    absent = {k: v for k, v in raw.items() if k != "rx_transparent_relay"}
+    assert ChannelSpec.from_dict(absent).rx_transparent_relay is False
+
+
+def test_rx_transparent_relay_survives_a_full_engine_config_round_trip() -> None:
+    """The live-fire path: a UI save merges and rewrites the whole file, so a key dropped by
+    ``EngineConfig.to_dict`` would be DELETED from disk on the next save-as-defaults."""
+    raw = _baseline_raw()
+    for channel in raw["channels"]:  # type: ignore[attr-defined]
+        if channel["role"] == "ais":
+            channel["rx_transparent_relay"] = True
+    cfg = EngineConfig.from_dict(raw)
+    reloaded = EngineConfig.from_dict(cfg.to_dict())
+    relayed = [c.id for c in reloaded.channels if c.rx_transparent_relay]
+    assert relayed == ["ais"]
+    assert reloaded.to_dict() == cfg.to_dict()  # stable, not just present once

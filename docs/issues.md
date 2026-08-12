@@ -16,6 +16,106 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-037 — Synthetic AIS contacts are region-absolute, so a moving own ship leaves an empty plot · planned (2026-08-11)
+
+`TargetSpawner` draws each contact's position with `rng.uniform` **inside the profile's region**
+(`nmea_sim/realism.py:197-202`) and never reads own-ship state — nothing in `realism.py` takes a
+`VesselState`. So contacts appear wherever the profile's bbox is, regardless of where own ship is.
+
+**Failure:** enabling traffic *looks* like it worked — `!AIVDM` lines flow at the right rate and the
+`emitted` counter climbs — while every contact sits thousands of miles from own ship and the plot
+around own ship stays empty. Two things make this the default outcome:
+
+1. `RealismProfile.default()`'s region is **±0.5° around 0°/0°** (`realism.py:70-78`), and the shipped
+   `profiles/example.json` is **±1.0° around 0°/0°** — both Null Island.
+2. In `auto` mode with a live GNSS source, own ship moves to wherever the real fix is while the
+   contacts stay put, so even a correct profile goes stale the moment the rig relocates.
+
+Observed 2026-08-11: with a region-correct local profile the same config produced 32 contacts at a
+median 13.5 nm from own ship, all inside the box — so the mechanism is sound; only the placement
+model is wrong.
+
+**Workaround:** distil a profile whose region brackets the intended own-ship position, and re-distil
+when the rig moves. Note a local profile matching `profiles/*.local.json` is git-ignored
+(`.gitignore:43`), so it must be copied to the appliance by hand — it will never arrive by redeploy.
+
+**Fix:** an opt-in `region_mode: "own_ship"` on `RealismProfile` (default `"absolute"` so existing
+profiles are untouched) that centres the region's *extent* on own ship. Spawn currently happens in
+`_AisSource.__init__`, before any fix exists, so this also requires spawning lazily on the first
+position build when a state snapshot is available.
+
+---
+
+### ISSUE-036 — Own-ship AIS nav status and rate-of-turn are hard-wired to "not available" · planned (2026-08-11)
+
+`AisGenerator.own_ship` (`nmea_sim/ais_generator.py:87-95`) builds a transient `AisTarget` from
+`VesselState` and sets neither `nav_status` nor `rot`, so the dataclass defaults reach the wire on
+every own-ship Type 1: **nav status `15`** ("not defined") and **ROT `-128`** ("not available").
+
+- `nav_status` has exactly one producer (the `state.py:76` default) and one consumer
+  (`ais_generator.py:72`). There is no config key, no UI field and no engine write anywhere.
+- `rot` is worse than missing: `VesselState.rot_dpm` exists **and is actively simulated** by the
+  steering sim, so a real value is available every tick and is simply not passed through.
+
+**Failure:** a real Class A reports 0 (under way using engine), 1 (at anchor), 5 (moored) or 8 (under
+way sailing); some ECDIS flag or oddly render 15. ROT is one of the few dynamic own-ship values a
+display uses for heading prediction, so suppressing it degrades the simulated picture for no reason.
+Verified on the wire 2026-08-11: `status NavigationStatus.Undefined (15)`, `turn -128`.
+
+**Fix:** add `nav_status` to `AisOwnShip` (default 15, validated `0..15`), expose it on the identity
+card as a labelled dropdown, and pass `state.rot_dpm` through in `own_ship()` — keeping `-128` when
+the value is not finite so "not available" stays reachable.
+
+---
+
+### ISSUE-034 — `function: "unused"` makes a slot an active-diagnostics TRANSMIT target · planned (2026-08-11)
+
+`engine.targetable_slots` (`nmea_sim/engine.py`) whitelists a slot for send / loopback / baud-sweep
+exactly when `function == "unused"` **and** no channel names it in `sources`. The intent — read from
+its docstring — is that "everything carrying real traffic is excluded, so a bench action can never
+drive a wire the running config depends on". The hole is a wire the *config* does not depend on but
+the *world* does: a passive monitor tap landed on live equipment matches the whitelist exactly.
+
+The `SerialPort` receive-only guard does not save it. `write_line` early-returns for
+`direction == "rx"`, but the transmit path never touches the input's port object — `web.app._tx_probe`
+opens the slot's device path **fresh** with `direction="tx"`, so that guard is not on this path at all.
+
+**Failure:** `POST /api/diag/send` or `/api/diag/loopback` against such a slot writes bytes onto live
+equipment. Mitigating factors: a confirm-token echo (the slot id, typed back), a per-slot single-flight
+cooldown, and `_reject_non_target` refusing anything operational — so it is deliberate, not a stray
+click. It is still a transmit onto a wire the operator believed was read-only.
+
+**Workaround (documented in `ref/security.md`):** give any physically-landed slot a real `function`.
+Any non-`unused` value makes `port_is_operational` true and the endpoints refuse with 409.
+
+**Fix options:** (a) require an explicit per-slot `diag_target: true` opt-in rather than inferring
+"free" from `function == "unused"`; or (b) refuse when the slot's device path resolves to a device that
+exists, since a real node means something is plugged in. (a) is preferred — presence is not consent.
+
+---
+
+### ISSUE-033 — TAG-block prefixed sentences are dropped before routing · planned (2026-08-11)
+
+`checksum.split` requires the line to start with `$` or `!`; anything else raises and `verify` returns
+`False`. A sentence carrying an IEC 61162-1 **TAG block** (`\s:GP,c:1234*hh\$GPRMC,...`) starts with
+`\`, so it fails verification and is dropped at `serialport._handle_rx_line` — **before** classify, the
+router, or `rx_transparent_relay` ever see it. No config setting changes this.
+
+**Failure:** wired in series on a bus whose talkers emit TAG blocks, this program is a black hole for
+every tagged sentence, and the symptom is a rising `rx_bad_checksum` counter rather than anything
+naming TAG blocks. The failure mode is identical to a wrong baud, which is what it will be mistaken
+for.
+
+**Scope note:** the repo already knows about TAG blocks, but only as an offline aspiration —
+[RM-016](roadmap.md#rm-016) lists "TAG-block timestamp parsing" for the `aisprofile` distiller, which
+reads files, not wires. There is no live-path handling anywhere.
+
+**Fix:** strip a leading TAG block (and verify its own checksum separately) in
+`serialport._handle_rx_line` before the sentence checksum test, preserving the original bytes for
+verbatim forwarding. Worth doing only if a bench capture actually shows a leading `\`.
+
+---
+
 ### ISSUE-029 — Switching to `auto` may silently drop input slots and channel sources · planned (2026-07-28)
 
 **Not root-caused — observed on a deployed host, data restored, save path not yet traced.** Filed so
@@ -424,12 +524,25 @@ unchanged; `None` is pyserial's win32-correct value.
 through load/save but **no code anywhere reads either** — verified by repo-wide grep excluding
 `config.py` and tests.
 
+**Amended 2026-08-11 — a third dead key: `AisSpec.mode`.** Parsed and persisted
+(`config.py:305,316`), shipped as `"ownship"` in `config.json`, and read by nothing: the only `.mode`
+readers in the tree are `MovementSpec.mode`, `TimeSourceSpec.mode` and `EngineConfig.mode`. It is also
+**validated against no enum**, so `"mode": "targets_only"` saves clean and changes nothing — worse than
+`channel_alternation`, which at least only accepts a bool.
+
+Related, same failure class but via typos rather than shipped keys: **unknown keys inside the `ais`
+block are silently dropped.** `_reject_unknown_keys` covers the top level (`config.py:957`) and the
+small specs via `_spec_from_mapping` (`:70-81`), but `AisSpec.from_dict`, `AisOwnShip.from_dict` and
+`AisTrafficSpec.from_dict` all use bare `data.get(...)`. So `include_type_5: false` or `type5_period:
+60` validates clean, saves clean, and does nothing.
+
 **Failure:** an operator sets `channel_alternation: false`, `validate()` passes, save succeeds, and
 nothing changes on the wire. Silent no-op — the opposite of the project's fail-loud posture.
 
-**Fix:** either delete both keys (and drop them from `config.json`) or wire them up. If `ais_targets`
-is being held for [RM-013](roadmap.md#rm-013), keep it but reject a non-empty value in `validate()`
-with "not yet implemented" rather than accepting and ignoring it.
+**Fix:** either delete all three keys (and drop them from `config.json`) or wire them up. If
+`ais_targets` is being held for [RM-013](roadmap.md#rm-013), keep it but reject a non-empty value in
+`validate()` with "not yet implemented" rather than accepting and ignoring it. Separately, extend
+unknown-key rejection to the three AIS `from_dict`s so a typo fails loudly.
 
 ---
 
