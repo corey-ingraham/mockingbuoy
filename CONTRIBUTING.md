@@ -65,6 +65,38 @@ Bind serial devices by stable `/dev/serial/by-id/...` paths; watch for the FTDI 
 recycles it. Details in [docs/ref/serial-hardware.md](docs/ref/serial-hardware.md) and
 [docs/ref/deployment.md](docs/ref/deployment.md).
 
+## Working files git does not carry
+
+Several working files are **deliberately git-ignored**, so `git clone` / `git pull` does **not** give a
+second machine a complete working setup. Hard rule #8 keeps the deployment's use case, site names,
+adapter serials and local paths out of a public artifact — which is correct, but it means these have to
+be synced out of band (a synced cloud folder, or a manual copy):
+
+| Path | What it is | Why it is ignored |
+|---|---|---|
+| `CLAUDE.md` | repo assistant instructions, incl. the gotcha quicklist | carries use case + bench topology |
+| `profiles/*.local.json` | realism profiles for a real area | location-specific statistics |
+| `data/config.local.json` | the runtime config actually loaded | host-specific device paths |
+| `private/` | raw AIS exports, design notes | source data, and large |
+| `.claude/settings.json` | per-project assistant settings | machine-local |
+| `secrets/` | web cred hash, CA key | generated on-device, never shared |
+
+Only `data/config.local.json` and `secrets/` are genuinely per-host and should stay that way; the rest
+are working artifacts you want on every machine you develop from.
+
+**Setting up a second machine:**
+
+```bash
+git clone https://github.com/<you>/mockingbuoy.git && cd mockingbuoy
+pip install -e ".[dev]"
+ruff check . && black --check . && mypy && pytest     # should be all green
+# then copy the out-of-band files above into place
+```
+
+Nothing in the ignored set is needed to run the test suite or the no-hardware modes
+(`--backend log` / `--backend null`), so a bare clone is immediately useful — it just will not have the
+local realism profile or the assistant instructions.
+
 ## Commits
 
 Conventional-commit style is appreciated (`feat:`, `fix:`, `chore:`, `docs:`). Keep local editor and

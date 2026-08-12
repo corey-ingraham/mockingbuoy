@@ -53,3 +53,15 @@ Thumbs.db
 
 # Machine-local subagent memory (never committed)
 .claude/agent-memory-local/
+
+# Repo assistant instructions. Deliberately NOT committed: this file carries the deployment's use
+# case, site names and bench topology, which hard rule #8 keeps out of a public artifact.
+#
+# This rule used to live only in .git/info/exclude, which is PER-CLONE — so the protection did not
+# travel. A second machine that created a CLAUDE.md would see it as untracked and could commit it
+# straight into the public history. Declaring it here makes the rule propagate to every clone; the
+# rule leaks nothing, only the content would have.
+#
+# Consequence: CLAUDE.md is not synced by git. Keep it in the out-of-band sync location instead
+# (see CONTRIBUTING.md, "Working files git does not carry").
+/CLAUDE.md
