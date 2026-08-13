@@ -16,6 +16,124 @@ Status ∈ {planned, in-progress, done, deferred}.
 
 ---
 
+### ISSUE-041 — ENV panel undersized and its readings aligned with nothing · done (2026-08-12)
+
+Follow-up to [ISSUE-040](#issue-040), from a desktop screenshot of the fixed build. Two complaints:
+the ENV panel read as far too small next to the depth chart, and WATER TEMP / AIR TEMP / HUMIDITY /
+PRESSURE were spread across the panel bottom on centres that matched nothing above them.
+
+**Alignment.** The readings were a panel-wide four-across grid, so they sat on their own quarter
+centres while SPEED KTS / DIRECTION sat on each dial column's halves. Fixed by moving each pair
+*inside* its dial column (`.env-readings` is now a `1fr 1fr` grid inside `.env-dial`, one per dial).
+Verified by measurement, not by eye: reading centres and stat centres now match exactly
+(115/322 and 527/733 at 2560x1440).
+
+**Size.** The dials were capped at `max-width: 158px` inside a `max-width: 170px` column, so a wide
+panel stayed mostly empty. Column cap raised to 460px (it grows into the space), dial cap to 230px.
+
+**`flex-grow` on `.p-env` does nothing** — worth knowing before trying it. The left column has no
+free space (measured `scrollHeight == height`); `.p-depth` simply absorbs whatever ENV does not
+claim. Verified up to `flex-grow: 3`, env stayed at its floor to the pixel. The `min-height` floor
+is the only lever, and every px it takes comes straight out of the depth chart.
+
+That split cannot be one number: 250*s is the most a 1080-tall column can give (1280x1024 is
+already on the depth panel's 140px floor), but a 1440-tall column has ~400px of slack sitting in the
+chart. So the floor is tiered — `250*s` base, `350*s` above `min-height: 1200px`.
+
+| | before | after |
+|---|---|---|
+| dial @1920x1080 | 116px | 147px |
+| dial @2560x1440 / 3440x1440 | 110px | 230px |
+| reading vs stat centres | unrelated | exact |
+
+**`flex-wrap` breaks on flex-BASIS, not `min-width`.** A 220px basis needs 440px, and the left
+column is only 413px wide at 1280x1024 — so the two dials wrapped onto separate rows, halving each
+fill box, collapsing the compass to its floor and dragging autoFit down two density tiers (1 →
+0.66). The basis must fit twice in the *narrowest* column; `flex-grow` does the widening.
+
+**Three CSS rules were silently destroyed during this fix** by appending prose *after* a comment's
+closing `*/`, which turns the note into stray declarations and invalidates the rule below it. The
+browser drops the malformed rule with no error and the layout reverts to defaults — it presents as
+"my change had no effect", and cost the most debugging time here.
+`test_app_css_comment_fences_are_balanced` now catches it, along with
+`test_env_readings_sit_inside_the_wind_dial_columns` for the alignment.
+
+### ISSUE-040 — ENV readings row painted across both wind dials · done (2026-08-12)
+
+Found on the first full-screen lab run. WATER TEMP / AIR TEMP / HUMIDITY / PRESSURE rendered on top
+of the lower half of both compass faces, making all six values unreadable — a legibility defect on
+an instrument panel.
+
+**Cause — a percentage height with no definite containing height.** `.env-dial svg { height: 100% }`
+never resolved: every link in `.env-dial-fill` → `.env-dial` → `.env-dials` is `flex: 1 1 auto` or
+content-sized, so none supplies a definite height. Per CSS sizing the declaration falls back to the
+element's *intrinsic* height (158px), which then became `.env-dial`'s content minimum;
+`.env-dials { min-height: 0 }` let the row shrink below that, and the dial column spilled 10px into
+`.env-readings`, which is later in DOM order and painted over it.
+
+Copying the working `.ship-fill` pattern was not sufficient — that one resolves only because *its*
+parent column flex does have a definite height. The precondition, not the pattern, is what matters.
+
+**Fix.** `.env-dial-fill { position: relative }` + `.env-dial svg { position: absolute; inset: 0 }`.
+An absolutely-positioned box resolves percentages against its relative ancestor's used padding box,
+which *is* definite after layout, so the SVG can never exceed its wrapper; being out of flow it also
+contributes no content height to push the row open. The scroll tiers return it to `position: static`
+— there the wrapper is content-sized, so an out-of-flow child would collapse it.
+
+Rejected: removing `min-height: 0` from `.env-dials`/`.env-dial`. It stops the overlap, but autoFit
+then reads the taller content minimum and steps density down across the *whole* display (dials
+158 → 142px everywhere) — paying for one panel with every panel.
+
+**Cost of the fix:** dials measure 116px at 1920x1080 density 1, down from 158px. That 158 was never
+free — it was 42px stolen from the readings row. Verified 0 overlap at every swept viewport and at
+density 1.0/1.1/1.2; the reconstructed pre-fix CSS reports 13–31px overlap over the same range.
+
+**Two blind spots this exposed**, both now closed in `ops/conning-fit-probe.js`:
+- Overflow metrics cannot see intra-panel overlap. The panel sat at its floor, so nothing grew
+  `scrollHeight` and nothing clipped — the probe printed `FITS` over the broken display that shipped.
+- Overlap must compare **ink boxes** (union of descendant rects), not layout boxes: the dial paints
+  outside `.env-dials`, whose box does not grow, so a layout-box test reads 0 on a real collision.
+  `<svg>` must be a leaf in that walk, or deliberately-overlapping artwork yields 285 false hits.
+
+### ISSUE-039 — Depth chart floated tiny inside a much larger panel · done (2026-08-12)
+
+Same lab run. `.p-depth` is `flex: 1 1 auto` and absorbs the left column's spare height, but nothing
+inside it claimed that height, so the chart sat small in a large empty box.
+
+**Three independent causes**, all needed fixing:
+- **Outer.** `#depth-graph` had no `flex`, so it defaulted to `0 1 auto` and never grew. Fixed with a
+  `.depth-fill` wrapper (`flex: 1 1 auto`) and a `height: 100%` SVG.
+- **Letterboxing.** `max-height: 26vh` clamped height while width stayed `100%`, so the CSS box grew
+  wider than the viewBox's 16:9 and `preserveAspectRatio="meet"` scaled the drawing down to the
+  height, leaving side gutters. Fixed by rewriting the viewBox *width* per render to track the box
+  aspect while holding height at 180 — the scale stays uniform, so font and stroke weights keep
+  their apparent size. Clamped to 240..1600 (an ordinary 1920x1080 depth panel runs ~5.6:1).
+- **Inner.** The plot rect wasted a 34-unit *left* margin; the depth labels are drawn on the right.
+  `x0` 34 → 6.
+
+`y0` and the right margin are unchanged and must stay: the side-view ship glyph's funnel is drawn
+~21 units *above* `y0`, and `depth_m` is validated to `[0, 12000]`, so the right-hand axis labels
+reach 5 digits and need ~32 of those 34 units.
+
+**Result:** chart fills 0.87–1.0 of its panel on both axes across the swept viewports, including
+3440x1440 and 2560x1080. Was well under that before.
+
+**A `ResizeObserver` is required here** and was removed once during review as unnecessary machinery
+on a fixed-geometry kiosk. That is wrong: the panel box keeps settling for ~2s after load as ENV
+values populate (`.p-env` 340→358px), so a one-shot load-time derivation locks in a pre-settle
+aspect — measured fill dropped 0.86 → 0.40. Deriving in the existing 1 Hz render alone leaves the
+wrong viewBox for up to a second on every load.
+
+**`depthVBW` must be declared at the top of the IIFE.** A `let` beside `renderDepthGraph` is in the
+temporal dead zone when module-scope wiring calls that function (function declarations hoist,
+`let` bindings do not initialise), throwing `Cannot access 'depthVBW' before initialization` on
+every load and leaving the chart on its fallback viewBox. `pytest` stayed green throughout — only
+the browser probe caught it.
+
+Also fixed in passing: `#ship-schem` was height-driven but never restored in the scroll-tier reset
+block — a latent collapse in both tiers, pre-existing and unrelated, found by the new test rather
+than by anyone looking at a narrow window.
+
 ### ISSUE-038 — Four conning CSS selectors match no element · planned (2026-08-11)
 
 Found while fixing [ISSUE-025](#issue-025). These selectors carry live rules in `app.css` but match

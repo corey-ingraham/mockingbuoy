@@ -493,12 +493,42 @@
      Verified fitting at 1920x1080, 1920x1000, 1920x940, 2560x1440 and 1280x1024 on every
      metric (per panel, per column, and each column's last panel vs the column bottom).
      Do NOT re-tune these by eye -- re-measure with `ops/conning-fit-probe.js`, which checks
-     the column-level metrics that per-panel overflow alone reports as clean. */
+     the column-level metrics that per-panel overflow alone reports as clean.
+
+     RE-DERIVED after the dial SVGs went out of flow (`position: absolute`, see .env-dial-fill).
+     That change dropped env's max-content basis to the fill floor, so this min-height now BINDS
+     where it used to be slack -- it is what sets the dial size, not just a collapse backstop.
+     Measured true content minimum is 195 @0.66 -> 239 @1.0 (fits 106 + 135*s within 2px), i.e.
+     ~100px below the line below. Do NOT "correct" it downward: at the measured minimum the fill
+     box lands exactly on its 72px guard, so the dials collapse 116px -> 72px to buy the depth
+     panel 34px -- and the chart's fill ratio gets WORSE (y 1.0 -> 0.79), because the panel then
+     exceeds what the viewBox aspect can use. The 100px of headroom IS the dial legibility.
+
+     This floor is ALSO the only lever on ENV's size, which is not obvious: the left column carries
+     no free space (measured `scrollHeight == height`), and `.p-depth` simply absorbs whatever ENV
+     does not claim. Giving `.p-env` a `flex-grow` therefore does nothing at all -- verified up to
+     `flex-grow: 3`, env stayed at its floor to the pixel. Every px added here is a px taken from
+     the depth chart, so the number is a deliberate split, not a fit.
+     Raised 223 -> 250 (dial 116 -> 147 @1920x1080 s1) because the ENV panel read as far too small
+     next to the depth chart. 250 is the CEILING for a 1080-tall display: at 1280x1024 the depth
+     panel is already on its 140px floor, and 260 starts clipping. */
   .conn-col-left .p-coords { flex: 0 1 auto; min-height: calc(72px + 54px * var(--ui-scale, 1)); }
   .conn-col-left .p-time   { flex: 0 1 auto; min-height: calc(72px + 54px * var(--ui-scale, 1)); }
-  .conn-col-left .p-env    { flex: 0 1 auto; min-height: calc(117px + 223px * var(--ui-scale, 1)); }
+  .conn-col-left .p-env    { flex: 0 1 auto; min-height: calc(117px + 250px * var(--ui-scale, 1)); }
   .conn-col-left .p-depth  { flex: 1 1 auto; min-height: 140px; }
   .conn-col-left .p-alerts { flex: 1 1 auto; min-height: 90px; }
+  /* Tall displays get a bigger ENV split. A single affine floor cannot serve both: 250*s is the
+     most a 1080-tall column can give (1280x1024 is already on the depth floor), but a 1440-tall
+     column has ~400px of slack sitting in the depth panel, and spending none of it leaves the
+     compass at 137px under a 565px chart -- the "ENV is tiny next to everything else" complaint.
+     At 350*s the dial reaches its 230px cap and the chart still keeps ~455px. Measured w0 at
+     2560x1440 and 3440x1440.
+     Must stay AFTER the base rule: `@media` adds no specificity, so an equal-specificity rule
+     wins purely on source order. Cannot collide with the SCROLL-TIER block, which is
+     `max-height: 920px` -- the two queries are disjoint. */
+  @media (min-height: 1200px) {
+    .conn-col-left .p-env { min-height: calc(117px + 350px * var(--ui-scale, 1)); }
+  }
   /* coordinates/time read as inline label→value rows (JPG style); flush top */
   .p-coords, .p-time { justify-content: flex-start; gap: 6px; }
   /* value centred in the column (rows line up); label right-justified immediately to its left */
@@ -662,39 +692,90 @@
   .ins-legend .lg-sim .dotc { color: var(--warn); }
 
   /* env panel — sea state + twin wind dials + weather readings */
-  .env-sea { text-align: center; margin-bottom: 4px; }
+  .env-sea { text-align: center; margin-bottom: 4px; flex: none; }
   .env-sea .ins-val-row { justify-content: center; }
-  /* space the two wind dials apart using the spare room on either side (matches the attitude pair) */
-  /* `min-height: 0` down the chain is load-bearing: a flex item defaults to
-     `min-height: auto`, which refuses to shrink below its content. These dials are
-     width-driven (`width:100%; height:auto`), so without this the panel could not make
-     them smaller under pressure and scrolled instead -- an instrument panel with a
-     scrollbar. With it, the SVG shrinks and preserveAspectRatio scales the drawing. */
-  .env-dials { display: flex; gap: 10px; justify-content: space-evenly; flex-wrap: wrap; min-height: 0; }
-  .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 130px; min-width: 120px; max-width: 170px; min-height: 0; }
-  .env-dial svg { width: 100%; height: auto; max-width: calc(158px * var(--ui-scale, 1)); max-height: 18vh; margin: 2px auto; min-height: 0; }
+  /* space the two wind dials apart using the spare room on either side (matches the attitude pair)
+     `min-height: 0` down the chain is necessary but was never SUFFICIENT, and believing otherwise
+     put an overlapping ENV panel on a lab monitor. A flex item defaults to `min-height: auto` and
+     refuses to shrink below its content, so the chain is what lets the panel compress instead of
+     growing a scrollbar. But while the dials were width-driven (`width:100%; height:auto`) their
+     used height derived from their WIDTH and simply ignored the shrunken box: under pressure
+     `.env-dials` collapsed, the SVGs spilled out of it under the default `overflow: visible`, and
+     `.env-readings` -- later in DOM order -- painted straight across both compass faces. Nothing
+     scrolled and nothing clipped, so every probe metric read FITS.
+     The dials are therefore HEIGHT-driven now (the `.ship-fill` pattern): a `flex: 1 1 auto`
+     wrapper owns the vertical budget and the SVG fills it, so compression actually scales the
+     drawing. Everything that must NOT absorb the compression is pinned `flex: none`.
+
+     The `min-height: 0` on the two rules below STAYS. Removing it does stop the overlap, but
+     autoFit then reads the taller content minimum and steps density down across the whole display
+     (dials measured 158 -> 142px everywhere) -- paying for one panel with every panel. The
+     overlap is fixed at its actual source instead, on `.env-dial svg` below. */
+  .env-dials { display: flex; gap: 10px; justify-content: space-evenly; flex-wrap: wrap; flex: 1 1 auto; align-items: stretch; min-height: 0; }
+  /* The column is as wide as its READINGS need, not as wide as the dial. The 170px cap here sized
+     it to the compass face and left the panel mostly empty on a wide monitor, with the stat pairs
+     crammed under a small dial. The dial itself is capped separately on `.env-dial svg` below.
+     BASIS, not min-width, is what decides wrapping: a wrap container breaks when the items' BASE
+     sizes do not fit, and shrinking never gets a chance. So the basis must fit twice inside the
+     NARROWEST left column -- 413px at 1280x1024, i.e. ~200px each -- not inside the widest one.
+     A 220px basis wrapped the dials onto two rows there, which halves the height each fill box
+     gets, collapses the compass to its floor, and drags autoFit down two density tiers (1 -> 0.66).
+     `flex-grow` is what widens these on a big monitor; the basis only has to fit. */
+  .env-dial { display: flex; flex-direction: column; align-items: center; flex: 1 1 150px; min-width: 130px; max-width: 460px; min-height: 0; }
+  /* The floor is load-bearing, not padding. Height-driven dials shrink without limit, which would
+     trade a VISIBLE overlap for an INVISIBLE legibility failure -- the same mechanism that once
+     squashed the depth graph to a 40x20 postage stamp (see the left-column comment above).
+     It is a COLLAPSE GUARD, not a design target, and the difference decides the number. Measured
+     dial heights across the sweep are 117-158px, so the floor never binds in a healthy layout; it
+     only catches the runaway. Sizing it to a "nice" 96px instead pushed the panel's content minimum
+     above what the column grants and clipped p-env by 3px at 1920x1080 and 9px at 1920x940 -- a
+     floor that oversubscribes merely relocates the defect, exactly as the left-column comment
+     warns. `dialMin` in ops/conning-fit-probe.js watches this; re-measure if it moves. */
+  /* `position: relative` here and `absolute` below are the actual fix for the lab overlap, and the
+     reason is worth keeping: a percentage height only resolves against a DEFINITE containing
+     height. Nothing in .env-dial-fill -> .env-dial -> .env-dials has one (every link is
+     `flex: 1 1 auto` or content-sized), so `height: 100%` on an in-flow SVG silently fell back to
+     its INTRINSIC height -- 158px -- which then became .env-dial's content minimum. `min-height: 0`
+     let the row shrink below that, and the column spilled 10px into `.env-readings`. Copying
+     `.ship-fill` was not enough: that pattern works only because ITS parent column flex does have a
+     definite height. An absolutely-positioned box resolves percentages against its relative
+     ancestor's used padding box, which IS definite after layout, so the SVG can no longer exceed
+     its wrapper -- and being out of flow it contributes no content height to push the row open.
+     `margin: auto` against `inset: 0` is what centres it once `max-width` clamps the width. */
+  .env-dial-fill { flex: 1 1 auto; min-height: calc(72px * var(--ui-scale, 1)); display: flex; align-items: center; justify-content: center; width: 100%; position: relative; }
+  .env-dial svg { position: absolute; inset: 0; margin: auto; width: 100%; height: 100%; max-width: calc(230px * var(--ui-scale, 1)); max-height: 100%; display: block; }
   /* gauge title — prominent (Wind True / Wind Relative) */
-  .env-dial-label { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text); margin-bottom: 2px; text-align: center; }
+  .env-dial-label { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text); margin-bottom: 2px; text-align: center; flex: none; }
   /* per-gauge 2x2 stat block (SPEED KTS | DIRECTION over their values), JPG style */
-  .wind-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; width: 100%; margin: 1px 0 4px; }
+  .wind-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; width: 100%; margin: 1px 0 4px; flex: none; }
   /* centre each SPEED/DIRECTION column under the gauge title and above the dial */
   .wind-stat { text-align: center; }
   .wind-stat-t { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
   .wind-stat-v { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .env-dial .g-sub { margin-top: 2px; text-align: center; }
   /* weather readings: 4 columns aligned under the two wind gauges' stat columns, centred */
-  .env-readings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 12px; margin-top: 2px; }
+  /* Two columns, matching `.wind-stats` above it -- these sit inside a `.env-dial` now, so the
+     four readings land on the same centres as the four SPEED/DIRECTION columns. As a panel-wide
+     4-across row they were laid out on their own quarter centres and aligned with nothing. */
+  .env-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 4px; width: 100%; flex: none; }
   .env-cell { display: flex; flex-direction: column; gap: 1px; align-items: center; text-align: center; }
   .env-cell .ins-val-row { justify-content: center; }
   .env-num { font-family: var(--sans); font-weight: 700; font-size: clamp(15px, 2vh, 22px); font-variant-numeric: tabular-nums; line-height: 1.1; }
 
   /* depth panel — value + alert + history graph */
-  .depth-vals { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .depth-vals { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; flex: none; }
   /* depth + alert values match the wind true/relative value size (titles stay as-is) */
   .depth-vals .ins-bignum { font-family: var(--sans); font-weight: 700; font-size: calc(clamp(15px, 2vh, 22px) * var(--ui-scale, 1)); }
   .depth-vals .ro-right { align-items: flex-end; text-align: right; }
   .depth-vals .ro-right .ins-val-row { justify-content: flex-end; }
-  #depth-graph { width: 100%; height: auto; max-width: 100%; max-height: 26vh; margin: 4px 0 0; }
+  /* The chart claims the panel's leftover height (`.ship-fill` pattern) instead of sitting at a
+     width-derived height capped at 26vh. The old cap was the whole defect on a large monitor: the
+     panel grew, the chart did not, and once the cap bound while width stayed 100% the box went
+     wider than the 16:9 viewBox and `meet` letterboxed the drawing into the middle of it.
+     The 4px separation lives on the WRAPPER. Putting it on a `height: 100%` child would make the
+     child occupy [4px, H+4px] and overflow the wrapper by 4px on every render. */
+  .depth-fill { flex: 1 1 auto; min-height: 0; margin-top: 4px; display: flex; }
+  #depth-graph { width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; display: block; }
 
   /* primary panel — COG tape arc (wide, short); fill the primary cell prominently */
   #cog-arc { width: 100%; height: auto; max-width: 100%; max-height: 24vh; margin: 4px auto; display: block; }
@@ -918,6 +999,22 @@
     .ins-panel svg, .env-dial svg, .incl-dial svg,
     #cog-arc, #ship-schem, #rudder-arc, #depth-graph, .p-ship #compass.repeater, #rot,
     .p-propulsion .prop-tach { max-height: none; }
+    /* Height-driven gauges must go back to WIDTH-driven here. `height: 100%` needs a definite
+       height to resolve against, and in these tiers panels size to their content -- so a
+       `flex: 1 1 auto` wrapper has no height to give and the SVG would collapse. Same reason the
+       fill wrappers stop growing: there is no leftover height to claim once nothing is clipping.
+       `syncDepthViewBox()` in app.js checks this same media query and holds the viewBox at 320,
+       because with `height: auto` the SVG's height derives from its own viewBox ratio and
+       re-deriving the ratio from it is a fixed point -- a wide viewBox would never come back.
+       `#ship-schem` was already height-driven before this block existed and was never restored
+       here -- a latent collapse in both scroll tiers, found by the test that now guards this rule
+       rather than by anyone looking at a narrow window. */
+    .depth-fill, .env-dial-fill, .ship-fill { flex: none; display: block; min-height: 0; }
+    #depth-graph, .env-dial svg, #ship-schem { width: 100%; height: auto; }
+    /* The dial SVG is absolutely positioned in the one-screen layout (see the .env-dial-fill
+       comment). It must return to FLOW here or it stops contributing height and its wrapper --
+       now content-sized -- collapses to the bare floor with the dial spilling out of it. */
+    .env-dial svg { position: static; inset: auto; margin: 0 auto; }
   }
   #view-conning.stale > :not(.stale-overlay) { opacity: .45; }
 

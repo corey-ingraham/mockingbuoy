@@ -4,6 +4,50 @@ Dated record of substantive changes. Newest first. ISO 8601 dates.
 
 ---
 
+## 2026-08-12 — Conning: ENV panel resized and its readings aligned to the dials [ISSUE-041]
+
+Follow-up to the same day's ENV/depth work, from a desktop screenshot.
+
+- Each pair of readings moved **inside** its dial column, so WATER TEMP / AIR TEMP land on the same
+  two centres as SPEED KTS / DIRECTION above them. Verified by measuring centres, not by eye.
+- Dial cap 158 → 230px, column cap 170 → 460px. Dial 116 → **147px** at 1920x1080 and 110 → **230px**
+  on 1440-tall displays, where the `.p-env` floor is tiered up (`250*s` base, `350*s` above
+  `min-height: 1200px`) because a 1440-tall column has ~400px of slack parked in the depth chart.
+- `flex-grow` on `.p-env` is a dead end — the left column has no free space, so the `min-height`
+  floor is the only lever and every px comes out of the depth chart.
+- Two new guards: balanced CSS comment fences, and the readings-inside-the-columns invariant.
+  Both mutation-verified. The fence one exists because appending prose after a closing `*/` silently
+  invalidated three separate rules during this fix, presenting each time as "the change did nothing".
+
+## 2026-08-12 — Conning: ENV overlap fixed, depth chart fills its panel [ISSUE-039, ISSUE-040]
+
+Both defects came off the first full-screen lab run. Neither was visible to the existing fit probe,
+which printed `FITS` over the broken display — so the probe was extended *first*, confirmed red on
+current code, and only then were the fixes made.
+
+| metric @1920×1080 s1 | before | after |
+|---|---|---|
+| ENV `env-dials`/`env-readings` overlap | 19px | 0 |
+| depth chart fill (x/y of its panel) | letterboxed | 1.0 / 1.0 |
+| wind dial drawn diameter | 158px (42px of it stolen from the readings row) | 116px |
+
+- **ENV** — `height: 100%` on the dial SVGs never resolved (no definite containing height anywhere
+  up the chain), so it fell back to the intrinsic 158px and the column spilled into the readings.
+  Fixed by taking the SVG out of flow: `position: absolute; inset: 0` against a `relative` wrapper.
+- **Depth** — a `.depth-fill` wrapper claims the panel height, the viewBox width is rewritten per
+  render to match the box aspect (killing the `meet` letterboxing), and the unused 34-unit left plot
+  margin is reclaimed. `y0` and the right margin are load-bearing and unchanged.
+- **Probe** — added intra-panel overlap on **ink** boxes (a layout-box test reads 0 on a real
+  collision, because the dial paints outside a box that never grows), a drawn-diameter `dialMin`
+  guard against trading a visible overlap for an invisible legibility loss, and `depthFill`.
+  Overlap runs on its own 6px threshold: at the 2px overflow tolerance, normal label/value line-box
+  tightness reports 3–4px on every run, before and after any fix.
+- **`.p-env` floor re-derived** (measured, not by eye). It now *binds*, because the out-of-flow SVG
+  dropped the panel's content basis — so it is what sets dial size. Left unchanged: at the true
+  content minimum the dials collapse to their 72px guard to buy the depth panel 34px, and the
+  chart's fill ratio gets worse, not better.
+- Fixed in passing: `#ship-schem` collapsed in both scroll tiers (pre-existing, unrelated).
+
 ## 2026-08-11 — Conning display: the one-screen layout actually fits now [ISSUE-025, ISSUE-026, RM-023]
 
 The display looked wrong on the lab monitor and there was **no way to fix it in the field**. Measured

@@ -1874,6 +1874,114 @@ def test_app_css_scroll_tier_resets_come_after_the_rules_they_override() -> None
     ), f"these cap a height after the scroll-tier resets, so the resets lose again: {offenders}"
 
 
+def test_app_css_comment_fences_are_balanced() -> None:
+    """No ``*/`` may appear without an open comment, and none may be left unclosed.
+
+    This file is heavily commented, so prose regularly gets appended to an existing block — and
+    landing it *after* the closing ``*/`` turns the note into stray declarations that silently
+    invalidate the rule underneath it. Nothing errors: the browser drops the malformed rule and
+    the layout quietly reverts to defaults. That mistake shipped a wrapped, half-size ENV panel
+    three separate times during one session before this test existed.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    depth, i, stray = 0, 0, []
+    while i < len(css):
+        if css.startswith("/*", i):
+            depth, i = depth + 1, i + 2
+        elif css.startswith("*/", i):
+            if depth == 0:
+                stray.append(css[:i].count("\n") + 1)
+            depth, i = max(0, depth - 1), i + 2
+        else:
+            i += 1
+    assert not stray, f"`*/` with no open comment at app.css lines {stray} — prose after a fence"
+    assert depth == 0, "unclosed `/*` in app.css — everything after it is swallowed"
+
+
+def test_env_readings_sit_inside_the_wind_dial_columns() -> None:
+    """The four ENV readings must live in the two dial columns, two each — not one row of four.
+
+    They share ``.env-dial``'s width so they land on the same two column centres as SPEED KTS and
+    DIRECTION above them. As a panel-wide four-across row they are laid out on their own quarter
+    centres and line up with nothing, which is what the lab display showed.
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    env = html[html.index('class="ins-panel p-env"') : html.index('class="ins-panel p-depth"')]
+    assert env.count('class="env-readings"') == 2, "expected one readings group per dial column"
+    assert env.count('class="env-cell"') == 4
+    # Each dial column owns exactly one readings group: no group may precede the first dial.
+    assert env.index('class="env-dial"') < env.index('class="env-readings"')
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    grid = re.search(r"\.env-readings\s*\{[^}]*grid-template-columns:\s*([^;}]+)", css)
+    assert grid is not None, ".env-readings must declare grid-template-columns"
+    assert "1fr 1fr" in grid.group(1), (
+        f"must be two columns to match .wind-stats above it, got {grid.group(1).strip()!r}"
+    )
+
+
+def test_app_css_height_driven_gauges_are_reset_in_the_scroll_tiers() -> None:
+    """Every ``height: 100%`` gauge in the one-screen section must be undone in the scroll tiers.
+
+    Same cascade-order trap as the test above, one property along. ``height: 100%`` needs a
+    definite height to resolve against; in the scroll tiers panels size to their content, so a
+    ``flex: 1 1 auto`` wrapper has none to give and the gauge collapses to nothing. The failure is
+    silent — a scrolling single column with a missing gauge still looks basically usable — so
+    nothing but this test catches a new height-driven gauge that forgets its reset.
+    """
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), css, flags=re.S)
+    # Anchor on a real declaration, not the section banner: the banner lives inside a comment and
+    # the strip above rewrites comments to newlines, so offsets into `css` do not map onto `code`.
+    # Split by BRACE MATCHING, not by offset: the scroll-tier blocks are interleaved with the
+    # one-screen rules rather than following them, so slicing at the first tier silently excludes
+    # almost every gauge and the test passes vacuously.
+    tier_text, one_screen, cursor = "", "", code.index("#view-conning")
+    for tier in re.finditer(r"@media \((?:max-width: 1100px|max-height: 920px)[^{]*\{", code):
+        if tier.start() < cursor:
+            continue
+        depth, end = 1, tier.end()
+        while depth and end < len(code):
+            depth += {"{": 1, "}": -1}.get(code[end], 0)
+            end += 1
+        one_screen += code[cursor : tier.start()]
+        tier_text += code[tier.end() : end]
+        cursor = end
+    one_screen += code[cursor:]
+
+    # Only SVG gauges are at risk: they resolve `height: 100%` against a `flex: 1 1 auto` fill
+    # wrapper that has no height to give once panels size to their content. `height: 100%` inside a
+    # fixed-height box (`.meter > span`, the load bar) is fine, so scope by what the markup actually
+    # puts on an <svg> rather than by a hand-kept exclusion list that would rot.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    svg_ids = set(re.findall(r'<svg\b[^>]*\bid="([^"]+)"', html))
+    is_gauge = lambda s: s.endswith("svg") or s.lstrip("#") in svg_ids  # noqa: E731
+
+    driven = {
+        sel.strip()
+        for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", one_screen)
+        if re.search(r"(?<![-\w])height:\s*100%", rule.group(2))
+        for sel in rule.group(1).split(",")
+        if sel.strip().startswith((".", "#")) and is_gauge(sel.strip())
+    }
+    assert driven, "found no height-driven gauges at all — the extraction above is broken"
+
+    # The restore must be an actual `height: auto` rule. A plain substring search for the selector
+    # is not enough: every gauge is already named in the tiers' `max-height: none` reset, which
+    # uncaps a height without making the element width-driven — so the substring form went green
+    # even with the real restore deleted (verified by deleting it).
+    restored = {
+        sel.strip()
+        for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", tier_text)
+        if re.search(r"(?<![-\w])height:\s*auto", rule.group(2))
+        for sel in rule.group(1).split(",")
+    }
+    missing = [s for s in sorted(driven) if s not in restored]
+    assert not missing, (
+        "these are height-driven in the one-screen layout but never restored to width-driven in "
+        f"the scroll-tier resets, so they collapse there: {missing}"
+    )
+
+
 def test_app_css_left_column_floors_scale_with_density() -> None:
     """The left-column floors must be functions of ``--ui-scale``, not fixed pixels.
 

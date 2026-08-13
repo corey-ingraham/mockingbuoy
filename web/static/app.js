@@ -3,6 +3,12 @@
   const MAX_LINES = 300;
   const STALE_MS = 3500;
   const DEPTH_CAP = 180;    // 1 Hz depth samples => 3-minute history window
+  // Declared HERE, not next to renderDepthGraph: the module-scope wiring below calls that function
+  // long before its own line is reached, and a `let` beside it sits in the temporal dead zone at
+  // that moment. Function declarations hoist; `let` bindings do not initialise. The result was a
+  // silent "Cannot access 'depthVBW' before initialization" on every load and a chart stuck at the
+  // fallback viewBox -- caught by ops/conning-fit-probe.js, invisible to the test suite.
+  let depthVBW = 320;       // user-space width of the depth chart (height is pinned at 180)
   let ALERT_DEPTH_M = 50;  // display-only shallow-water alert threshold (amber); A6: overridable via cfg-depth-alert (localStorage)
   try { const _ad = Number((window.localStorage && localStorage.getItem("mb.alertDepthM"))); if (Number.isFinite(_ad) && _ad > 0) ALERT_DEPTH_M = _ad; } catch (e) {}
   // Client-side conning temperature unit (display-only; temps never touch NMEA). Persisted to localStorage.
@@ -174,7 +180,9 @@
     if (view === "streams") { updateInputSection(); }
     if (view === "config") { refreshInputs(); loadDisplayPrefsIntoConfig(); }
     if (view === "security") { startSecPoll(); }
-    if (view === "conning") scheduleAutoFit();
+    // The depth chart's viewBox is derived from its box, which has no size while the view is
+    // hidden, and a hidden element reports no resize -- so re-derive it on activation.
+    if (view === "conning") { scheduleAutoFit(); renderDepthGraph(); }
   }
 
   /* =====================================================================
@@ -395,6 +403,10 @@
      these elements exist at parse time and need no build step. */
   applyUiScale();
   scheduleAutoFit(150);
+  /* Conning is the DEFAULT view, so showTab() never fires for it on a cold load. The observer picks
+     up the initial layout and every post-load settle; the direct call paints the first frame. */
+  renderDepthGraph();
+  observeDepthBox();
   window.addEventListener("resize", () => scheduleAutoFit(250));
   document.addEventListener("fullscreenchange", () => { syncFullscreenUi(); scheduleAutoFit(250); });
   // Re-check when the page comes to the front: a kiosk browser can finish loading while the window
@@ -1152,12 +1164,74 @@
     alertFlags.depthLow = d > 0 && d < ALERT_DEPTH_M;
     if (alertFlags.depthLow !== wasLow) renderAlerts();
   }
+  /* User-space width of the depth chart. The HEIGHT stays pinned at 180 and only the width tracks
+     the box aspect, so the uniform scale is always boxH/180 on both axes: font sizes and stroke
+     widths keep exactly the apparent weight they have today, and the drawing fills the box instead
+     of being letterboxed by `preserveAspectRatio="meet"`.
+
+     A ResizeObserver drives this, and the cheaper-looking alternatives were both MEASURED and
+     rejected. Deriving it only inside the 1 Hz render leaves the wrong viewBox on screen for the
+     first second (measured: 320 while the box was already 4.4:1 at 600ms). Adding a load-time call
+     is worse, not better: the panel box is still settling for ~2s after load as the ENV values
+     populate and grow that panel (measured: .p-env 340->358px, .p-depth 232->203px), so a one-shot
+     call locks in a pre-settle aspect -- the fill ratio at 1920x1080 dropped from 0.86 to 0.40.
+     The box genuinely changes after load, so the thing that watches the box is the right tool.
+     There is no feedback loop: in the one-screen tier the SVG's height is 100% of the wrapper and
+     does not depend on the viewBox, and in the scrolling tiers the width is pinned to 320.
+     Note an RO does NOT dodge the backgrounded-tab hazard -- its callbacks are delivered in the
+     same "update the rendering" step as rAF -- but nothing here needs to run while hidden.
+     `depthVBW` itself is declared at the top of this IIFE; see the note there. */
+  function syncDepthViewBox() {
+    const svg = $("depth-graph");
+    const box = document.querySelector(".depth-fill");
+    if (!svg || !box) return;
+    const r = box.getBoundingClientRect();
+    // In the scrolling tiers the graph is width-driven again (`height: auto`), so its height comes
+    // FROM its own viewBox ratio -- deriving the ratio back out of the measured height is a fixed
+    // point, and a wide viewBox carried across a tier crossing would never return to 320. A rect
+    // height under 40px means hidden tab / not yet laid out, where the ratio is meaningless.
+    const scrolling = window.matchMedia("(max-width: 1100px), (max-height: 920px)").matches;
+    // Clamp bounds are a safety rail against a degenerate box, not a design target: inside them the
+    // scale is exactly boxH/180 on both axes and the drawing fills the box, outside them `meet`
+    // letterboxes again. MEASURED: the depth panel runs to ~5.6:1 at 1920x1080 (602x107), so a
+    // 900 ceiling binds on an ordinary desktop -- 1600 (8.9:1) clears the ultrawides the display
+    // is actually deployed on. Re-measure before narrowing this.
+    const next = scrolling || r.height < 40
+      ? 320
+      : Math.max(240, Math.min(1600, Math.round((180 * r.width) / r.height)));
+    if (next === depthVBW) return false;
+    depthVBW = next;
+    svg.setAttribute("viewBox", "0 0 " + depthVBW + " 180");
+    return true;
+  }
+  function observeDepthBox() {
+    const box = document.querySelector(".depth-fill");
+    if (!box || typeof ResizeObserver !== "function") return;
+    // Re-render only when the viewBox actually moved, so a same-size notification is a no-op and
+    // the callback cannot chase its own writes.
+    new ResizeObserver(() => { if (syncDepthViewBox()) renderDepthGraph(); }).observe(box);
+  }
   function renderDepthGraph() {
     const dyn = $("depth-dyn");
     if (!dyn) return;
+    // BEFORE the n<2 early return below, so the box is correctly sized while still "acquiring".
+    syncDepthViewBox();
     const NS = "http://www.w3.org/2000/svg";
     while (dyn.firstChild) dyn.removeChild(dyn.firstChild);
-    const x0 = 34, y0 = 24, x1 = 286, y1 = 162, w = x1 - x0, h = y1 - y0;
+    /* Left margin is 6, not 34: nothing is drawn there (the depth labels are on the RIGHT, below).
+       y0 and the 34-unit right margin are NOT spare room, however much they look it:
+         - the side-view ship rides the surface line at y0 and its funnel is drawn ~21 units ABOVE
+           it (sy - 15, where sy = surfY(..) - 3 and surfY oscillates y0 +/- 2.6), so lowering y0
+           clips the superstructure straight off the top of the viewBox;
+         - depth_m is validated to [0, 12000] and the axis max is ceil(dataMax*1.6/10)*10, so the
+           right-hand labels reach 5 digits -- ~32 of the 34 units available at font-size 9. */
+    const x0 = 6, y0 = 24, x1 = depthVBW - 34, y1 = 162, w = x1 - x0, h = y1 - y0;
+    const face = $("depth-face");
+    if (face) {
+      // 14 units of headroom above the plot: that is where the ship glyph sits.
+      face.setAttribute("x", String(x0)); face.setAttribute("y", String(y0 - 14));
+      face.setAttribute("width", String(w)); face.setAttribute("height", String(h + 14));
+    }
     const n = depthHistory.length;
     const mk = (tag) => document.createElementNS(NS, tag);
     const label = (x, y, txt, anchor) => {

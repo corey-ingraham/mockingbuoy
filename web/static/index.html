@@ -125,6 +125,7 @@
             <div class="wind-stat"><div class="wind-stat-t">Speed kts</div><div class="wind-stat-v"><span id="wtd-spd" class="v-live">--</span></div></div>
             <div class="wind-stat"><div class="wind-stat-t">Direction</div><div class="wind-stat-v"><span id="wtd-dir" class="v-live">--</span>°</div></div>
           </div>
+          <div class="env-dial-fill">
           <svg id="wind-true-dial" viewBox="0 0 160 160" aria-label="true wind">
             <circle cx="80" cy="80" r="78" fill="none" stroke="#05080c" stroke-width="4"/>
             <circle cx="80" cy="80" r="75" fill="none" stroke="url(#bezelGrad)" stroke-width="3"/>
@@ -137,6 +138,21 @@
             <circle cx="80" cy="80" r="7" fill="url(#hubGrad)"/>
             <circle cx="77.5" cy="77.5" r="1.8" fill="#ffffff" fill-opacity="0.9"/>
           </svg>
+          </div>
+          <!-- The readings live INSIDE the dial column, not in a panel-wide row below it, so they
+               share `.env-dial`'s width and land on the same two column centres as SPEED/DIRECTION
+               above. A 4-across row spanning the whole panel spreads them on their own centres and
+               lines up with nothing. -->
+          <div class="env-readings">
+            <div class="env-cell">
+              <div class="ins-label">Water Temp</div>
+              <div class="ins-val-row"><span id="env-wtemp" class="env-num v-sim">--</span><span id="env-wtemp-unit" class="ins-unit">°C</span></div>
+            </div>
+            <div class="env-cell">
+              <div class="ins-label">Air Temp</div>
+              <div class="ins-val-row"><span id="env-atemp" class="env-num v-sim">--</span><span id="env-atemp-unit" class="ins-unit">°C</span></div>
+            </div>
+          </div>
         </div>
         <!-- wind RELATIVE: apparent wind vs bow (danger sector + ship glyph) -->
         <div class="env-dial">
@@ -145,6 +161,7 @@
             <div class="wind-stat"><div class="wind-stat-t">Speed kts</div><div class="wind-stat-v"><span id="wrd-spd" class="v-live">--</span></div></div>
             <div class="wind-stat"><div class="wind-stat-t">Direction</div><div class="wind-stat-v"><span id="wrd-ang" class="v-live">--</span>°</div></div>
           </div>
+          <div class="env-dial-fill">
           <svg id="wind-rel-dial" viewBox="0 0 200 200" aria-label="relative wind">
             <defs><clipPath id="wrdClip"><circle cx="100" cy="100" r="89"/></clipPath></defs>
             <circle cx="100" cy="100" r="97" fill="none" stroke="#05080c" stroke-width="5"/>
@@ -166,24 +183,17 @@
             <circle cx="100" cy="100" r="8" fill="url(#hubGrad)"/>
             <circle cx="97" cy="97" r="2" fill="#ffffff" fill-opacity="0.9"/>
           </svg>
-        </div>
-      </div>
-      <div class="env-readings">
-        <div class="env-cell">
-          <div class="ins-label">Water Temp</div>
-          <div class="ins-val-row"><span id="env-wtemp" class="env-num v-sim">--</span><span id="env-wtemp-unit" class="ins-unit">°C</span></div>
-        </div>
-        <div class="env-cell">
-          <div class="ins-label">Air Temp</div>
-          <div class="ins-val-row"><span id="env-atemp" class="env-num v-sim">--</span><span id="env-atemp-unit" class="ins-unit">°C</span></div>
-        </div>
-        <div class="env-cell">
-          <div class="ins-label">Humidity</div>
-          <div class="ins-val-row"><span id="env-hum" class="env-num v-sim">--</span><span class="ins-unit">%</span></div>
-        </div>
-        <div class="env-cell">
-          <div class="ins-label">Pressure</div>
-          <div class="ins-val-row"><span id="env-press" class="env-num v-sim">--</span><span class="ins-unit">hPa</span></div>
+          </div>
+          <div class="env-readings">
+            <div class="env-cell">
+              <div class="ins-label">Humidity</div>
+              <div class="ins-val-row"><span id="env-hum" class="env-num v-sim">--</span><span class="ins-unit">%</span></div>
+            </div>
+            <div class="env-cell">
+              <div class="ins-label">Pressure</div>
+              <div class="ins-val-row"><span id="env-press" class="env-num v-sim">--</span><span class="ins-unit">hPa</span></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -200,10 +210,14 @@
           <div class="ins-val-row"><span id="ro-depth" class="ins-bignum v-live">---</span><span class="ins-unit">m</span></div>
         </div>
       </div>
-      <svg id="depth-graph" viewBox="0 0 320 180" aria-label="depth history">
-        <rect x="34" y="10" width="252" height="152" fill="url(#faceGrad)" stroke="#1c2530"/>
-        <g id="depth-dyn"></g>
-      </svg>
+      <!-- viewBox width is rewritten per render to match the box aspect (see renderDepthGraph);
+           320 is the fallback used before first layout and in the scrolling tiers -->
+      <div class="depth-fill">
+        <svg id="depth-graph" viewBox="0 0 320 180" aria-label="depth history">
+          <rect id="depth-face" x="6" y="10" width="280" height="152" fill="url(#faceGrad)" stroke="#1c2530"/>
+          <g id="depth-dyn"></g>
+        </svg>
+      </div>
     </div>
     <!-- ALERTS: derived + rendered inside applyHealth; keyed Ack (re-arms) + cosmetic Silence -->
     <div class="ins-panel p-alerts">
